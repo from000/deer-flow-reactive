@@ -1,17 +1,22 @@
-"""Test for issue #1016: checkpointer should not return None."""
+"""Test for issue #1016: checkpointer should not return None.
+
+The memory backend is now ``ReactiveGraphSaver``; these tests keep their original
+intent (never None, and ``list``/``alist`` actually usable) while asserting the
+contract rather than the concrete LangGraph class.
+"""
 
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 
 class TestCheckpointerNoneFix:
-    """Tests that checkpointer context managers return InMemorySaver instead of None."""
+    """Tests that checkpointer context managers return a usable saver, not None."""
 
     @pytest.mark.anyio
     async def test_async_make_checkpointer_returns_in_memory_saver_when_not_configured(self):
-        """make_checkpointer should return InMemorySaver when config.checkpointer is None."""
+        """make_checkpointer should return a memory saver when config.checkpointer is None."""
         from deerflow.runtime.checkpointer.async_provider import make_checkpointer
 
         # Mock get_app_config to return a config with checkpointer=None and database=None
@@ -21,9 +26,9 @@ class TestCheckpointerNoneFix:
 
         with patch("deerflow.runtime.checkpointer.async_provider.get_app_config", return_value=mock_config):
             async with make_checkpointer() as checkpointer:
-                # Should return InMemorySaver, not None
+                # Should return a usable saver, not None
                 assert checkpointer is not None
-                assert isinstance(checkpointer, InMemorySaver)
+                assert isinstance(checkpointer, BaseCheckpointSaver)
 
                 # Should be able to call alist() without AttributeError
                 # This is what LangGraph does and what was failing in issue #1016
@@ -35,7 +40,7 @@ class TestCheckpointerNoneFix:
                 assert result == []
 
     def test_sync_checkpointer_context_returns_in_memory_saver_when_not_configured(self):
-        """checkpointer_context should return InMemorySaver when config.checkpointer is None."""
+        """checkpointer_context should return a memory saver when config.checkpointer is None."""
         from deerflow.runtime.checkpointer.provider import checkpointer_context
 
         # Mock get_app_config to return a config with checkpointer=None and database=None
@@ -45,9 +50,9 @@ class TestCheckpointerNoneFix:
 
         with patch("deerflow.runtime.checkpointer.provider.get_app_config", return_value=mock_config):
             with checkpointer_context() as checkpointer:
-                # Should return InMemorySaver, not None
+                # Should return a usable saver, not None
                 assert checkpointer is not None
-                assert isinstance(checkpointer, InMemorySaver)
+                assert isinstance(checkpointer, BaseCheckpointSaver)
 
                 # Should be able to call list() without AttributeError
                 result = list(checkpointer.list(config={"configurable": {"thread_id": "test"}}))

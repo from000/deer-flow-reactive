@@ -1,7 +1,13 @@
 """Sync checkpointer factory.
 
-Provides a **sync singleton** and a **sync context manager** for LangGraph
-graph compilation and CLI tools.
+Provides a **sync singleton** and a **sync context manager** for graph
+compilation and CLI tools.
+
+The ``memory`` backend is served by :class:`ReactiveGraphSaver`, which keeps the
+storage semantics in ``reactivegraph.checkpoint`` while presenting LangGraph's
+``BaseCheckpointSaver`` interface (Pregel rejects anything else by isinstance).
+``sqlite`` and ``postgres`` still use LangGraph's own savers and are not yet
+ported.
 
 Supported backends: memory, sqlite, postgres.
 
@@ -109,10 +115,10 @@ def _sync_checkpointer_cm(config: CheckpointerConfig) -> Iterator[Checkpointer]:
     function does not return a separate cleanup callback.
     """
     if config.type == "memory":
-        from langgraph.checkpoint.memory import InMemorySaver
+        from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
 
-        logger.info("Checkpointer: using InMemorySaver (in-process, not persistent)")
-        yield InMemorySaver()
+        logger.info("Checkpointer: using ReactiveGraphSaver (in-process, not persistent)")
+        yield ReactiveGraphSaver()
         return
 
     if config.type == "sqlite":
@@ -198,7 +204,7 @@ def get_checkpointer() -> Checkpointer:
 
     The legacy ``checkpointer`` section takes precedence when configured;
     otherwise the unified ``database`` section selects the backend. Returns an
-    ``InMemorySaver`` when neither selects a persistent backend.
+    ``ReactiveGraphSaver`` when neither selects a persistent backend.
 
     Raises:
         ImportError: If the required package for the configured backend is not installed.
@@ -277,7 +283,7 @@ def checkpointer_context() -> Iterator[Checkpointer]:
 
     The legacy ``checkpointer`` section takes precedence when configured;
     otherwise the unified ``database`` section selects the backend. Yields an
-    ``InMemorySaver`` when neither selects a persistent backend.
+    ``ReactiveGraphSaver`` when neither selects a persistent backend.
     """
 
     app_config = get_app_config()

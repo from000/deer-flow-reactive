@@ -234,20 +234,24 @@ class TestHarnessPackaging:
 
 class TestGetCheckpointer:
     def test_returns_in_memory_saver_when_not_configured(self):
-        """get_checkpointer should return InMemorySaver when not configured."""
-        from langgraph.checkpoint.memory import InMemorySaver
+        """get_checkpointer should return the ReactiveGraph memory saver when not configured."""
+        from langgraph.checkpoint.base import BaseCheckpointSaver
+
+        from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
 
         with patch("deerflow.runtime.checkpointer.provider.get_app_config", side_effect=FileNotFoundError):
             cp = get_checkpointer()
         assert cp is not None
-        assert isinstance(cp, InMemorySaver)
+        assert isinstance(cp, ReactiveGraphSaver)
+        # LangGraph's own gate must still accept it.
+        assert isinstance(cp, BaseCheckpointSaver)
 
     def test_memory_returns_in_memory_saver(self):
         load_checkpointer_config_from_dict({"type": "memory"})
-        from langgraph.checkpoint.memory import InMemorySaver
+        from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
 
         cp = get_checkpointer()
-        assert isinstance(cp, InMemorySaver)
+        assert isinstance(cp, ReactiveGraphSaver)
 
     def test_memory_singleton(self):
         load_checkpointer_config_from_dict({"type": "memory"})
@@ -961,14 +965,14 @@ class TestCheckpointerDatabaseConfig:
 
     def test_sync_checkpointer_falls_back_to_memory_when_config_file_is_missing(self):
         """The sync checkpointer keeps its no-config fallback for embedded callers."""
-        from langgraph.checkpoint.memory import InMemorySaver
+        from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
 
         with (
             patch("deerflow.runtime.checkpointer.provider.ensure_config_loaded"),
             patch("deerflow.runtime.checkpointer.provider.get_checkpointer_config", return_value=None),
             patch("deerflow.runtime.checkpointer.provider.get_app_config", side_effect=FileNotFoundError),
         ):
-            assert isinstance(get_checkpointer(), InMemorySaver)
+            assert isinstance(get_checkpointer(), ReactiveGraphSaver)
 
     def test_legacy_checkpointer_config_takes_precedence(self):
         """Backward-compatible checkpointer config must override database."""
@@ -994,9 +998,8 @@ class TestCheckpointerDatabaseConfig:
 
     def test_explicit_memory_database_uses_in_memory_saver(self):
         """Explicit memory mode remains an intentional non-persistent checkpointer."""
-        from langgraph.checkpoint.memory import InMemorySaver
-
         from deerflow.runtime.checkpointer.provider import checkpointer_context
+        from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
 
         app_config = SimpleNamespace(checkpointer=None, database=DatabaseConfig(backend="memory"))
 
@@ -1004,7 +1007,7 @@ class TestCheckpointerDatabaseConfig:
             patch("deerflow.runtime.checkpointer.provider.get_app_config", return_value=app_config),
             checkpointer_context() as cp,
         ):
-            assert isinstance(cp, InMemorySaver)
+            assert isinstance(cp, ReactiveGraphSaver)
 
 
 class TestStoreDatabaseConfig:
@@ -1180,9 +1183,8 @@ class TestAppConfigLoadsCheckpointer:
 class TestClientCheckpointerFallback:
     def test_client_uses_config_checkpointer_when_none_provided(self):
         """DeerFlowClient._ensure_agent falls back to get_checkpointer() when checkpointer=None."""
-        from langgraph.checkpoint.memory import InMemorySaver
-
         from deerflow.client import DeerFlowClient
+        from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
 
         load_checkpointer_config_from_dict({"type": "memory"})
 
@@ -1217,7 +1219,7 @@ class TestClientCheckpointerFallback:
             client._ensure_agent(config)
 
         assert "checkpointer" in captured_kwargs
-        assert isinstance(captured_kwargs["checkpointer"], InMemorySaver)
+        assert isinstance(captured_kwargs["checkpointer"], ReactiveGraphSaver)
 
     def test_client_explicit_checkpointer_takes_precedence(self):
         """An explicitly provided checkpointer is used even when config checkpointer is set."""

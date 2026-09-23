@@ -10,7 +10,7 @@ Usage (e.g. FastAPI lifespan)::
     from deerflow.runtime.checkpointer.async_provider import make_checkpointer
 
     async with make_checkpointer() as checkpointer:
-        app.state.checkpointer = checkpointer  # InMemorySaver if not configured
+        app.state.checkpointer = checkpointer  # ReactiveGraphSaver if not configured
 
 For sync usage see :mod:`deerflow.runtime.checkpointer.provider`.
 """
@@ -109,9 +109,9 @@ def _ensure_postgres_imports():
 async def _async_checkpointer(config) -> AsyncIterator[Checkpointer]:
     """Async context manager that constructs and tears down a checkpointer."""
     if config.type == "memory":
-        from langgraph.checkpoint.memory import InMemorySaver
+        from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
 
-        yield InMemorySaver()
+        yield ReactiveGraphSaver()
         return
 
     if config.type == "sqlite":
@@ -151,9 +151,9 @@ async def _async_checkpointer(config) -> AsyncIterator[Checkpointer]:
 async def _async_checkpointer_from_database(db_config) -> AsyncIterator[Checkpointer]:
     """Async context manager that constructs a checkpointer from unified DatabaseConfig."""
     if db_config.backend == "memory":
-        from langgraph.checkpoint.memory import InMemorySaver
+        from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
 
-        yield InMemorySaver()
+        yield ReactiveGraphSaver()
         return
 
     if db_config.backend == "sqlite":
@@ -191,7 +191,7 @@ async def _select_inner_checkpointer(app_config: AppConfig) -> AsyncIterator[Che
     Priority:
     1. Legacy ``checkpointer:`` config section (backward compatible)
     2. Unified ``database:`` config section
-    3. Default InMemorySaver
+    3. Default ReactiveGraphSaver
     """
     # Legacy: standalone checkpointer config takes precedence
     if app_config.checkpointer is not None:
@@ -207,9 +207,9 @@ async def _select_inner_checkpointer(app_config: AppConfig) -> AsyncIterator[Che
             return
 
     # Default: in-memory
-    from langgraph.checkpoint.memory import InMemorySaver
+    from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
 
-    yield InMemorySaver()
+    yield ReactiveGraphSaver()
 
 
 @contextlib.asynccontextmanager
@@ -220,12 +220,12 @@ async def make_checkpointer(app_config: AppConfig | None = None) -> AsyncIterato
         async with make_checkpointer(app_config) as checkpointer:
             app.state.checkpointer = checkpointer
 
-    Yields an ``InMemorySaver`` when no checkpointer is configured in *config.yaml*.
+    Yields a ``ReactiveGraphSaver`` when no checkpointer is configured in *config.yaml*.
 
     Backend selection priority:
     1. Legacy ``checkpointer:`` config section (backward compatible)
     2. Unified ``database:`` config section
-    3. Default InMemorySaver
+    3. Default ReactiveGraphSaver
 
     When the effective checkpoint channel mode is ``delta`` (the process-frozen
     mode wins, falling back to ``database.checkpoint_channel_mode``), the raw

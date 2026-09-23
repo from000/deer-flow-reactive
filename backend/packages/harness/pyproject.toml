@@ -38,6 +38,7 @@ dependencies = [
     "markitdown[all,xlsx]>=0.0.1a2",
     "packaging>=24.2",
     "pydantic>=2.12.5",
+    "reactivegraph",
     "pyyaml>=6.0.3",
     "readabilipy>=0.3.0",
     "tavily-python>=0.7.17",
