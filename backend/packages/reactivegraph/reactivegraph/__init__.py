@@ -51,6 +51,14 @@ from reactivegraph.prebuilt import (
     create_react_agent,
 )
 from reactivegraph.state import TrackedState, TrackedStateProxy
+from reactivegraph.store import (
+    InvalidNamespaceError,
+    Item,
+    MemoryStore,
+    SearchItem,
+    get_store,
+    reset_store,
+)
 
 __version__ = "0.1.0"
 
@@ -86,4 +94,10 @@ __all__ = (
     "MemoryCheckpointSaver",
     "get_checkpointer",
     "reset_checkpointer",
+    "InvalidNamespaceError",
+    "Item",
+    "MemoryStore",
+    "SearchItem",
+    "get_store",
+    "reset_store",
 )

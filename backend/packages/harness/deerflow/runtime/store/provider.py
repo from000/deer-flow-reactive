@@ -104,10 +104,10 @@ def _sync_store_cm(config) -> Iterator[BaseStore]:
     the same object used by the checkpointer factory.
     """
     if config.type == "memory":
-        from langgraph.store.memory import InMemoryStore
+        from reactivegraph.store import MemoryStore
 
-        logger.info("Store: using InMemoryStore (in-process, not persistent)")
-        yield InMemoryStore()
+        logger.info("Store: using ReactiveGraph MemoryStore (in-process, not persistent)")
+        yield MemoryStore()
         return
 
     if config.type == "sqlite":

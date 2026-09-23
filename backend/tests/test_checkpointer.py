@@ -1012,19 +1012,24 @@ class TestCheckpointerDatabaseConfig:
 
 class TestStoreDatabaseConfig:
     def test_sync_store_falls_back_to_memory_when_config_file_is_missing(self):
-        """The sync Store keeps its no-config fallback for embedded callers."""
-        from langgraph.store.memory import InMemoryStore
+        """The sync Store keeps its no-config fallback for embedded callers.
+
+        The memory backend is served by ReactiveGraph's ``MemoryStore``; the
+        intent of this test (never None, always a usable in-process store) is
+        unchanged.
+        """
+        from reactivegraph.store import MemoryStore
 
         with (
             patch("deerflow.runtime.store.provider.ensure_config_loaded"),
             patch("deerflow.runtime.store.provider.get_checkpointer_config", return_value=None),
             patch("deerflow.runtime.store.provider.get_app_config", side_effect=FileNotFoundError),
         ):
-            assert isinstance(get_store(), InMemoryStore)
+            assert isinstance(get_store(), MemoryStore)
 
     @pytest.mark.anyio
     async def test_async_postgres_store_uses_database_config(self, caplog):
-        """Unified database postgres config must not fall back to InMemoryStore."""
+        """Unified database postgres config must not fall back to the memory store."""
         from deerflow.runtime.store.async_provider import make_store
 
         caplog.set_level("WARNING", logger="deerflow.runtime.store.async_provider")
@@ -1147,7 +1152,7 @@ class TestStoreDatabaseConfig:
 
     def test_explicit_memory_database_uses_in_memory_store(self):
         """Explicit memory mode remains an intentional non-persistent Store."""
-        from langgraph.store.memory import InMemoryStore
+        from reactivegraph.store import MemoryStore
 
         from deerflow.runtime.store.provider import store_context
 
@@ -1157,7 +1162,7 @@ class TestStoreDatabaseConfig:
         )
         with patch("deerflow.runtime.store.provider.get_app_config", return_value=app_config):
             with store_context() as store:
-                assert isinstance(store, InMemoryStore)
+                assert isinstance(store, MemoryStore)
 
 
 # ---------------------------------------------------------------------------
