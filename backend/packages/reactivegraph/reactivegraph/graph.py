@@ -600,15 +600,20 @@ class ReactiveGraph:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self.invoke, event, payload)
 
-    async def astream(self, event: str, payload: Any) -> AsyncIterator[dict]:
-        """异步 stream:同步生成器在 executor 线程迭代,事件经 asyncio.Queue 传出。"""
+    async def astream(
+        self, event: str, payload: Any, *, config: dict | None = None
+    ) -> AsyncIterator[dict]:
+        """异步 stream:同步生成器在 executor 线程迭代,事件经 asyncio.Queue 传出。
+
+        `config` 与同步 `stream` 同义透传(Driver 侧 trace/concurrency 等)。
+        """
         loop = asyncio.get_running_loop()
         q: asyncio.Queue[Any] = asyncio.Queue()
         sentinel = object()
 
         def _produce() -> None:
             try:
-                for ev in self.stream(event, payload):
+                for ev in self.stream(event, payload, config=config):
                     loop.call_soon_threadsafe(q.put_nowait, ev)
             except BaseException as exc:  # noqa: BLE001 - surfaced to the async generator
                 loop.call_soon_threadsafe(q.put_nowait, exc)

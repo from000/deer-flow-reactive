@@ -28,6 +28,11 @@ from reactivegraph.constants import (
     TAG_HIDDEN,
     TAG_NOSTREAM,
 )
+from reactivegraph.create_agent import (
+    AgentGraph,
+    UnsupportedStreamModeError,
+    create_agent,
+)
 from reactivegraph.errors import (
     ErrorCode,
     GraphBubbleUp,
@@ -51,6 +56,7 @@ from reactivegraph.graph import (
     GraphDef,
     ReactiveGraph,
     TaskDef,
+    TaskOutcome,
 )
 from reactivegraph.host import (
     DriverError,
@@ -169,6 +175,10 @@ __all__ = (
     "TaskDef",
     "ComputedDef",
     "GraphBuildError",
+    "TaskOutcome",
+    "AgentGraph",
+    "create_agent",
+    "UnsupportedStreamModeError",
     "Interrupt",
     "GraphInterrupt",
     "Command",
