@@ -18,10 +18,13 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import random
 import threading
 import time
+import uuid
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 # Reserved channels are keyed by a fixed negative index instead of their
@@ -36,13 +39,73 @@ WRITES_IDX_MAP: dict[str, int] = {
 }
 
 __all__ = (
+    "LATEST_CHECKPOINT_VERSION",
     "WRITES_IDX_MAP",
     "CheckpointStore",
     "CheckpointTuple",
     "MemoryCheckpointSaver",
+    "empty_checkpoint",
     "get_checkpointer",
     "reset_checkpointer",
+    "uuid6",
 )
+
+LATEST_CHECKPOINT_VERSION = 2
+"""Checkpoint schema version written by :func:`empty_checkpoint`."""
+
+_last_v6_timestamp: int | None = None
+
+
+def uuid6(node: int | None = None, clock_seq: int | None = None) -> uuid.UUID:
+    """Return a UUID version 6, ordered by generation time.
+
+    Version 6 reorders the v1 fields so lexicographic order follows time,
+    which is what makes checkpoint ids sortable in databases and object
+    stores. Repeated calls never return the same id even when the clock has
+    not advanced: the last timestamp is remembered and bumped.
+    """
+    global _last_v6_timestamp
+    nanoseconds = time.time_ns()
+    # 100-ns intervals between the UUID epoch (1582-10-15) and the Unix epoch.
+    timestamp = nanoseconds // 100 + 0x01B21DD213814000
+    if _last_v6_timestamp is not None and timestamp <= _last_v6_timestamp:
+        timestamp = _last_v6_timestamp + 1
+    _last_v6_timestamp = timestamp
+    if clock_seq is None:
+        clock_seq = random.getrandbits(14)
+    if node is None:
+        node = random.getrandbits(48)
+    uuid_int = ((timestamp >> 12) & 0xFFFFFFFFFFFF) << 80
+    uuid_int |= (timestamp & 0x0FFF) << 64
+    uuid_int |= (clock_seq & 0x3FFF) << 48
+    uuid_int |= node & 0xFFFFFFFFFFFF
+    # The stdlib refuses ``version=6``; write the version nibble and the
+    # RFC-4122 variant bits directly. ``UUID.version`` reads them back out of
+    # the integer, so the result is a real v6 uuid.
+    uuid_int &= ~(0xF << 76)
+    uuid_int |= 6 << 76
+    uuid_int &= ~(0xC000 << 48)
+    uuid_int |= 0x8000 << 48
+    return uuid.UUID(int=uuid_int)
+
+
+def empty_checkpoint() -> dict[str, Any]:
+    """Return a fresh, version-2 checkpoint with no channels or writes.
+
+    Hosts use this as the initial snapshot for a thread and as the marker
+    checkpoint when they need a new id/ts without running the graph. Every
+    call allocates new mutable containers and a new ordered id.
+    """
+    return {
+        "v": LATEST_CHECKPOINT_VERSION,
+        "id": str(uuid6(clock_seq=-2)),
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "channel_values": {},
+        "channel_versions": {},
+        "versions_seen": {},
+        "pending_sends": [],
+        "updated_channels": None,
+    }
 
 
 @dataclass

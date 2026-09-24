@@ -41,20 +41,6 @@ class GraphBuildError(Exception):
     """Raised when a graph definition is invalid (duplicate/unknown ids)."""
 
 
-class Interrupt(Exception):
-    """任务内主动中断：请求外部输入（human-in-the-loop）。
-
-    回调抛 Interrupt(value) → host 经 TASK_INVOKE 错误响应携带
-    error.type="Interrupt" → Driver 端 toTaskResult 识别为中断（方案 C
-    P2-2 流式中断）：run 立即返回 interrupted=True 并写 checkpoint；
-    ``ReactiveGraph.resume(run_id, user_response)`` 以用户载荷继续执行。
-    """
-
-
-class GraphInterrupt(Interrupt):
-    """别名：与 langgraph 的 ``GraphInterrupt`` 命名对齐（同义）。"""
-
-
 @dataclass(frozen=True)
 class TaskDef:
     id: str
