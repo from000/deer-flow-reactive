@@ -18,6 +18,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from reactivegraph.protocol import encode_value
+from reactivegraph.wire import to_wire_value
 
 
 def path_to_string(path: tuple) -> str:
@@ -103,7 +104,7 @@ def canonical_hash(value: Any) -> str:
     if value is _MISSING:
         payload = encode_value(_MISSING_MARKER)
     else:
-        payload = encode_value(value)
+        payload = encode_value(to_wire_value(value))
     return hashlib.sha256(payload).hexdigest()
 
 

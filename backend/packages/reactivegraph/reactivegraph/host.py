@@ -27,6 +27,7 @@ from reactivegraph.protocol import (
     encode_frame,
     encode_value,
 )
+from reactivegraph.wire import from_wire_value, to_wire_value
 
 # Discover the bundled Driver entry: environment override, then package-relative.
 _DRIVER_ENTRY_ENV = "REACTIVEGRAPH_DRIVER_ENTRY"
@@ -187,7 +188,7 @@ class DriverHost:
     def _handle_frame(self, frame: bytes) -> None:
         from reactivegraph.protocol import decode_value
 
-        envelope = decode_value(frame)
+        envelope = from_wire_value(decode_value(frame))
         kind = envelope.get("kind")
         eid = envelope.get("id")
         method = envelope.get("method")
@@ -410,7 +411,7 @@ class DriverHost:
         assert self._process is not None
         assert self._process.stdin is not None
         with self._write_lock:
-            self._process.stdin.write(encode_frame(encode_value(envelope)))
+            self._process.stdin.write(encode_frame(encode_value(to_wire_value(envelope))))
             self._process.stdin.flush()
 
     def request(self, method: str, payload: Any, timeout_ms: int = 30000) -> Any:
@@ -440,13 +441,15 @@ class DriverHost:
             self._process.stdin.write(
                 encode_frame(
                     encode_value(
-                        {
-                            "version": 1,
-                            "id": request_id,
-                            "kind": "request",
-                            "method": method,
-                            "payload": payload,
-                        }
+                        to_wire_value(
+                            {
+                                "version": 1,
+                                "id": request_id,
+                                "kind": "request",
+                                "method": method,
+                                "payload": payload,
+                            }
+                        )
                     )
                 )
             )
