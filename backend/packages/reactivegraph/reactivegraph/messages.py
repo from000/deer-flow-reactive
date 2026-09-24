@@ -1176,11 +1176,21 @@ def _create_message_from_message_type(
         response_metadata = additional_kwargs.pop("response_metadata", None)
         if response_metadata:
             kwargs["response_metadata"] = response_metadata
+        # ``model_dump()`` puts ``usage_metadata`` at the top level, but the
+        # **kwargs funnel below would otherwise file it under
+        # ``additional_kwargs``. Token accounting (DeerFlow's
+        # TokenBudgetMiddleware, ``add_usage``) reads the field directly, so a
+        # swallowed value silently disables every budget check. Promote it for
+        # the message types that declare the field, exactly like LangChain's
+        # object path does.
+        usage_metadata = additional_kwargs.pop("usage_metadata", None)
         extra = dict(additional_kwargs)
         nested = extra.pop("additional_kwargs", None)
         if nested:
             extra.update(nested)
         kwargs["additional_kwargs"] = extra
+        if usage_metadata is not None and message_type in {"ai", "assistant"}:
+            kwargs["usage_metadata"] = usage_metadata
     if id is not None:
         kwargs["id"] = id
     if tool_calls is not None:

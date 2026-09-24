@@ -28,6 +28,7 @@ from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequenc
 from dataclasses import dataclass, field
 from typing import Any
 
+from reactivegraph.channels import channel_reducer, resolve_channels
 from reactivegraph.graph import GraphBuilder, ReactiveGraph, TaskOutcome
 from reactivegraph.messages import (
     AIMessage,
@@ -44,6 +45,7 @@ from reactivegraph.middleware import (
     ModelResponse,
 )
 from reactivegraph.runtime import Runtime, get_runtime, runtime_context
+from reactivegraph.state import TrackedStateProxy
 from reactivegraph.tool_node import ToolNode
 from reactivegraph.types import Command
 
@@ -98,6 +100,35 @@ def _adopt_messages(update: dict[str, Any]) -> dict[str, Any]:
     if isinstance(messages, (str, bytes)) or not isinstance(messages, Iterable):
         return update
     return {**update, "messages": list(convert_to_messages(messages))}
+
+
+def _plain_state(state: Any) -> dict[str, Any]:
+    """Return a plain-dict view of *state* with no ``TrackedStateProxy`` values.
+
+    The Driver hands task functions a tracking proxy; ``dict(proxy)`` is only a
+    shallow copy, so nested list/dict values (notably ``messages``) stay
+    wrapped and are rejected by the message coercion at the model boundary.
+    Reading each value through the proxy keeps the Driver's read-set tracking
+    intact while giving hooks and the model plain containers.
+    """
+    if not isinstance(state, TrackedStateProxy):
+        return dict(state)
+    return {
+        key: value.snapshot() if isinstance(value, TrackedStateProxy) else value
+        for key in state.keys()
+        for value in (state[key],)
+    }
+
+
+def _fold_channel_value(channel: Any, current: Any, write: Any) -> Any:
+    """Fold one write into *current* through the channel's reducer.
+
+    Without a reducer the write replaces the value (``LastValue`` semantics).
+    """
+    reducer = channel_reducer(channel)
+    if reducer is None:
+        return write
+    return reducer(current, write)
 
 
 def _tool_name(tool: Any) -> str:
@@ -189,8 +220,15 @@ class _GraphView:
 
 
 class _GraphBuilderView:
-    def __init__(self, schemas: dict[type, type]) -> None:
+    """``.builder`` — the resolved schema table hosts read back.
+
+    Upstream's ``StateGraph.builder`` also exposes ``channels``; DeerFlow's
+    checkpoint-mutation path and its factory tests read it.
+    """
+
+    def __init__(self, schemas: dict[type, type], channels: dict[str, Any]) -> None:
         self.schemas = schemas
+        self.channels = channels
 
 
 class AgentGraph:
@@ -252,8 +290,35 @@ class AgentGraph:
         if isinstance(state_schema, type):
             schemas[state_schema] = state_schema
         self._schemas = schemas
-        self.builder = _GraphBuilderView(schemas)
+        # Later schemas win on field conflicts, so the caller's schema
+        # overrides middleware/base annotations (upstream merge order).
+        self.channels = resolve_channels(list(schemas.values()))
+        self.builder = _GraphBuilderView(schemas, self.channels)
         self._graph = self._compile()
+
+    def _apply_channel_writes(self, state: dict, writes: dict[str, Any]) -> dict[str, Any]:
+        """Return *state* with *writes* folded through the channel table.
+
+        This is the engine's own commit rule: a ``LastValue`` field is replaced,
+        a reducer field is folded. Keeping the loop's in-task state consistent
+        with what the graph will commit is what lets later hooks and the
+        routing decision read the same values the caller ends up with.
+        """
+        updated = _plain_state(state)
+        for key, write in writes.items():
+            if key == _AGENT_STARTED:
+                updated[key] = write
+                continue
+            channel = self.channels.get(key)
+            if channel is None or key not in updated:
+                # First write initializes the channel; a reducer only folds
+                # *subsequent* writes (LangGraph's BinaryOperatorAggregate
+                # behaves the same, and ``add_messages`` rejects a None left
+                # operand).
+                updated[key] = write
+                continue
+            updated[key] = _fold_channel_value(channel, updated[key], write)
+        return updated
 
     # -- graph construction -------------------------------------------------
 
@@ -265,18 +330,43 @@ class AgentGraph:
         system_prompt = self._system_prompt
         middleware = self._middleware
 
-        def _run_hook(name: str, state: dict, reverse: bool = False) -> dict:
-            updates: dict[str, Any] = {}
-            items = list(reversed(middleware)) if reverse else list(middleware)
+        def _run_hook(
+            name: str, state: dict, reverse: bool = False
+        ) -> tuple[dict[str, Any], dict[str, Any]]:
+            """Run one hook across the middleware chain.
+
+            Upstream compiles a *node per middleware*, so each hook observes the
+            state its predecessors already produced. Collapsing the chain into
+            one function that hands every hook the same pre-chain snapshot
+            breaks any middleware that reads what an earlier one wrote
+            (DeerFlow's ``SubagentLimitMiddleware`` counts the ledger
+            ``DurableContextMiddleware`` writes).
+
+            Returns ``(folded_state, merged_updates)``. ``folded_state`` is the
+            state with channel reducers applied, which is what the next hook
+            and the loop's routing decision must see; ``merged_updates`` is the
+            last-write-per-key patch the graph task reports.
+            """
+            current = _plain_state(state)
+            written: set[str] = set()
             runtime = get_runtime()
+            items = list(reversed(middleware)) if reverse else list(middleware)
             for mw in items:
                 hook = getattr(mw, name, None)
                 if hook is None:
                     continue
-                result = hook(dict(state), runtime)
-                if isinstance(result, dict):
-                    updates.update(_adopt_messages(result))
-            return updates
+                result = hook(dict(current), runtime)
+                if not isinstance(result, dict):
+                    continue
+                adopted = _adopt_messages(result)
+                written.update(adopted)
+                current = self._apply_channel_writes(current, adopted)
+            # The patch the graph commits is a full ``set``, not a reducer
+            # write: ReactiveGraph's fallback and Driver both apply
+            # ``state[k] = value``. Emit the *folded* value so reducer channels
+            # accumulate across hook/model turns instead of being clobbered by
+            # the last raw write.
+            return current, {key: current[key] for key in written if key in current}
 
         def _request(state: dict) -> ModelRequest:
             messages = list(state.get("messages", []))
@@ -310,10 +400,10 @@ class AgentGraph:
                 # written back so a model re-entry after the tool node does not
                 # replay it.
                 hook_updates[_AGENT_STARTED] = True
-                hook_updates.update(_run_hook("before_agent", state))
-            state = {**state, **hook_updates}
-            before_model_updates = _run_hook("before_model", state)
-            state = {**state, **before_model_updates}
+                state = self._apply_channel_writes(state, {_AGENT_STARTED: True})
+                state, before_agent_updates = _run_hook("before_agent", state)
+                hook_updates.update(before_agent_updates)
+            state, before_model_updates = _run_hook("before_model", state)
             hook_updates.update(before_model_updates)
             request = _request(state)
 
@@ -360,26 +450,39 @@ class AgentGraph:
                 new_messages = [response]
                 structured = None
 
-            updates: dict[str, Any] = {
-                **hook_updates,
-                "messages": [*state.get("messages", []), *new_messages],
-            }
+            # The model's reply joins the running state through the channel
+            # reducers before any hook sees it: ``after_model`` middleware
+            # inspects (and rewrites) the message it just produced.
+            produced: dict[str, Any] = {"messages": list(new_messages)}
             if command_update:
-                updates.update(command_update)
+                produced.update(command_update)
             if structured is not None:
-                updates["structured_response"] = structured
-            updates.update(_run_hook("after_model", updates, reverse=True))
+                produced["structured_response"] = structured
+            state = self._apply_channel_writes(state, produced)
+            updates: dict[str, Any] = {**hook_updates, **produced}
 
-            last = new_messages[-1] if new_messages else None
+            state, after_model_updates = _run_hook("after_model", state, reverse=True)
+            updates.update(after_model_updates)
+
+            # Routing reads the *post-hook* state: a middleware that strips
+            # ``tool_calls`` (DeerFlow's token-budget cap) must stop the tool
+            # node from running, exactly as upstream's after_model node does.
+            last = state["messages"][-1] if state.get("messages") else None
             tool_calls = list(getattr(last, "tool_calls", None) or [])
             pending = [c for c in tool_calls if _call_name(c) in tools]
             # Convergence: no runnable tool call → stop the loop by emitting
             # nothing (this is the conditional-edge "go to end" decision).
             if pending:
+                updates = {key: state[key] for key in updates if key in state}
                 return TaskOutcome(update=updates, emits=("model:written",))
             # Loop converged: ``after_agent`` fires once, in reverse order,
             # and its updates join this final model write.
-            updates.update(_run_hook("after_agent", updates, reverse=True))
+            state, after_agent_updates = _run_hook("after_agent", state, reverse=True)
+            updates.update(after_agent_updates)
+            # Every write above was folded into ``state``; emit full committed
+            # values so the graph's raw patch commit is equivalent to the
+            # channel semantics the compatibility layer promises.
+            updates = {key: state[key] for key in updates if key in state}
             return TaskOutcome(update=updates, emits=())
 
         def _tools(state: dict) -> TaskOutcome:
