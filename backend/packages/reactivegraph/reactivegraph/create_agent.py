@@ -7,6 +7,11 @@ Shape of the returned object matches what real callers depend on:
 
 * ``.invoke({"messages": [...]}) -> {"messages": [...]}``;
 * ``.checkpointer`` / ``.store`` attributes (identity pass-through);
+* thread memory: ``invoke``/``stream`` load the head checkpoint for
+  ``configurable.thread_id`` and fold the input through the channel reducers
+  before running, then persist the resulting snapshot; ``get_state`` /
+  ``update_state`` / ``get_state_history`` (and their async twins) address that
+  lineage;
 * ``.config`` carrying ``recursion_limit`` (default 9999, as upstream);
 * ``.builder.schemas`` mapping the resolved state schemas.
 
@@ -24,6 +29,7 @@ not implement raise instead of silently degrading.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -46,6 +52,11 @@ from reactivegraph.middleware import (
 )
 from reactivegraph.runtime import Runtime, get_runtime, runtime_context
 from reactivegraph.state import TrackedStateProxy
+from reactivegraph.thread_state import (
+    NO_CHECKPOINTER_MESSAGE,
+    StateSnapshot,
+    ThreadCheckpointer,
+)
 from reactivegraph.tool_node import ToolNode
 from reactivegraph.types import Command
 
@@ -271,7 +282,14 @@ class AgentGraph:
             awrap_tool_call=_compose_tool_wrappers(self._middleware, "awrap_tool_call"),
         )
         self._system_prompt = system_prompt
-        self.checkpointer = checkpointer
+        # ``checkpointer=False`` is upstream's explicit "no persistence"; it is
+        # treated as absent so state access fails closed with the same message
+        # rather than attempting to drive a bool. ``True`` means "inherit the
+        # parent graph's saver", which a root graph does not have, so it is kept
+        # on the attribute and rejected on use (upstream raises the same
+        # RuntimeError on the first run).
+        self.checkpointer = None if checkpointer is False else checkpointer
+        self._checkpointer_is_inherit = self.checkpointer is True
         self.store = store
         self.name = name
         self.config: dict[str, Any] = {
@@ -294,6 +312,11 @@ class AgentGraph:
         # overrides middleware/base annotations (upstream merge order).
         self.channels = resolve_channels(list(schemas.values()))
         self.builder = _GraphBuilderView(schemas, self.channels)
+        self._threads = (
+            ThreadCheckpointer(self.checkpointer, self.channels)
+            if self.checkpointer is not None and not self._checkpointer_is_inherit
+            else None
+        )
         self._graph = self._compile()
 
     def _apply_channel_writes(self, state: dict, writes: dict[str, Any]) -> dict[str, Any]:
@@ -369,12 +392,20 @@ class AgentGraph:
             return current, {key: current[key] for key in written if key in current}
 
         def _request(state: dict) -> ModelRequest:
-            messages = list(state.get("messages", []))
-            if system_prompt is not None:
-                messages = [SystemMessage(content=system_prompt), *messages]
+            # Upstream keeps the static system prompt in the separate
+            # ``system_message`` field and only flattens it at the model
+            # boundary. Middleware reads and rewrites that field (DeerFlow's
+            # ``SystemMessageCoalescingMiddleware`` merges the durable-context
+            # authority into it), so prepending it to ``messages`` here would
+            # make every such write land on a field nobody consumes.
             request = ModelRequest(
                 model=model,
-                messages=messages,
+                messages=list(state.get("messages", [])),
+                system_message=(
+                    SystemMessage(content=system_prompt)
+                    if system_prompt is not None
+                    else None
+                ),
                 tools=list(tools.values()),
                 state=state,
                 runtime=get_runtime(),
@@ -408,7 +439,13 @@ class AgentGraph:
             request = _request(state)
 
             def _handler(req: ModelRequest) -> ModelResponse:
-                reply = req.model.invoke(list(req.messages))
+                # Mirror upstream's ``_execute_model_sync``: the system message
+                # is flattened at the very last moment, after every
+                # ``wrap_model_call`` middleware has had its say.
+                messages = list(req.messages)
+                if req.system_message:
+                    messages = [req.system_message, *messages]
+                reply = req.model.invoke(messages)
                 return ModelResponse(result=[reply])
 
             handler: Callable[[ModelRequest], Any] = _handler
@@ -551,21 +588,187 @@ class AgentGraph:
 
         return ReactiveGraph.build(build, graph_id=self.name or "create_agent")
 
+    # -- thread state -------------------------------------------------------
+
+    def _reject_inherited_checkpointer(self) -> None:
+        if self._checkpointer_is_inherit:
+            raise RuntimeError(
+                "checkpointer=True cannot be used for root graphs."
+            )
+
+    def _threads_or_raise(self) -> ThreadCheckpointer:
+        self._reject_inherited_checkpointer()
+        if self._threads is None:
+            raise ValueError(NO_CHECKPOINTER_MESSAGE)
+        return self._threads
+
+    def _seed_payload(
+        self, payload: dict[str, Any], head: Any
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Fold the caller's input into the stored thread values.
+
+        The returned payload is the *full* channel state the graph runs on, so
+        last-value channels inherited from earlier turns (``thread_data``,
+        ``summary_text``, …) survive into this run, and reducer channels
+        accumulate instead of restarting from the input.
+        """
+        threads = self._threads_or_raise()
+        stored = threads.load_values(head)
+        if not stored:
+            # First turn on this thread: the input *is* the state, but it still
+            # folds through the reducers so a caller-supplied reducer value is
+            # normalized the same way a stored one would be.
+            folded, written = threads.fold_input({}, payload)
+            return folded, written
+        merged = dict(stored)
+        merged.update({key: value for key, value in payload.items() if key not in stored})
+        folded, written = threads.fold_input(
+            stored, {key: value for key, value in payload.items() if key in stored}
+        )
+        if not written:
+            return merged, []
+        return folded, written
+
+    def _commit_run(
+        self, config: dict | None, head: Any, state: dict[str, Any], written: list[str]
+    ) -> None:
+        """Persist the finished run as the thread's new head checkpoint."""
+        threads = self._threads_or_raise()
+        committed = _public_state(state)
+        # Channels the run touched are re-versioned; inherited ones keep their
+        # version so a resumed lineage stays comparable.
+        touched = written or [key for key in committed if key in self.channels]
+        threads.commit(
+            config,
+            head,
+            committed,
+            written=touched,
+            metadata={"source": "loop", "step": 1, "parents": {}},
+        )
+
     # -- public surface -----------------------------------------------------
 
     def invoke(self, input: Any, config: dict | None = None, **kwargs: Any) -> dict[str, Any]:
+        self._reject_inherited_checkpointer()
         payload = _normalize_input(input)
+        head = None
+        written: list[str] = []
+        if self._threads is not None:
+            head = self._threads.get_head(config)
+            payload, written = self._seed_payload(payload, head)
         with runtime_context(runtime=_resolve_runtime(config, kwargs.get("context"))):
             state = self._graph.invoke("run", payload, config=config)
+        if self._threads is not None:
+            self._commit_run(config, head, state, written)
         return _public_state(state)
 
     async def ainvoke(
         self, input: Any, config: dict | None = None, **kwargs: Any
     ) -> dict[str, Any]:
+        self._reject_inherited_checkpointer()
         payload = _normalize_input(input)
+        head = None
+        written: list[str] = []
+        if self._threads is not None:
+            head = await self._threads.aget_head(config)
+            payload, written = self._seed_payload(payload, head)
         with runtime_context(runtime=_resolve_runtime(config, kwargs.get("context"))):
             state = await self._graph.ainvoke("run", payload)
+        if self._threads is not None:
+            await self._threads.acommit(
+                config,
+                head,
+                _public_state(state),
+                written=written or [key for key in state if key in self.channels],
+                metadata={"source": "loop", "step": 1, "parents": {}},
+            )
         return _public_state(state)
+
+    # -- checkpoint state surface ------------------------------------------
+
+    def get_state(self, config: dict | None = None, **kwargs: Any) -> StateSnapshot:
+        """The thread's head snapshot (upstream ``CompiledStateGraph.get_state``)."""
+        threads = self._threads_or_raise()
+        return threads.snapshot(threads.get_head(config), config)
+
+    async def aget_state(self, config: dict | None = None, **kwargs: Any) -> StateSnapshot:
+        threads = self._threads_or_raise()
+        return threads.snapshot(await threads.aget_head(config), config)
+
+    def get_state_history(
+        self,
+        config: dict | None = None,
+        *,
+        before: dict | None = None,
+        limit: int | None = None,
+        filter: dict | None = None,
+        **kwargs: Any,
+    ) -> Iterator[StateSnapshot]:
+        """The thread's checkpoint lineage, newest first."""
+        threads = self._threads_or_raise()
+        return threads.history(config, before=before, limit=limit, filter=filter)
+
+    def aget_state_history(
+        self,
+        config: dict | None = None,
+        *,
+        before: dict | None = None,
+        limit: int | None = None,
+        filter: dict | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[StateSnapshot]:
+        threads = self._threads_or_raise()
+        return threads.ahistory(config, before=before, limit=limit, filter=filter)
+
+    def update_state(
+        self,
+        config: dict | None,
+        values: dict[str, Any] | Any,
+        as_node: str | None = None,
+        task_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Apply *values* to the thread through the channel reducers.
+
+        DeerFlow's compaction and rollback paths write here with
+        ``as_node="manual_compaction"``/``"rollback_restore"``; those names
+        address the *mutation* graph it builds for the write, not this agent
+        graph, so ``as_node`` is accepted and recorded as provenance rather than
+        validated against this graph's two nodes.
+        """
+        threads = self._threads_or_raise()
+        head = threads.get_head(config)
+        folded, written = threads.fold_input(
+            threads.load_values(head), _adopt_messages(dict(values or {}))
+        )
+        return threads.commit(
+            config,
+            head,
+            folded,
+            written=written,
+            metadata=_update_metadata(as_node),
+            task_id=task_id,
+        )
+
+    async def aupdate_state(
+        self,
+        config: dict | None,
+        values: dict[str, Any] | Any,
+        as_node: str | None = None,
+        task_id: str | None = None,
+    ) -> dict[str, Any]:
+        threads = self._threads_or_raise()
+        head = await threads.aget_head(config)
+        folded, written = threads.fold_input(
+            threads.load_values(head), _adopt_messages(dict(values or {}))
+        )
+        return await threads.acommit(
+            config,
+            head,
+            folded,
+            written=written,
+            metadata=_update_metadata(as_node),
+            task_id=task_id,
+        )
 
     def stream(
         self,
@@ -590,6 +793,7 @@ class AgentGraph:
         Modes we cannot honor raise :class:`UnsupportedStreamModeError`
         instead of silently degrading.
         """
+        self._reject_inherited_checkpointer()
         modes, as_list = _normalize_stream_modes(stream_mode)
         payload = _normalize_input(input)
         runtime = _resolve_runtime(config, kwargs.get("context"))
@@ -609,6 +813,7 @@ class AgentGraph:
         ``context`` is accepted for call-site compatibility; it is threaded
         into the run-scoped :class:`Runtime` so middleware/tools can read it.
         """
+        self._reject_inherited_checkpointer()
         modes, as_list = _normalize_stream_modes(stream_mode)
         payload = _normalize_input(input)
         async for item in self._astream_modes(
@@ -721,6 +926,14 @@ def _normalize_stream_modes(
         raise UnsupportedStreamModeError(unsupported)
     # Upstream de-duplicates while preserving first-seen order.
     return tuple(dict.fromkeys(normalized)), as_list
+
+
+def _update_metadata(as_node: str | None) -> dict[str, Any]:
+    """Upstream's ``update_state`` provenance metadata, plus the write node."""
+    metadata: dict[str, Any] = {"source": "update", "step": 1, "parents": {}}
+    if as_node:
+        metadata["as_node"] = as_node
+    return metadata
 
 
 def _public_state(state: Any) -> dict[str, Any]:
@@ -1013,9 +1226,25 @@ def _normalize_input(input: Any) -> dict[str, Any]:
     if isinstance(input, dict):
         messages = input.get("messages")
         if messages is not None:
-            return {**input, "messages": list(convert_to_messages(messages))}
+            return {**input, "messages": _adopt_input_messages(messages)}
         return dict(input)
-    return {"messages": list(convert_to_messages(input))}
+    return {"messages": _adopt_input_messages(input)}
+
+
+def _adopt_input_messages(messages: Any) -> list[Any]:
+    """Coerce *messages* and assign ids, exactly as LangGraph initializes state.
+
+    ``add_messages`` treats a same-id write as a replacement. Upstream assigns
+    the missing ids while building the input channel — *before* the first node
+    runs — so a middleware that rebuilds the last message under its existing id
+    replaces it instead of appending a duplicate. Assigning the ids only inside
+    the reducer is too late: the middleware has already read ``None``.
+    """
+    adopted = list(convert_to_messages(messages))
+    for message in adopted:
+        if getattr(message, "id", None) is None:
+            message.id = str(uuid.uuid4())
+    return adopted
 
 
 def _reject_unimplemented(kwargs: dict[str, Any]) -> None:
