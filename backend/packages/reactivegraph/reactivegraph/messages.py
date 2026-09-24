@@ -58,6 +58,7 @@ __all__ = (
     "merge_obj",
     "message_chunk_to_message",
     "message_to_dict",
+    "message_to_foreign_dict",
     "messages_from_dict",
     "messages_to_dict",
     "subtract_usage",
@@ -1238,13 +1239,70 @@ def _convert_to_message(message: MessageLikeRepresentation) -> BaseMessage:
             raise ValueError(msg) from error
         return _create_message_from_message_type(msg_type, msg_content, **kwargs)
 
+    # A foreign message object: a host's own class hierarchy (e.g.
+    # ``langchain_core.messages``) is disjoint from ours and LangChain blocks
+    # virtual-subclassing of ``BaseMessage``, so identity checks can never
+    # bridge the two. Convert structurally instead: any object carrying the
+    # upstream ``type`` + ``model_dump()`` surface is rebuilt as *our* class,
+    # which is what the engine's ``isinstance``-based reducers require.
+    dumped = _dump_foreign_message(message)
+    if dumped is not None:
+        return _convert_to_message(dumped)
+
     msg = f"Unsupported message type: {type(message)}"
     raise NotImplementedError(msg)
+
+
+def _dump_foreign_message(message: Any) -> dict[str, Any] | None:
+    """Return the upstream flat shape for a foreign message, else ``None``.
+
+    Fail closed: an object without a usable ``type`` *and* a dict-returning
+    ``model_dump()`` is not treated as a message. Returning ``None`` keeps the
+    original ``NotImplementedError`` (and its message) intact for real
+    non-message values.
+    """
+    if isinstance(message, BaseMessage):
+        return None
+    message_type = getattr(message, "type", None)
+    if not isinstance(message_type, str) or not message_type:
+        return None
+    dump = getattr(message, "model_dump", None)
+    if not callable(dump):
+        return None
+    try:
+        dumped = dump()
+    except Exception:  # noqa: BLE001 - a failing dump is not a message
+        return None
+    if not isinstance(dumped, dict):
+        return None
+    if dumped.get("type", message_type) != message_type:
+        return None
+    return {"type": message_type, **dumped}
 
 
 def message_to_dict(message: BaseMessage) -> dict[str, Any]:
     """Wrap a message dump in the upstream ``{"type", "data"}`` envelope."""
     return {"type": message.type, "data": message.model_dump()}
+
+
+def message_to_foreign_dict(message: BaseMessage) -> dict[str, Any]:
+    """Flatten one of our messages into the shape a foreign host accepts.
+
+    ``langchain_core.messages.convert_to_messages`` reads a dict carrying
+    ``type`` plus the message's own fields (not the ``{"type", "data"}``
+    envelope). Chat models coerce that flat dict back into *their* class, so
+    this is the outbound half of the boundary bridge.
+    """
+    if isinstance(message, BaseMessage):
+        return {"type": message.type, **message.model_dump()}
+    # Host middleware splices *its own* message objects into a request (e.g.
+    # DeerFlow's DanglingToolCallMiddleware). Those are already in the target
+    # shape, so re-encode them rather than rejecting the request.
+    dumped = _dump_foreign_message(message)
+    if dumped is not None:
+        return dumped
+    msg = f"message_to_foreign_dict expects a message, got {type(message)}"
+    raise TypeError(msg)
 
 
 def messages_to_dict(messages: Sequence[BaseMessage]) -> list[dict[str, Any]]:

@@ -46,6 +46,7 @@ from reactivegraph.messages import (
     RemoveMessage,
     ToolCall,
     ToolMessage,
+    _dump_foreign_message,
     convert_to_messages,
 )
 from reactivegraph.middleware import ToolCallRequest, ToolRuntime
@@ -293,6 +294,7 @@ class _InjectedArgs:
     runtime: str | None
     all_injected_keys: set[str]
     _optional_state_args: set[str]
+    runtime_type: Any = None
 
 
 class ToolNode:
@@ -317,19 +319,19 @@ class ToolNode:
     ) -> None:
         self.name = name
         self.tags = tags
-        self._tools_by_name: dict[str, BaseTool] = {}
+        self._tools_by_name: dict[str, Any] = {}
         self._injected_args: dict[str, _InjectedArgs] = {}
         self._handle_tool_errors = handle_tool_errors
         self._messages_key = messages_key
         self._wrap_tool_call = wrap_tool_call
         self._awrap_tool_call = awrap_tool_call
         for item in tools:
-            tool_ = item if isinstance(item, BaseTool) else create_tool(item)
+            tool_ = item if _is_tool_like(item) else create_tool(item)
             self._tools_by_name[tool_.name] = tool_
             self._injected_args[tool_.name] = _get_all_injected_args(tool_)
 
     @property
-    def tools_by_name(self) -> dict[str, BaseTool]:
+    def tools_by_name(self) -> dict[str, Any]:
         """Mapping from tool name to tool instance."""
         return self._tools_by_name
 
@@ -788,7 +790,9 @@ class ToolNode:
             injected_args[injected.store] = tool_runtime.store
 
         if injected.runtime:
-            injected_args[injected.runtime] = tool_runtime
+            injected_args[injected.runtime] = _coerce_tool_runtime(
+                tool_runtime, injected.runtime_type
+            )
 
         stripped_args = {
             key: value
@@ -806,12 +810,27 @@ class ToolNode:
     ) -> ToolMessage | Command | list[Command | ToolMessage]:
         if isinstance(response, Command):
             return self._validate_tool_command(response, tool_call, input_type)
+        if _is_foreign_command(response):
+            command = _adopt_foreign_command(response)
+            return self._validate_tool_command(command, tool_call, input_type)
         if isinstance(response, ToolMessage):
             response.content = cast("str | list", msg_content_output(response.content))
             return response
+        foreign_message = _adopt_foreign_tool_message(response)
+        if foreign_message is not None:
+            foreign_message.content = cast(
+                "str | list", msg_content_output(foreign_message.content)
+            )
+            return foreign_message
         if isinstance(response, list):
-            if all(isinstance(item, (Command, ToolMessage)) for item in response):
-                return self._validate_tool_command_list(response, tool_call, input_type)
+            adopted = [
+                _adopt_foreign_command(item)
+                if _is_foreign_command(item)
+                else _adopt_foreign_tool_message(item) or item
+                for item in response
+            ]
+            if all(isinstance(item, (Command, ToolMessage)) for item in adopted):
+                return self._validate_tool_command_list(adopted, tool_call, input_type)
             msg = (
                 f"Tool {tool_call['name']} returned a list with invalid element "
                 "types: expected all Command or ToolMessage"
@@ -999,6 +1018,100 @@ def _get_injection_from_type(
     return None
 
 
+def _is_tool_like(item: Any) -> bool:
+    """Whether ``item`` is already a runnable tool.
+
+    Hosts define tools with *their* engine's decorator (DeerFlow has 65
+    ``@tool`` definitions), so the two class hierarchies can never meet.
+    Structural acceptance keys on the two members ``ToolNode`` actually uses:
+    a string ``name`` and a callable ``invoke``. Anything else still goes
+    through :func:`create_tool`, preserving the raw-callable contract.
+    """
+    return isinstance(item, BaseTool) or (
+        callable(getattr(item, "invoke", None))
+        and isinstance(getattr(item, "name", None), str)
+    )
+
+
+def _coerce_tool_runtime(runtime: ToolRuntime, declared: Any) -> Any:
+    """Present the active runtime as the type a host tool declared.
+
+    LangChain validates injected ``runtime`` arguments against the tool's own
+    annotation, so handing it our dataclass raises ``ValidationError``. When
+    the declared type is ours (or unknown) pass the runtime straight through;
+    otherwise rebuild the declared dataclass from the shared field names.
+    """
+    if declared is None or declared is ToolRuntime or not isinstance(declared, type):
+        return runtime
+    if isinstance(runtime, declared):
+        return runtime
+    fields = {
+        name: getattr(runtime, name, None)
+        for name in (
+            "state",
+            "context",
+            "config",
+            "stream_writer",
+            "tool_call_id",
+            "store",
+            "tools",
+            "execution_info",
+            "server_info",
+        )
+    }
+    return declared(**fields)
+
+
+def _is_foreign_command(value: Any) -> bool:
+    """Structural check for a host ``Command`` (never import theirs)."""
+    return (
+        not isinstance(value, Command)
+        and hasattr(value, "update")
+        and hasattr(value, "goto")
+        and hasattr(value, "graph")
+        and hasattr(value, "resume")
+    )
+
+
+def _adopt_foreign_command(value: Any) -> Any:
+    """Rebuild a host ``Command`` as ours, converting nested messages."""
+    if isinstance(value, Command):
+        return value
+    update = getattr(value, "update", None)
+    if isinstance(update, dict):
+        update = {
+            key: (
+                convert_to_messages(item)
+                if key == "messages" and isinstance(item, list)
+                else item
+            )
+            for key, item in update.items()
+        }
+    elif isinstance(update, list):
+        update = convert_to_messages(update)
+    return Command(
+        graph=getattr(value, "graph", None),
+        update=update,
+        resume=getattr(value, "resume", None),
+        goto=getattr(value, "goto", ()),
+    )
+
+
+def _adopt_foreign_tool_message(value: Any) -> ToolMessage | None:
+    """Rebuild a host ``ToolMessage`` as ours, or ``None`` if it is not one."""
+    if isinstance(value, ToolMessage):
+        return value
+    dumped = _dump_foreign_message(value)
+    if dumped is None or dumped.get("type") != "tool":
+        return None
+    kwargs = {
+        key: item
+        for key, item in dumped.items()
+        if key in {"content", "artifact", "status", "name", "id", "tool_call_id"}
+    }
+    return ToolMessage(**kwargs)
+
+
 def _get_all_injected_args(tool: BaseTool) -> _InjectedArgs:
     """Discover state, store, and runtime injection requirements for a tool."""
     full_schema = tool.get_input_schema()
@@ -1012,6 +1125,7 @@ def _get_all_injected_args(tool: BaseTool) -> _InjectedArgs:
     state_args: dict[str, str | None] = {}
     store_arg: str | None = None
     runtime_arg: str | None = None
+    runtime_type: Any = None
     all_injected_keys: set[str] = set()
     _optional_state_args: set[str] = set()
 
@@ -1021,6 +1135,7 @@ def _get_all_injected_args(tool: BaseTool) -> _InjectedArgs:
 
         if name == "runtime":
             runtime_arg = name
+            runtime_type = type_
 
         if state_inj := _get_injection_from_type(type_, InjectedState):
             if isinstance(state_inj, InjectedState) and state_inj.field:
@@ -1036,6 +1151,7 @@ def _get_all_injected_args(tool: BaseTool) -> _InjectedArgs:
 
         if _get_injection_from_type(type_, ToolRuntime):
             runtime_arg = name
+            runtime_type = type_
 
     return _InjectedArgs(
         state=state_args,
@@ -1043,6 +1159,7 @@ def _get_all_injected_args(tool: BaseTool) -> _InjectedArgs:
         runtime=runtime_arg,
         all_injected_keys=all_injected_keys,
         _optional_state_args=_optional_state_args,
+        runtime_type=runtime_type,
     )
 
 

@@ -33,8 +33,8 @@ from reactivegraph.messages import (
     AIMessage,
     AnyMessage,
     SystemMessage,
-    ToolMessage,
     convert_to_messages,
+    message_to_foreign_dict,
 )
 from reactivegraph.middleware import (
     AgentMiddleware,
@@ -43,6 +43,8 @@ from reactivegraph.middleware import (
     ModelRequest,
     ModelResponse,
 )
+from reactivegraph.tool_node import ToolNode
+from reactivegraph.types import Command
 
 __all__ = ("AgentGraph", "create_agent")
 
@@ -73,7 +75,28 @@ class _BoundModel:
 
     def invoke(self, messages: list[AnyMessage]) -> AIMessage:
         bound = self._bound if self._bound is not None else self.bind()
-        return bound.invoke(messages)
+        # The model belongs to the host's world (e.g. a real LangChain chat
+        # model), and its message coercion rejects our classes outright.
+        # ``convert_to_messages`` accepts the flat ``{type, **dump}`` shape,
+        # and adopting the reply keeps our reducers' isinstance checks valid.
+        payload = [message_to_foreign_dict(message) for message in messages]
+        return convert_to_messages([bound.invoke(payload)])[0]
+
+
+def _adopt_messages(update: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild any ``messages`` value in *update* as our own message classes.
+
+    Middleware lives in the host's world and may return its own message
+    objects. The reducer's ``isinstance`` checks (RemoveMessage handling,
+    chunk promotion) only see our classes, so adopt at the boundary or those
+    messages silently bypass the reducer.
+    """
+    messages = update.get("messages")
+    if messages is None:
+        return update
+    if isinstance(messages, (str, bytes)) or not isinstance(messages, Iterable):
+        return update
+    return {**update, "messages": list(convert_to_messages(messages))}
 
 
 def _tool_name(tool: Any) -> str:
@@ -199,6 +222,15 @@ class AgentGraph:
                     seen_tool_names.add(_tool_name(extra))
         self._model = _BoundModel(model, merged_tools)
         self._tools = {_tool_name(t): _coerce_tool(t) for t in merged_tools}
+        # ``ToolNode`` owns tool execution: validation errors become error
+        # ``ToolMessage``s, real tool exceptions propagate, ``Command`` results
+        # route, and ``wrap_tool_call`` middleware composes (first outermost,
+        # matching upstream's ``_chain_tool_call_wrappers``).
+        self._tool_node = ToolNode(
+            merged_tools,
+            wrap_tool_call=_compose_tool_wrappers(self._middleware, "wrap_tool_call"),
+            awrap_tool_call=_compose_tool_wrappers(self._middleware, "awrap_tool_call"),
+        )
         self._system_prompt = system_prompt
         self.checkpointer = checkpointer
         self.store = store
@@ -226,6 +258,7 @@ class AgentGraph:
 
     def _compile(self) -> ReactiveGraph:
         tools = self._tools
+        tool_node = self._tool_node
         model = self._model
         recursion_limit = self.config["recursion_limit"]
         system_prompt = self._system_prompt
@@ -240,7 +273,7 @@ class AgentGraph:
                     continue
                 result = hook(dict(state), None)
                 if isinstance(result, dict):
-                    updates.update(result)
+                    updates.update(_adopt_messages(result))
             return updates
 
         def _request(state: dict) -> ModelRequest:
@@ -274,14 +307,24 @@ class AgentGraph:
                 return ModelResponse(result=[reply])
 
             handler: Callable[[ModelRequest], Any] = _handler
-            # Upstream only composes middleware that *override*
-            # ``wrap_model_call``; the base implementation raises the
-            # "sync not available" error and must not be invoked as a
-            # passthrough. Reverse order makes the first middleware outermost.
-            base_wrap = AgentMiddleware.wrap_model_call
+            # Upstream composes a middleware into the chain when *either* its
+            # sync or async ``wrap_model_call`` is overridden:
+            #
+            #     m.__class__.wrap_model_call is not AgentMiddleware.wrap_model_call
+            #     or m.__class__.awrap_model_call is not AgentMiddleware.awrap_model_call
+            #
+            # The ``or`` matters: an async-only middleware still joins the sync
+            # chain, so its inherited sync stub raises instead of the
+            # middleware being silently dropped. Host middleware subclasses a
+            # *different* base class, so identity cannot cross the boundary and
+            # the stub is recognised structurally. Reverse order makes the
+            # first middleware outermost.
             for mw in reversed(middleware):
-                wrapper = type(mw).wrap_model_call
-                if wrapper is base_wrap:
+                sync_wrap = _middleware_method(mw, "wrap_model_call")
+                async_wrap = _middleware_method(mw, "awrap_model_call")
+                if _is_unimplemented_stub(sync_wrap, "wrap_model_call") and (
+                    _is_unimplemented_stub(async_wrap, "awrap_model_call")
+                ):
                     continue
                 inner = handler
                 bound = mw.wrap_model_call
@@ -324,26 +367,45 @@ class AgentGraph:
             return TaskOutcome(update=updates, emits=())
 
         def _tools(state: dict) -> TaskOutcome:
+            # Execution is delegated to ``ToolNode``, which already carries the
+            # ported upstream semantics: argument validation becomes an error
+            # ``ToolMessage``, every other tool exception propagates, tools may
+            # return ``Command`` (DeerFlow ships 27 such tools), and
+            # ``wrap_tool_call`` middleware participates.
             messages = list(state.get("messages", []))
-            last = messages[-1] if messages else None
-            pending = [
-                c for c in (getattr(last, "tool_calls", None) or []) if _call_name(c) in tools
-            ]
-            results: list[ToolMessage] = []
-            for call in pending:
-                name = _call_name(call)
-                tool = tools[name]
-                try:
-                    output = tool.invoke(_call_args(call))
-                    content = output if isinstance(output, str) else str(output)
-                except Exception as exc:  # noqa: BLE001 - surfaced as a tool message
-                    content = f"Error: {type(exc).__name__}: {exc}"
-                results.append(
-                    ToolMessage(content=content, tool_call_id=_call_id(call), name=name)
-                )
-            updates = {"messages": [*messages, *results]}
-            # A tool result always hands control back to the model; the model
-            # decides whether the loop continues.
+            result = tool_node.invoke({"messages": messages})
+
+            # ``ToolNode`` returns either ``{"messages": [...]}`` or, when a
+            # tool returned ``Command``, a list mixing commands and message
+            # dicts. Command updates must reach the graph scheduler, so they
+            # are lifted into the task's own update instead of being dropped.
+            updates: dict[str, Any] = {}
+            produced: list[Any] = []
+            command_goto: list[Any] = []
+            if isinstance(result, dict):
+                produced = list(result.get("messages", []))
+            elif isinstance(result, list):
+                for item in result:
+                    if isinstance(item, Command):
+                        if isinstance(item.update, dict):
+                            for key, value in item.update.items():
+                                if key == "messages":
+                                    produced.extend(list(value or ()))
+                                else:
+                                    updates[key] = value
+                        if item.goto:
+                            jumps = item.goto if isinstance(item.goto, list) else [item.goto]
+                            command_goto.extend(jumps)
+                    elif isinstance(item, dict):
+                        produced.extend(list(item.get("messages", [])))
+                    else:
+                        produced.append(item)
+            updates["messages"] = [*messages, *produced]
+
+            # A tool result always hands control back to the model unless a
+            # tool explicitly routed to END (DeerFlow's sandbox approval does).
+            if any(_resolve_jump(jump) == "end" for jump in command_goto):
+                return TaskOutcome(update=updates, emits=())
             return TaskOutcome(update=updates, emits=("tools:written",))
 
         def build(b: GraphBuilder) -> None:
@@ -684,6 +746,72 @@ def _wrap(mode: str, chunk: Any, as_list: bool) -> Any:
 def _looks_like_model_message(delta: list[Any]) -> bool:
     """Heuristic used only when the native frame carries no task identity."""
     return any(m.__class__.__name__.startswith("AI") for m in delta)
+
+
+def _compose_tool_wrappers(middleware: Sequence[Any], method: str) -> Any:
+    """Compose ``wrap_tool_call``/``awrap_tool_call`` middleware, outermost first.
+
+    Mirrors upstream's participation rule: a middleware joins the chain when
+    either its sync or async tool wrapper is overridden, so an async-only
+    middleware still raises in a sync run instead of being silently dropped.
+    """
+    handlers = []
+    for mw in middleware:
+        sync_wrap = _middleware_method(mw, "wrap_tool_call")
+        async_wrap = _middleware_method(mw, "awrap_tool_call")
+        if _is_unimplemented_stub(sync_wrap, "wrap_tool_call") and (
+            _is_unimplemented_stub(async_wrap, "awrap_tool_call")
+        ):
+            continue
+        handlers.append(getattr(mw, method))
+
+    if not handlers:
+        return None
+
+    def composed(request: Any, handler: Any) -> Any:
+        inner = handler
+        for wrapper in reversed(handlers):
+            nxt = inner
+
+            def call(req: Any, _w: Any = wrapper, _n: Any = nxt) -> Any:
+                return _w(req, _n)
+
+            inner = call
+        return inner(request)
+
+    return composed
+
+
+def _is_unimplemented_stub(fn: Any, method: str) -> bool:
+    """Return whether *fn* is an engine base-class stub, not a real override.
+
+    Upstream decides participation by identity against *its own*
+    ``AgentMiddleware``. Host middleware subclasses a different base class, so
+    identity cannot cross the boundary; the stub is recognised structurally
+    instead — a function that only raises ``NotImplementedError`` carrying the
+    canonical "``<method>`` is not available" message.
+    """
+    code = getattr(fn, "__code__", None)
+    if code is None or "NotImplementedError" not in code.co_names:
+        return False
+    marker = f"implementation of {method} is not available"
+    return any(isinstance(const, str) and marker in const for const in code.co_consts)
+
+
+def _middleware_method(mw: Any, method: str) -> Any:
+    """Resolve a middleware hook, failing closed for duck-typed objects.
+
+    Upstream rejects non-``AgentMiddleware`` objects with a bare
+    ``AttributeError``. Keep the exception type (observable contract) but say
+    what to do about it.
+    """
+    fn = getattr(type(mw), method, None)
+    if fn is None:
+        raise AttributeError(
+            f"{type(mw).__name__!r} middleware does not define {method!r}; "
+            f"subclass reactivegraph.middleware.AgentMiddleware to implement it."
+        )
+    return fn
 
 
 def _assert_no_duplicate_middleware(middleware: Sequence[Any]) -> None:
