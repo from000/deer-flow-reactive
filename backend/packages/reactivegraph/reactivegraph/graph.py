@@ -42,6 +42,23 @@ class GraphBuildError(Exception):
 
 
 @dataclass(frozen=True)
+class TaskOutcome:
+    """A task result that also controls event routing.
+
+    ``update`` is the state patch (same shapes ``TaskDef.fn`` may return);
+    ``emits`` overrides the implicit ``<task_id>:written`` follow-up event.
+    ``emits=()`` therefore stops this branch — that is how a model task ends an
+    otherwise-cyclic ``model -> tools -> model`` loop. ``receipt`` records an
+    idempotency receipt for effect tasks (same as the legacy
+    ``(update, receipt)`` tuple).
+    """
+
+    update: Any = field(default_factory=dict)
+    emits: tuple[str, ...] | None = None
+    receipt: Any = None
+
+
+@dataclass(frozen=True)
 class TaskDef:
     id: str
     kind: str = "effect"  # "pure" | "effect" | "opaque"
@@ -52,6 +69,7 @@ class TaskDef:
     writes: tuple[str, ...] = ()
     retry: dict | None = None
     scope: str | None = None
+    max_runs: int = 1
     estimated_tokens_in: int = 0
     estimated_tokens_out: int = 0
     estimated_usd: float = 0.0
@@ -135,10 +153,15 @@ class GraphBuilder:
         writes: tuple[str, ...] = (),
         retry: dict | None = None,
         scope: str | None = None,
+        max_runs: int = 1,
         estimated_tokens_in: int = 0,
         estimated_tokens_out: int = 0,
         estimated_usd: float = 0.0,
     ) -> GraphBuilder:
+        if not isinstance(max_runs, int) or isinstance(max_runs, bool) or max_runs < 1:
+            raise GraphBuildError(
+                f"task {task_id}: max_runs must be an integer >= 1 (got {max_runs!r})"
+            )
         self._def.task(
             TaskDef(
                 id=task_id,
@@ -150,6 +173,7 @@ class GraphBuilder:
                 writes=writes,
                 retry=retry,
                 scope=scope,
+                max_runs=max_runs,
                 estimated_tokens_in=estimated_tokens_in,
                 estimated_tokens_out=estimated_tokens_out,
                 estimated_usd=estimated_usd,
@@ -284,6 +308,7 @@ class ReactiveGraph:
                 task["retry"] = td.retry
             if td.scope:
                 task["scope"] = td.scope
+            task["maxRuns"] = td.max_runs
             tasks.append(task)
             for ev in td.on:
                 routes.append({"event": ev, "taskId": td.id})
@@ -303,6 +328,20 @@ class ReactiveGraph:
                 for cd in self.definition.computeds
             ],
         }
+
+    @staticmethod
+    def _split_task_result(raw: Any) -> tuple[Any, Any, list[str] | None]:
+        """Normalize a task return value into ``(update, receipt, emits)``.
+
+        ``emits is None`` means "no explicit routing" — the Driver then uses the
+        implicit ``<task_id>:written`` follow-up event. An empty list is a
+        deliberate loop stop and must not be collapsed into ``None``.
+        """
+        if isinstance(raw, TaskOutcome):
+            emits = None if raw.emits is None else [str(e) for e in raw.emits]
+            return raw.update, raw.receipt, emits
+        update, receipt = ReactiveGraph._split_update_and_receipt(raw)
+        return update, receipt, None
 
     @staticmethod
     def _split_update_and_receipt(raw: Any) -> tuple[Any, Any]:
@@ -339,7 +378,7 @@ class ReactiveGraph:
             # ({patches, reads, writes, return_value, external_receipts}).
             if isinstance(raw, Iterator) or hasattr(raw, "__anext__"):
                 return raw  # type: ignore[return-value]
-            result, receipt = ReactiveGraph._split_update_and_receipt(raw)
+            result, receipt, emits = ReactiveGraph._split_task_result(raw)
             if isinstance(result, TrackedStateProxy):
                 patches = [dict(p, taskId=td.id) for p in result.patches()]
                 writes = sorted({str(p["path"][0]) for p in patches}) if patches else []
@@ -351,13 +390,16 @@ class ReactiveGraph:
                 ]
             else:
                 writes, patches = [], []
-            return {
+            payload = {
                 "reads": model.read_paths(),
                 "patches": patches,
                 "writes": writes,
                 "return_value": result,
                 "external_receipts": [{"receipt": receipt}] if receipt is not None else [],
             }
+            if emits is not None:
+                payload["emits"] = emits
+            return payload
 
         return callback
 
@@ -423,15 +465,19 @@ class ReactiveGraph:
                             "payload": {"state": copy.deepcopy(state)},
                         }
                     )
-                seen: set[tuple[str, str]] = set()
+                # 重入预算：每个任务每次 invoke 至多执行 max_runs 次（默认 1，
+                # 与 Driver 的 at-most-once 环截断一致）。显式声明 max_runs>1
+                # 的任务允许在事件环中重入（model→tools→model）。
+                runs: dict[str, int] = {}
                 pending: deque[str] = deque([event])
                 guard = 0
                 while pending:
                     ev = pending.popleft()
                     for tid in self.definition.route_for(ev):
-                        if (ev, tid) in seen:
+                        budget = self.definition._task_by_id[tid].max_runs
+                        if runs.get(tid, 0) >= max(1, budget):
                             continue
-                        seen.add((ev, tid))
+                        runs[tid] = runs.get(tid, 0) + 1
                         guard += 1
                         if guard > 10000:
                             raise GraphBuildError(
@@ -442,6 +488,7 @@ class ReactiveGraph:
                         if not td.fn:
                             continue
                         update: Any = None
+                        emits: list[str] | None = None
                         self._trace.append({"event": f"task:{tid}:start", "task": tid})
                         if on_event is not None:
                             on_event({"eventType": "task_start", "task": tid})
@@ -455,7 +502,7 @@ class ReactiveGraph:
                                     if self._skip_callback is not None:
                                         self._skip_callback(tid)
                                 else:
-                                    update, _ = ReactiveGraph._split_update_and_receipt(
+                                    update, _, emits = ReactiveGraph._split_task_result(
                                         td.fn(dict(state)) or {}
                                     )
                                     if isinstance(update, dict) and fp is not None:
@@ -464,7 +511,7 @@ class ReactiveGraph:
                                             copy.deepcopy(update),
                                         )
                             else:
-                                update, _ = ReactiveGraph._split_update_and_receipt(
+                                update, _, emits = ReactiveGraph._split_task_result(
                                     td.fn(dict(state)) or {}
                                 )
                             if isinstance(update, dict):
@@ -497,8 +544,12 @@ class ReactiveGraph:
                                     "writes": dict(update) if isinstance(update, dict) else {},
                                 }
                             )
-                        # 约定事件：任务写入后触发下游订阅。
-                        pending.append(f"{tid}:written")
+                        # 约定事件：任务写入后触发下游订阅；任务可用
+                        # TaskOutcome.emits 覆盖（含空元组 = 终止本分支）。
+                        if emits is None:
+                            pending.append(f"{tid}:written")
+                        else:
+                            pending.extend(emits)
                 for cd in self.definition.computeds:
                     previous_hash = cd._cache.get("hash")
                     current_hash = cd._read_hash(state)

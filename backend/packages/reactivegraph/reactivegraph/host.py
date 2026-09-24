@@ -368,6 +368,10 @@ class DriverHost:
                 "return_value": value.get("return_value"),
                 "external_receipts": value.get("external_receipts", []),
             }
+            # 显式 follow-up 事件（RGP/1 §6 扩展）：缺失 = 隐式
+            # `<task_id>:written`；`[]` = 终止本分支（循环收敛）。
+            if "emits" in value:
+                payload["emits"] = value["emits"]
         else:
             payload = {
                 "reads": [],
