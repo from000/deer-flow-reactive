@@ -980,7 +980,16 @@ class AIMessageChunk(AIMessage, BaseMessageChunk):
         return self
 
 
-class ToolMessage(BaseMessage):
+class ToolOutputMixin:
+    """Marker for objects a tool may return directly.
+
+    When a tool is invoked with a model tool call and returns an object that is
+    not a ``ToolOutputMixin``, the runtime wraps the normalized result in a
+    ``ToolMessage``. Returning a ``ToolMessage`` directly bypasses that wrap.
+    """
+
+
+class ToolMessage(BaseMessage, ToolOutputMixin):
     """Result of a tool call."""
 
     type: Literal["tool"] = "tool"

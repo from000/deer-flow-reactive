@@ -393,6 +393,10 @@ class _ToolCallRequestOverrides(TypedDict, total=False):
     state: Any
 
 
+class _DirectlyInjectedToolArg:
+    """Base marker for tool arguments injected directly by type annotation."""
+
+
 @dataclass
 class ToolCallRequest:
     """A tool call plus the state/runtime needed to execute it."""
@@ -426,7 +430,7 @@ ToolCallWrapper = Callable[
 
 
 @dataclass
-class ToolRuntime(Generic[ContextT, StateT]):
+class ToolRuntime(_DirectlyInjectedToolArg, Generic[ContextT, StateT]):
     """Runtime context injected into a tool call.
 
     It intentionally carries no LangChain types: the engine fills these fields

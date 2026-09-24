@@ -131,6 +131,18 @@ from reactivegraph.store import (
     get_store,
     reset_store,
 )
+from reactivegraph.tools import (
+    BaseTool,
+    InjectedToolArg,
+    InjectedToolCallId,
+    SchemaAnnotationError,
+    StructuredTool,
+    ToolException,
+    convert_to_openai_function,
+    convert_to_openai_tool,
+    create_schema_from_function,
+    tool,
+)
 from reactivegraph.types import Checkpointer, Command, Interrupt, Overwrite, Send
 
 __version__ = "0.1.0"
@@ -230,6 +242,16 @@ __all__ = (
     "hook_config",
     "wrap_model_call",
     "wrap_tool_call",
+    "BaseTool",
+    "StructuredTool",
+    "ToolException",
+    "SchemaAnnotationError",
+    "InjectedToolArg",
+    "InjectedToolCallId",
+    "create_schema_from_function",
+    "convert_to_openai_function",
+    "convert_to_openai_tool",
+    "tool",
     "CheckpointStore",
     "CheckpointTuple",
     "MemoryCheckpointSaver",
