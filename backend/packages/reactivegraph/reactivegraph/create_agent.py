@@ -43,6 +43,7 @@ from reactivegraph.middleware import (
     ModelRequest,
     ModelResponse,
 )
+from reactivegraph.runtime import Runtime, get_runtime, runtime_context
 from reactivegraph.tool_node import ToolNode
 from reactivegraph.types import Command
 
@@ -267,11 +268,12 @@ class AgentGraph:
         def _run_hook(name: str, state: dict, reverse: bool = False) -> dict:
             updates: dict[str, Any] = {}
             items = list(reversed(middleware)) if reverse else list(middleware)
+            runtime = get_runtime()
             for mw in items:
                 hook = getattr(mw, name, None)
                 if hook is None:
                     continue
-                result = hook(dict(state), None)
+                result = hook(dict(state), runtime)
                 if isinstance(result, dict):
                     updates.update(_adopt_messages(result))
             return updates
@@ -280,7 +282,13 @@ class AgentGraph:
             messages = list(state.get("messages", []))
             if system_prompt is not None:
                 messages = [SystemMessage(content=system_prompt), *messages]
-            request = ModelRequest(model=model, messages=messages, tools=list(tools.values()))
+            request = ModelRequest(
+                model=model,
+                messages=messages,
+                tools=list(tools.values()),
+                state=state,
+                runtime=get_runtime(),
+            )
             for mw in middleware:
                 dynamic = getattr(mw, "dynamic_prompt", None)
                 if dynamic is None:
@@ -432,14 +440,16 @@ class AgentGraph:
 
     def invoke(self, input: Any, config: dict | None = None, **kwargs: Any) -> dict[str, Any]:
         payload = _normalize_input(input)
-        state = self._graph.invoke("run", payload, config=config)
+        with runtime_context(runtime=_resolve_runtime(config, kwargs.get("context"))):
+            state = self._graph.invoke("run", payload, config=config)
         return _public_state(state)
 
     async def ainvoke(
         self, input: Any, config: dict | None = None, **kwargs: Any
     ) -> dict[str, Any]:
         payload = _normalize_input(input)
-        state = await self._graph.ainvoke("run", payload)
+        with runtime_context(runtime=_resolve_runtime(config, kwargs.get("context"))):
+            state = await self._graph.ainvoke("run", payload)
         return _public_state(state)
 
     def stream(
@@ -448,6 +458,7 @@ class AgentGraph:
         config: dict | None = None,
         *,
         stream_mode: str | Sequence[str] | None = None,
+        context: Any = None,
         **kwargs: Any,
     ) -> Iterator[Any]:
         """Stream the run in LangGraph's mode language.
@@ -466,7 +477,8 @@ class AgentGraph:
         """
         modes, as_list = _normalize_stream_modes(stream_mode)
         payload = _normalize_input(input)
-        return self._stream_modes(payload, config, modes, as_list=as_list)
+        runtime = _resolve_runtime(config, kwargs.get("context"))
+        return self._stream_modes(payload, config, modes, runtime, as_list=as_list)
 
     async def astream(
         self,
@@ -499,6 +511,7 @@ class AgentGraph:
         payload: dict[str, Any],
         config: dict | None,
         modes: tuple[str, ...],
+        runtime: Runtime,
         *,
         as_list: bool,
     ) -> Iterator[Any]:
@@ -512,13 +525,16 @@ class AgentGraph:
         run_config = dict(config or {})
         if need_trace:
             run_config["trace"] = True
-        raw = self._graph.stream("run", payload, config=run_config)
-        yield from _adapt_stream(
-            raw,
-            modes,
-            as_list=as_list,
-            integration=self.config["metadata"]["ls_integration"],
-        )
+        # Bind before the first task runs: task bodies execute on the graph's
+        # own callbacks, and ``get_runtime()`` must already be live there.
+        with runtime_context(runtime=runtime):
+            raw = self._graph.stream("run", payload, config=run_config)
+            yield from _adapt_stream(
+                raw,
+                modes,
+                as_list=as_list,
+                integration=self.config["metadata"]["ls_integration"],
+            )
 
     async def _astream_modes(
         self,
@@ -535,14 +551,15 @@ class AgentGraph:
         run_config = dict(config or {})
         if need_trace:
             run_config["trace"] = True
-        raw = self._graph.astream("run", payload, config=run_config)
-        async for item in _aadapt_stream(
-            raw,
-            modes,
-            as_list=as_list,
-            integration=self.config["metadata"]["ls_integration"],
-        ):
-            yield item
+        with runtime_context(runtime=_resolve_runtime(config, context)):
+            raw = self._graph.astream("run", payload, config=run_config)
+            async for item in _aadapt_stream(
+                raw,
+                modes,
+                as_list=as_list,
+                integration=self.config["metadata"]["ls_integration"],
+            ):
+                yield item
 
 
 # ---------------------------------------------------------------------------
@@ -843,6 +860,38 @@ def _call_args(call: Any) -> dict[str, Any]:
 def _call_id(call: Any) -> str | None:
     value = _call_get(call, "id", None)
     return value if isinstance(value, str) else None
+
+
+_PREGEL_RUNTIME_KEY = "__pregel_runtime"
+
+
+def _resolve_runtime(config: dict | None, context: Any = None) -> Runtime:
+    """Resolve the run-scoped runtime exactly the way upstream does.
+
+    Probe-verified precedence (langgraph 1.2.9):
+
+    1. ``config['configurable']['__pregel_runtime']`` wins when present -- this
+       is how DeerFlow's run worker installs a ``Runtime`` whose ``context`` is
+       the very dict it later reads ``stop_reason`` back from.
+    2. otherwise an explicit ``context=`` argument builds a fresh runtime;
+    3. otherwise the ambient runtime (``get_runtime()``) is reused, so nesting
+       a run inside an outer run keeps the outer context.
+
+    The returned ``Runtime`` is never ``None``: middleware hooks dereference
+    ``runtime.context`` unconditionally (35 DeerFlow modules do).
+    """
+    if isinstance(config, dict):
+        configurable = config.get("configurable")
+        if isinstance(configurable, dict):
+            pinned = configurable.get(_PREGEL_RUNTIME_KEY)
+            if pinned is not None:
+                return pinned
+    if context is not None:
+        return Runtime(context=context)
+    try:
+        return get_runtime()
+    except RuntimeError:
+        return Runtime()
 
 
 def _normalize_input(input: Any) -> dict[str, Any]:

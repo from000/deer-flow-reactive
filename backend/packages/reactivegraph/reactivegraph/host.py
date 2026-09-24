@@ -13,6 +13,8 @@ Responsibilities (Task 4):
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
+import contextvars
 import os
 import shutil
 import subprocess
@@ -134,6 +136,13 @@ class DriverHost:
         self._exit_code: int | None = None
         # Stream subscribers: a run may register one sink for STREAM_EVENTs.
         self._stream_sink: dict[str, Callable[[dict], None]] = {}  # runId -> sink
+        # Run-scoped ambient context (``get_config``/``get_runtime``). Task
+        # bodies execute on ``_callback_pool`` workers, and a ContextVar does
+        # not travel across a thread boundary; the caller's context is captured
+        # here (still on the caller's thread) and re-entered on the worker,
+        # keyed by the run id the Driver echoes back on TASK_INVOKE.
+        self._run_context: dict[str, contextvars.Context] = {}  # runId -> Context
+        self._run_context_lock = threading.Lock()
         # P3-2 并行兑现：TASK_INVOKE 回调在线程池并行执行（reader 线程只
         # 做分发；串行批在途仅一个 TASK_INVOKE，天然保序；并行批 runAll
         # 并发执行回调）。worker 数经 env REACTIVEGRAPH_CALLBACK_WORKERS
@@ -254,9 +263,23 @@ class DriverHost:
                 },
             )
             return
-        self._callback_pool.submit(
-            self._execute_callback, invocation_id, envelope["id"], callback, input_value,
-        )
+        # Re-enter the *caller's* context on the worker: a ContextVar set
+        # before ThreadPoolExecutor.submit does not travel to the worker, and
+        # task bodies read the run-scoped config/runtime from it.
+        ctx = self._run_context_for(envelope)
+        if ctx is None:
+            self._callback_pool.submit(
+                self._execute_callback, invocation_id, envelope["id"], callback, input_value,
+            )
+        else:
+            self._callback_pool.submit(
+                ctx.run,
+                self._execute_callback,
+                invocation_id,
+                envelope["id"],
+                callback,
+                input_value,
+            )
 
     def _execute_callback(
         self, invocation_id: str, req_id: str, callback: Callable, input_value: Any,
@@ -473,10 +496,16 @@ class DriverHost:
         return result
 
     def run(self, input_value: Any, callback_id: str = "default", **kwargs: Any) -> Any:
+        # ``runId`` must reach the Driver: it is the key the Driver echoes back
+        # on every TASK_INVOKE, and therefore what ties a callback worker back
+        # to the caller's run-scoped context.
         payload = {"graphId": kwargs.get("graph_id"), "input": input_value,
                    "threadId": kwargs.get("thread_id"), "callbackId": callback_id,
-                   "event": kwargs.get("event"), "config": kwargs.get("config")}
-        return self.request("RUN", payload)
+                   "event": kwargs.get("event"), "config": kwargs.get("config"),
+                   "runId": kwargs.get("run_id")}
+        run_id = kwargs.get("run_id")
+        with self._pin_run_context(run_id):
+            return self.request("RUN", payload)
 
     def run_stream(self, input_value: Any, on_event: Callable[[dict], None],
                    callback_id: str = "default", **kwargs: Any) -> dict:
@@ -501,10 +530,49 @@ class DriverHost:
                 # 桥接，custom span 帧经 STREAM_EVENT 送回 Python _trace）。
                 "config": kwargs.get("config") or {},
             }
-            result = self.request("RUN", payload)
+            with self._pin_run_context(run_id):
+                result = self.request("RUN", payload)
             return result.get("state", {}) if isinstance(result, dict) else {}
         finally:
             self._stream_sink.pop(run_id, None)
+
+    @contextlib.contextmanager
+    def _pin_run_context(self, run_id: str | None) -> Iterator[None]:
+        """Publish this thread's ambient run context for *run_id*.
+
+        The Driver echoes the run id on every ``TASK_INVOKE``, which lets the
+        callback worker look up the context its caller was running under. The
+        entry is removed when the run returns, so a finished run never leaks
+        context into a later one.
+        """
+        if not run_id:
+            yield
+            return
+        snapshot = contextvars.copy_context()
+        with self._run_context_lock:
+            self._run_context[run_id] = snapshot
+        try:
+            yield
+        finally:
+            with self._run_context_lock:
+                self._run_context.pop(run_id, None)
+
+    def _run_context_for(self, envelope: dict) -> contextvars.Context | None:
+        """Return a fresh copy of the run's captured context.
+
+        A ``Context`` may only be entered by one thread at a time, and the
+        Driver dispatches parallel batches (``runAll``) concurrently — so every
+        callback gets its own copy instead of sharing one.
+        """
+        trace = envelope.get("trace")
+        run_id = trace.get("runId") if isinstance(trace, dict) else None
+        if not isinstance(run_id, str):
+            return None
+        with self._run_context_lock:
+            captured = self._run_context.get(run_id)
+            # Copied under the lock: the stored context is never entered, so
+            # copying it is always legal and stays race-free.
+            return captured.copy() if captured is not None else None
 
     def compile_graph(self, spec: dict, schema_hash: str | None = None,
                       timeout_ms: int = 30000) -> str:

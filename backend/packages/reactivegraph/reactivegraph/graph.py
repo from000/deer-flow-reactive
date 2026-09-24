@@ -13,6 +13,8 @@ owned by the Driver scheduler; this module is the thin binding.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import copy
 import json
 import threading
@@ -22,7 +24,86 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from reactivegraph.host import DriverError, DriverHost
+from reactivegraph.runtime import Runtime, get_config, get_runtime, runtime_context
 from reactivegraph.state import TrackedStateProxy
+
+# Config keys that exist only on the Python side of the boundary. A ``Runtime``
+# is not an RGP/1 canonical value (it carries callables), so it must be stripped
+# before encoding or the codec raises ``CodecError``.
+_PREGEL_RUNTIME_KEY = "__pregel_runtime"
+_PYTHON_ONLY_CONFIGURABLE_KEYS = (_PREGEL_RUNTIME_KEY,)
+
+
+def _pinned_runtime(config: dict | None) -> Runtime | None:
+    """Return the ``Runtime`` a caller pinned into *config*, if any.
+
+    LangGraph accepts ``config['configurable']['__pregel_runtime']`` as an
+    internal channel; DeerFlow's run worker uses it because it drives the graph
+    through ``astream(config=...)`` rather than the official ``context=``
+    parameter. The object is Python-side only and never reaches the Driver.
+    """
+    if not isinstance(config, dict):
+        return None
+    configurable = config.get("configurable")
+    if not isinstance(configurable, dict):
+        return None
+    pinned = configurable.get(_PREGEL_RUNTIME_KEY)
+    return pinned if isinstance(pinned, Runtime) else None
+
+
+@contextlib.contextmanager
+def _run_scope(config: dict | None) -> Iterator[None]:
+    """Publish the run's config/runtime for the duration of a graph call.
+
+    Node functions, tools and middleware read these through ``get_config()``
+    and ``get_runtime()`` instead of receiving them as arguments. The ambient
+    values the caller already set win over anything derived from *config*, so
+    nesting a run inside another keeps the outer scope.
+    """
+    runtime = _pinned_runtime(config)
+    if runtime is None:
+        try:
+            runtime = get_runtime()
+        except RuntimeError:
+            runtime = None
+    if runtime is None:
+        # Upstream ``get_runtime()`` always resolves inside a node: the pregel
+        # loop injects a Runtime even when the caller supplied no config. Mint
+        # an empty one so ``get_runtime().context`` is a valid (if empty) read
+        # instead of an outside-a-run error.
+        runtime = Runtime()
+    if config is None:
+        # Upstream ``get_config()`` always succeeds inside a node, even when
+        # the caller passed no config at all; keep an outer run's config rather
+        # than clobbering it with an empty one.
+        try:
+            config = get_config()
+        except RuntimeError:
+            config = {}
+    with runtime_context(config=config, runtime=runtime):
+        yield
+
+
+def _wire_config(config: dict | None) -> dict:
+    """Return *config* as an RGP/1-encodable value.
+
+    ``configurable`` is the caller-facing escape hatch and may hold host
+    objects; only the Python-only sentinel keys are dropped, everything else is
+    passed through untouched.
+    """
+    if not config:
+        return {}
+    configurable = config.get("configurable")
+    if not isinstance(configurable, dict):
+        return dict(config)
+    if not any(key in configurable for key in _PYTHON_ONLY_CONFIGURABLE_KEYS):
+        return dict(config)
+    trimmed = {
+        key: value
+        for key, value in configurable.items()
+        if key not in _PYTHON_ONLY_CONFIGURABLE_KEYS
+    }
+    return {**config, "configurable": trimmed}
 
 
 def _fallback_fingerprint(state: dict) -> str | None:
@@ -582,23 +663,45 @@ class ReactiveGraph:
 
     def invoke(self, event: str, payload: Any, *, config: dict | None = None) -> dict:
         if self.host is not None:
+            from reactivegraph.protocol import make_id
+
             graph_id = self._ensure_compiled()
+            # The Driver keys TASK_INVOKE by run id; generating it here (rather
+            # than letting the Driver mint one) is what lets the host pin the
+            # caller's context to the run before the first callback arrives.
+            run_id = make_id()
             self._trace = [{"event": "run:start"}]
-            result = self.host.run(payload, graph_id=graph_id, event=event, config=config or {})
+            with _run_scope(config):
+                result = self.host.run(
+                    payload,
+                    graph_id=graph_id,
+                    event=event,
+                    run_id=run_id,
+                    config=_wire_config(config),
+                )
             self._last_run = result if isinstance(result, dict) else {}
             self._last_run_id = self._last_run.get("runId")
             self._trace.append({"event": "run:end"})
             return self._last_run.get("state", {})
-        return self._execute(event, payload)
+        # in-process fallback: publish the same ambient config/runtime so a
+        # host's middleware behaves identically with and without a Driver.
+        with _run_scope(config):
+            return self._execute(event, payload)
 
     # -- async 面 ----------------------------------------------------------
     # 底层 Driver 本身就是异步引擎;Python 端经 executor 线程跑同步内核,
     # 让调用方的事件循环不被阻塞(并发 invoke 由线程池承载)。
 
     async def ainvoke(self, event: str, payload: Any) -> dict:
-        """异步 invoke:在 executor 线程执行同步内核,不阻塞当前 event loop。"""
+        """异步 invoke:在 executor 线程执行同步内核,不阻塞当前 event loop。
+
+        `run_in_executor` 不继承调用方 ContextVar（`get_config`/`get_runtime`
+        在任务体里读的就是它），因此在调用线程上先 copy_context，再把
+        context 带进 executor 线程重入。
+        """
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self.invoke, event, payload)
+        ctx = contextvars.copy_context()
+        return await loop.run_in_executor(None, ctx.run, self.invoke, event, payload)
 
     async def astream(
         self, event: str, payload: Any, *, config: dict | None = None
@@ -611,6 +714,10 @@ class ReactiveGraph:
         q: asyncio.Queue[Any] = asyncio.Queue()
         sentinel = object()
 
+        # 生产者线程不继承调用方 ContextVar；在协程帧内（仍在调用方
+        # context 中）取快照，让任务体里的 get_config/get_runtime 可用。
+        ctx = contextvars.copy_context()
+
         def _produce() -> None:
             try:
                 for ev in self.stream(event, payload, config=config):
@@ -620,7 +727,7 @@ class ReactiveGraph:
             finally:
                 loop.call_soon_threadsafe(q.put_nowait, sentinel)
 
-        threading.Thread(target=_produce, daemon=True).start()
+        threading.Thread(target=ctx.run, args=(_produce,), daemon=True).start()
         while True:
             item = await q.get()
             if item is sentinel:
@@ -639,8 +746,31 @@ class ReactiveGraph:
         run_id: str | None = None,
         config: dict | None = None,
     ) -> Iterator[dict]:
-        """Run the event route with streaming; yield each STREAM_EVENT payload
-        as it arrives (eventType/payload.state/seq).
+        """Run the event route with streaming, publishing ``config`` for the
+        duration of the run (upstream sets the child-runnable config for
+        ``stream`` just like it does for ``invoke``).
+        """
+        with _run_scope(config):
+            yield from self._stream_impl(
+                event,
+                payload,
+                thread_id=thread_id,
+                trace=trace,
+                run_id=run_id,
+                config=config,
+            )
+
+    def _stream_impl(
+        self,
+        event: str,
+        payload: Any,
+        *,
+        thread_id: str | None = None,
+        trace: bool = False,
+        run_id: str | None = None,
+        config: dict | None = None,
+    ) -> Iterator[dict]:
+        """Streaming implementation, already inside the run scope.
 
         Requires a DriverHost. Without a host, yields the in-process
         segment-boundary event sequence (task_start/task_end/task_error/
@@ -705,7 +835,10 @@ class ReactiveGraph:
                     event=event,
                     run_id=run_id,
                     thread_id=thread_id,
-                    config={**(config or {}), **({"trace": True} if trace else {})},
+                    config={
+                        **_wire_config(config),
+                        **({"trace": True} if trace else {}),
+                    },
                 )
             except DriverError as exc:  # 段错误帧（review：仅 DriverError 补发 task_error）
                 # P3-1 Task 4：Driver 错误帧上抛前补发 task_error 事件
@@ -718,7 +851,10 @@ class ReactiveGraph:
             finally:
                 events_q.put(None)
 
-        threading.Thread(target=_run, daemon=True).start()
+        # 同上：`_run` 线程负责 host.run_stream，回调池 worker 的 run-scoped
+        # context 由 host 从这一帧捕获。
+        ctx = contextvars.copy_context()
+        threading.Thread(target=ctx.run, args=(_run,), daemon=True).start()
         self._trace = []  # P3-3 Task 3：stream 开始重置（host 分支不经 _execute）
         self._conflict = None
         while True:

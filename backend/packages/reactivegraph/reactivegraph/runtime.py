@@ -15,6 +15,7 @@ import contextlib
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 from typing import Any
 
 __all__ = (
@@ -101,6 +102,49 @@ _current_runtime: ContextVar[Runtime | None] = ContextVar(
 
 _OUTSIDE_RUN = "Called get_config outside of a runnable context"
 
+# ``configurable`` is the upstream LangGraph key holding the run's Runtime.
+_PREGEL_RUNTIME_KEY = "__pregel_runtime"
+
+
+@lru_cache(maxsize=1)
+def _langchain_config_var() -> ContextVar[Any] | None:
+    """Return langchain-core's child-runnable config ContextVar, if present.
+
+    ``langgraph.config.get_config``/``get_stream_writer`` and
+    ``langgraph.runtime.get_runtime`` are thin readers of this variable
+    upstream. Hosts that were written against LangGraph import those helpers
+    directly, so publishing the same variable is what makes this engine a
+    drop-in replacement instead of forcing every host to rewrite its imports.
+
+    langchain-core is an optional integration here (the core package does not
+    depend on it), so a missing module simply disables the bridge.
+    """
+    try:
+        from langchain_core.runnables.config import var_child_runnable_config
+    except ImportError:
+        return None
+    return var_child_runnable_config
+
+
+def _langgraph_bridged_config(
+    config: dict[str, Any] | None,
+    runtime: Runtime | None,
+) -> dict[str, Any]:
+    """Return the RunnableConfig shape upstream helpers expect.
+
+    The caller's ``configurable`` mapping is copied rather than mutated, and
+    the run's :class:`Runtime` is published under the upstream
+    ``__pregel_runtime`` key so ``langgraph.runtime.get_runtime()`` and
+    ``get_stream_writer()`` resolve to the same object the engine bound.
+    """
+    bridged = dict(config) if config is not None else {}
+    raw_configurable = bridged.get("configurable")
+    configurable = dict(raw_configurable) if isinstance(raw_configurable, dict) else {}
+    if runtime is not None:
+        configurable[_PREGEL_RUNTIME_KEY] = runtime
+    bridged["configurable"] = configurable
+    return bridged
+
 
 @contextlib.contextmanager
 def runtime_context(
@@ -115,8 +159,15 @@ def runtime_context(
     children.
     """
     tokens: list[tuple[ContextVar, Any]] = []
-    if config is not None:
-        tokens.append((_current_config, _current_config.set(config)))
+    if config is not None or runtime is not None:
+        # One bridged view is published everywhere, matching upstream: inside
+        # a run ``get_config()`` always succeeds and its ``configurable``
+        # mapping carries the active Runtime under ``__pregel_runtime``.
+        bridged = _langgraph_bridged_config(config, runtime)
+        tokens.append((_current_config, _current_config.set(bridged)))
+        langchain_var = _langchain_config_var()
+        if langchain_var is not None:
+            tokens.append((langchain_var, langchain_var.set(bridged)))
     if runtime is not None:
         tokens.append((_current_runtime, _current_runtime.set(runtime)))
     try:
