@@ -42,7 +42,7 @@ from reactivegraph.messages import (
     SystemMessage,
     ToolMessage,
 )
-from reactivegraph.runtime import Runtime
+from reactivegraph.runtime import Runtime, StreamWriter
 from reactivegraph.types import Command
 
 if TYPE_CHECKING:

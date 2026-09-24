@@ -20,6 +20,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, ClassVar, Literal, TypeAlias, final
 
 from reactivegraph.checkpoint import CheckpointStore
+from reactivegraph.messages import ToolOutputMixin
 from reactivegraph.warnings import ReactiveGraphDeprecatedSinceV10
 
 OVERWRITE = "__overwrite__"
@@ -135,7 +136,7 @@ class Interrupt:
 
 
 @dataclass(slots=True)
-class Command:
+class Command(ToolOutputMixin):
     """Update the graph's state and/or route execution to other nodes.
 
     A node (or a tool) returns ``Command`` when it needs to do more than merge

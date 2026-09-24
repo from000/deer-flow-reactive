@@ -111,7 +111,6 @@ from reactivegraph.middleware import (
 from reactivegraph.prebuilt import (
     AgentIterationError,
     ReactiveAgent,
-    ToolNode,
     ToolSpec,
     create_react_agent,
 )
@@ -130,6 +129,19 @@ from reactivegraph.store import (
     SearchItem,
     get_store,
     reset_store,
+)
+from reactivegraph.tool_node import (
+    INVALID_TOOL_NAME_ERROR_TEMPLATE,
+    TOOL_CALL_ERROR_TEMPLATE,
+    TOOL_EXECUTION_ERROR_TEMPLATE,
+    TOOL_INVOCATION_ERROR_TEMPLATE,
+    InjectedState,
+    InjectedStore,
+    ToolCallWithContext,
+    ToolInvocationError,
+    ToolNode,
+    msg_content_output,
+    tools_condition,
 )
 from reactivegraph.tools import (
     BaseTool,
@@ -189,6 +201,16 @@ __all__ = (
     "sanitize_traceback",
     "ToolSpec",
     "ToolNode",
+    "ToolCallWithContext",
+    "InjectedState",
+    "InjectedStore",
+    "ToolInvocationError",
+    "msg_content_output",
+    "tools_condition",
+    "INVALID_TOOL_NAME_ERROR_TEMPLATE",
+    "TOOL_CALL_ERROR_TEMPLATE",
+    "TOOL_EXECUTION_ERROR_TEMPLATE",
+    "TOOL_INVOCATION_ERROR_TEMPLATE",
     "ReactiveAgent",
     "create_react_agent",
     "AgentIterationError",
