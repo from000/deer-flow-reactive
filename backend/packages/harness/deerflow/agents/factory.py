@@ -3,7 +3,7 @@
 ``create_deerflow_agent`` accepts plain Python arguments — it does not load
 YAML or install process-global runtime dependencies. It is the SDK-level entry
 point sitting between the raw
-``langchain.agents.create_agent`` primitive and the config-driven
+``reactivegraph.create_agent`` primitive and the config-driven
 ``make_lead_agent`` application factory.
 
 Direct callers that need an isolated native-subagent capacity or a durable
@@ -16,8 +16,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
+from reactivegraph.create_agent import create_agent
 
 from deerflow.agents.features import RuntimeFeatures
 from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
