@@ -22,8 +22,38 @@ import warnings
 from collections.abc import Iterable, Sequence
 from typing import Any, Literal, TypedDict, cast
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 from typing_extensions import NotRequired
+
+try:  # pragma: no cover - exercised by the optional-integration tests
+    from langchain_core import messages as _lc_messages
+except ImportError:  # pragma: no cover - langchain-core is an optional host dep
+    _lc_messages = None
+
+
+def _upstream(name: str) -> tuple[type, ...]:
+    """Return langchain-core's message class as an extra base, if installed.
+
+    DeerFlow performs ``isinstance(message, langchain_core...Message)`` checks
+    in 161 places across the harness. Those checks are identity checks, so a
+    structurally identical pydantic model silently fails them and the host
+    takes the wrong branch (observed: tool results dropped, summaries never
+    persisted). Inheriting the real upstream class is the only way the engine
+    can be a drop-in base without rewriting every consumer.
+
+    ``BaseMessage`` permits real subclassing; LangChain only disables the
+    *virtual* ``register()`` path. The upstream class contributes behaviour we
+    must not reimplement (serialization envelope, ``pretty_repr``), while every
+    field and validator below stays ours so ``model_dump()`` keeps the exact
+    shape this module pins.
+
+    langchain-core remains optional: without it this returns no extra bases and
+    the classes are plain pydantic models with the identical surface.
+    """
+    if _lc_messages is None:
+        return ()
+    upstream = getattr(_lc_messages, name, None)
+    return (upstream,) if isinstance(upstream, type) else ()
 
 __all__ = (
     "AIMessage",
@@ -176,7 +206,7 @@ def _coerce_id(value: Any) -> Any:
     return value
 
 
-class BaseMessage(BaseModel):
+class BaseMessage(*_upstream("BaseMessage")):
     """Base class for chat messages.
 
     Field order matches upstream so ``model_dump()`` produces the same key
@@ -753,7 +783,7 @@ def _merge_tool_call_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]
     return merged
 
 
-class BaseMessageChunk(BaseMessage):
+class BaseMessageChunk(BaseMessage, *_upstream("BaseMessageChunk")):
     """Message chunk that can be concatenated with other chunks."""
 
     def __add__(self, other: Any) -> BaseMessageChunk:  # type: ignore[override]
@@ -786,38 +816,42 @@ class BaseMessageChunk(BaseMessage):
         raise TypeError(msg)
 
 
-class HumanMessage(BaseMessage):
+class HumanMessage(BaseMessage, *_upstream("HumanMessage")):
     """Message from the user."""
 
     type: Literal["human"] = "human"
 
 
-class HumanMessageChunk(HumanMessage, BaseMessageChunk):
+class HumanMessageChunk(
+    HumanMessage, BaseMessageChunk, *_upstream("HumanMessageChunk")
+):
     """Streaming chunk of a human message."""
 
     type: Literal["HumanMessageChunk"] = "HumanMessageChunk"  # type: ignore[assignment]
 
 
-class SystemMessage(BaseMessage):
+class SystemMessage(BaseMessage, *_upstream("SystemMessage")):
     """System instruction message."""
 
     type: Literal["system"] = "system"
 
 
-class SystemMessageChunk(SystemMessage, BaseMessageChunk):
+class SystemMessageChunk(
+    SystemMessage, BaseMessageChunk, *_upstream("SystemMessageChunk")
+):
     """Streaming chunk of a system message."""
 
     type: Literal["SystemMessageChunk"] = "SystemMessageChunk"  # type: ignore[assignment]
 
 
-class ChatMessage(BaseMessage):
+class ChatMessage(BaseMessage, *_upstream("ChatMessage")):
     """Message with an arbitrary speaker role."""
 
     role: str
     type: Literal["chat"] = "chat"
 
 
-class AIMessage(BaseMessage):
+class AIMessage(BaseMessage, *_upstream("AIMessage")):
     """Message from the model, including tool calls and usage metadata."""
 
     type: Literal["ai"] = "ai"
@@ -905,7 +939,7 @@ class AIMessage(BaseMessage):
         return values
 
 
-class AIMessageChunk(AIMessage, BaseMessageChunk):
+class AIMessageChunk(AIMessage, BaseMessageChunk, *_upstream("AIMessageChunk")):
     """Streaming chunk of an AI message."""
 
     type: Literal["AIMessageChunk"] = "AIMessageChunk"  # type: ignore[assignment]
@@ -990,7 +1024,7 @@ class ToolOutputMixin:
     """
 
 
-class ToolMessage(BaseMessage, ToolOutputMixin):
+class ToolMessage(BaseMessage, ToolOutputMixin, *_upstream("ToolMessage")):
     """Result of a tool call."""
 
     type: Literal["tool"] = "tool"
@@ -1030,7 +1064,7 @@ class ToolMessage(BaseMessage, ToolOutputMixin):
             values["tool_call_id"] = str(tool_call_id)
         return values
 
-class ToolMessageChunk(ToolMessage, BaseMessageChunk):
+class ToolMessageChunk(ToolMessage, BaseMessageChunk, *_upstream("ToolMessageChunk")):
     """Streaming chunk of a tool message."""
 
     type: Literal["ToolMessageChunk"] = "ToolMessageChunk"  # type: ignore[assignment]
@@ -1059,7 +1093,7 @@ class ToolMessageChunk(ToolMessage, BaseMessageChunk):
         return super().__add__(other)
 
 
-class RemoveMessage(BaseMessage):
+class RemoveMessage(BaseMessage, *_upstream("RemoveMessage")):
     """Instruction to delete another message from history."""
 
     type: Literal["remove"] = "remove"

@@ -27,6 +27,7 @@ from copy import copy, deepcopy
 from dataclasses import dataclass, replace
 from types import UnionType
 from typing import (
+    Annotated,
     Any,
     Literal,
     TypedDict,
@@ -1041,8 +1042,16 @@ def _coerce_tool_runtime(runtime: ToolRuntime, declared: Any) -> Any:
     the declared type is ours (or unknown) pass the runtime straight through;
     otherwise rebuild the declared dataclass from the shared field names.
     """
-    if declared is None or declared is ToolRuntime or not isinstance(declared, type):
+    if declared is None or declared is ToolRuntime:
         return runtime
+    # A host may annotate ``ToolRuntime[dict[str, Any], ThreadState]``. The
+    # subscripted generic is not a class, so unwrap to its origin before
+    # constructing it; otherwise the host tool's validator rejects our type.
+    if not isinstance(declared, type):
+        origin = get_origin(declared)
+        if not isinstance(origin, type) or origin is Annotated:
+            return runtime
+        declared = origin
     if isinstance(runtime, declared):
         return runtime
     fields = {

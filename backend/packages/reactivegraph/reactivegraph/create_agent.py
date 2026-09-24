@@ -299,15 +299,22 @@ class AgentGraph:
             return request
 
         def _model(state: dict) -> TaskOutcome:
+            # Hook return values are state updates and must reach the caller.
+            # Upstream merges every before_*/after_* dict into graph state;
+            # DeerFlow's ThreadDataMiddleware returns {"thread_data": ...}
+            # here and the CLI reads it back off the final state.
+            hook_updates: dict[str, Any] = {}
             if not state.get(_AGENT_STARTED):
                 # ``before_agent`` fires exactly once per run, before the first
-                # model call (probe-verified upstream ordering).
-                state = {
-                    **state,
-                    _AGENT_STARTED: True,
-                    **_run_hook("before_agent", state),
-                }
-            state = {**state, **_run_hook("before_model", state)}
+                # model call (probe-verified upstream ordering). The marker is
+                # written back so a model re-entry after the tool node does not
+                # replay it.
+                hook_updates[_AGENT_STARTED] = True
+                hook_updates.update(_run_hook("before_agent", state))
+            state = {**state, **hook_updates}
+            before_model_updates = _run_hook("before_model", state)
+            state = {**state, **before_model_updates}
+            hook_updates.update(before_model_updates)
             request = _request(state)
 
             def _handler(req: ModelRequest) -> ModelResponse:
@@ -354,6 +361,7 @@ class AgentGraph:
                 structured = None
 
             updates: dict[str, Any] = {
+                **hook_updates,
                 "messages": [*state.get("messages", []), *new_messages],
             }
             if command_update:
@@ -381,7 +389,11 @@ class AgentGraph:
             # return ``Command`` (DeerFlow ships 27 such tools), and
             # ``wrap_tool_call`` middleware participates.
             messages = list(state.get("messages", []))
-            result = tool_node.invoke({"messages": messages})
+            # The full state is forwarded: ``ToolNode`` injects it into
+            # ``ToolRuntime.state`` and DeerFlow tools read graph keys such as
+            # ``thread_data`` from there. Narrowing to ``{"messages": ...}``
+            # makes those tools raise "runtime state is not available".
+            result = tool_node.invoke({**state, "messages": messages})
 
             # ``ToolNode`` returns either ``{"messages": [...]}`` or, when a
             # tool returned ``Command``, a list mixing commands and message
