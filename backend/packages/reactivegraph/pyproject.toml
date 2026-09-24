@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
     "msgpack>=1.0",
+    "pydantic>=2.7",
     "xxhash>=3.0",
 ]
 
