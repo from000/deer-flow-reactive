@@ -189,11 +189,36 @@ def test_engine_error_message_matches_langchain_verbatim(monkeypatch) -> None:
 
 
 def test_real_subagent_executor_catches_the_engine_recursion_error() -> None:
-    """The executor's recovery branch must catch *our* error, not LangGraph's."""
+    """The executor's recovery branch must catch whatever the engine raises.
+
+    ``except SomeClass`` matches by *identity*, so the class the executor
+    imports and the class ``create_agent`` raises have to be the same object.
+    The engine deliberately aliases LangGraph's ``GraphRecursionError`` rather
+    than defining a look-alike: host middleware and DeerFlow providers raise
+    LangGraph's spelling from inside engine hooks, and a distinct subclass
+    would be swallowed by the surrounding ``except Exception``. This test pins
+    the reachable invariant — engine-raised error is executor-caught error —
+    not the class *name's* provenance.
+    """
     module = _real_executor_module()
-    from langgraph.errors import GraphRecursionError as LangGraphRecursionError
     from reactivegraph.errors import GraphRecursionError as ReactiveGraphRecursionError
 
     assert module.GraphRecursionError is ReactiveGraphRecursionError
-    assert module.GraphRecursionError is not LangGraphRecursionError
     assert issubclass(ReactiveGraphRecursionError, RecursionError)
+
+    # What the engine actually raises on budget exhaustion must be caught by
+    # the executor's ``except module.GraphRecursionError`` clause.
+    caught = False
+    try:
+        raise ReactiveGraphRecursionError("recursion limit reached")
+    except module.GraphRecursionError:
+        caught = True
+    assert caught
+
+    try:
+        from langgraph.errors import GraphRecursionError as LangGraphRecursionError
+    except ImportError:  # pragma: no cover - langgraph is a hard fork dep
+        return
+    # With the host installed the alias is exact; without it the fallback still
+    # has to satisfy the same catch.
+    assert module.GraphRecursionError is LangGraphRecursionError
