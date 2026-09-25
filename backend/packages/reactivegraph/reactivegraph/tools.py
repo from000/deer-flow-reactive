@@ -25,7 +25,11 @@ from pydantic.fields import FieldInfo
 from typing_extensions import is_typeddict
 
 from reactivegraph.messages import ToolMessage, ToolOutputMixin, is_tool_output
-from reactivegraph.middleware import ToolRuntime, _DirectlyInjectedToolArg
+from reactivegraph.middleware import (
+    HostDirectlyInjectedToolArg,
+    ToolRuntime,
+    _DirectlyInjectedToolArg,
+)
 
 __all__ = (
     "FILTERED_ARGS",
@@ -193,13 +197,26 @@ def _infer_arg_descriptions(
 
 
 def _is_directly_injected_arg_type(type_: Any) -> bool:
-    """Check for directly-injected argument types such as ``ToolRuntime``."""
+    """Check for directly-injected argument types such as ``ToolRuntime``.
+
+    Two markers must be accepted. ``_DirectlyInjectedToolArg`` is the engine's
+    native bridge for annotations written against it, while a bridged
+    ``ToolRuntime`` inherits the *host* class and therefore the host marker
+    (the two are different class objects). Checking only one of them drops the
+    runtime back into the generated schema, whose ``Callable`` field then dies
+    in JSON-schema generation.
+    """
+    markers: tuple[type, ...] = (
+        (_DirectlyInjectedToolArg, HostDirectlyInjectedToolArg)
+        if HostDirectlyInjectedToolArg is not None
+        else (_DirectlyInjectedToolArg,)
+    )
+    if isinstance(type_, type) and issubclass(type_, markers):
+        return True
+    origin = get_origin(type_)
     return (
-        isinstance(type_, type) and issubclass(type_, _DirectlyInjectedToolArg)
-    ) or (
-        (origin := get_origin(type_)) is not None
-        and isinstance(origin, type)
-        and issubclass(origin, _DirectlyInjectedToolArg)
+        isinstance(origin, type)
+        and issubclass(origin, markers)
     )
 
 

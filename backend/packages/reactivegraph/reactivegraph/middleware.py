@@ -337,35 +337,35 @@ class _MiddlewareMeta(type):
         return type.__instancecheck__(host, instance)
 
 
-def _install_host_hook_identity() -> type | None:
-    """Adopt the host base's hook *function objects* on our class.
+_HostAgentMiddleware = host_middleware_base()
+"""The host base to inherit from, or ``None`` when LangChain is absent."""
 
-    Upstream's ``create_agent`` decides whether a middleware participates in a
-    chain by identity against its own base::
 
-        m.__class__.wrap_tool_call is not AgentMiddleware.wrap_tool_call
+def _drop_shadowed_host_hooks() -> None:
+    """Let the host's hook functions win through the real base class.
 
-    A middleware inheriting from our base fails that test for every hook and
-    is compiled into every chain, where the inherited stub raises
-    ``NotImplementedError``. Sharing the host's function objects makes an
-    unoverridden hook compare identical again, so upstream skips it — while an
-    override still differs and participates, exactly as upstream intends.
+    The native hook definitions below are needed when LangChain is absent.
+    When it is present, the class really inherits the host base, and keeping
+    our byte-identical copies in the subclass ``__dict__`` would *shadow* it:
+    a host-side patch or override (including the harness monkeypatching
+    ``langchain.agents.middleware.AgentMiddleware.abefore_agent``) could never
+    be reached from ``super()``. Deleting the shadowing entries keeps the
+    native fallback and restores normal inheritance semantics.
 
-    Bodies are byte-identical to the host's (they were ported from it), so no
-    behaviour changes; only identity does. Without LangChain the native
-    definitions stay in place.
+    Identity against the host base is also what upstream's participation test
+    (``m.__class__.hook is not AgentMiddleware.hook``) relies on; inheritance
+    supplies it without copying function objects.
     """
-    host = host_middleware_base()
-    if host is None:
-        return None
     for hook in _HOOK_NAMES:
-        fn = getattr(host, hook, None)
-        if fn is not None:
-            setattr(AgentMiddleware, hook, fn)
-    return host
+        if hook in AgentMiddleware.__dict__:
+            delattr(AgentMiddleware, hook)
 
 
-class AgentMiddleware(Generic[StateT, ContextT, ResponseT], metaclass=_MiddlewareMeta):
+class AgentMiddleware(
+    *((_HostAgentMiddleware,) if _HostAgentMiddleware is not None else ()),
+    Generic[StateT, ContextT, ResponseT],
+    metaclass=_MiddlewareMeta,
+):
     """Base class for agent middleware.
 
     Hooks are no-ops by default.  ``wrap_*`` defaults raise
@@ -488,7 +488,8 @@ class AgentMiddleware(Generic[StateT, ContextT, ResponseT], metaclass=_Middlewar
         raise NotImplementedError(msg)
 
 
-_install_host_hook_identity()
+if _HostAgentMiddleware is not None:
+    _drop_shadowed_host_hooks()
 
 
 class _ToolCallRequestOverrides(TypedDict, total=False):
@@ -529,6 +530,54 @@ class _DirectlyInjectedToolArg(
     """Base marker for tool arguments injected directly by type annotation."""
 
 
+def _host_tool_runtime() -> type | None:
+    """LangGraph's ``ToolRuntime``, when importable.
+
+    ``langchain.tools.ToolRuntime`` is a re-export of
+    ``langgraph.prebuilt.tool_node.ToolRuntime``, and LangChain validates an
+    injected ``runtime`` argument against the *host* class. Subclassing it is
+    what keeps ``isinstance`` and pydantic validation true for engine-produced
+    runtimes; without the base, a host tool declared against the host class
+    fails validation before its body runs. The import stays lazy so the engine
+    remains usable without LangGraph.
+    """
+    try:
+        from langgraph.prebuilt.tool_node import ToolRuntime as HostToolRuntime
+    except ImportError:  # pragma: no cover - langgraph is an optional host dep
+        return None
+    return HostToolRuntime
+
+
+HostToolRuntime = _host_tool_runtime()
+_ToolRuntimeBase = HostToolRuntime or _DirectlyInjectedToolArg
+
+
+class _ToolRuntimeMeta(type):
+    """Accept host-created ``ToolRuntime`` objects as engine runtimes.
+
+    Engine-produced runtimes are host subclasses, so host validators accept
+    them. External callers (and DeerFlow's own tests) may still construct the
+    host class directly and pass it into a tool declared against *our*
+    annotation; pydantic's dataclass validator consults ``isinstance``, so
+    widening only the framework class lets that direction through without
+    accepting unrelated types.
+    """
+
+    def __instancecheck__(cls, instance: object) -> bool:
+        if HostToolRuntime is not None and isinstance(instance, HostToolRuntime):
+            return True
+        return super().__instancecheck__(instance)
+
+    def __subclasscheck__(cls, subclass: type) -> bool:
+        if (
+            HostToolRuntime is not None
+            and isinstance(subclass, type)
+            and issubclass(subclass, HostToolRuntime)
+        ):
+            return True
+        return super().__subclasscheck__(subclass)
+
+
 @dataclass
 class ToolCallRequest:
     """A tool call plus the state/runtime needed to execute it."""
@@ -562,12 +611,14 @@ ToolCallWrapper = Callable[
 
 
 @dataclass
-class ToolRuntime(_DirectlyInjectedToolArg, Generic[ContextT, StateT]):
+class ToolRuntime(_ToolRuntimeBase, Generic[ContextT, StateT], metaclass=_ToolRuntimeMeta):
     """Runtime context injected into a tool call.
 
-    It intentionally carries no LangChain types: the engine fills these fields
-    from the active runtime, and host adapters may provide richer config/store
-    objects.
+    When LangGraph is installed this class really inherits the host's
+    ``ToolRuntime``, so a host tool declared against that annotation accepts an
+    engine-injected runtime instead of failing pydantic validation. The field
+    list is re-declared to keep the engine's surface (and its JSON-schema-free
+    ``Callable``/``Any`` annotations) stable with and without the host.
     """
 
     state: StateT

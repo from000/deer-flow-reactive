@@ -4,7 +4,11 @@
 node that returns ``Overwrite(value)`` asks the channel to replace its
 accumulated value instead of merging through the reducer. The class also
 recognises the two serialized forms the value can take after a JSON round
-trip, because a wrapper must survive transport between processes.
+trip, because a wrapper must survive transport between processes. When
+LangGraph is importable the engine class *subclasses* the host class, because
+the host's own ``BinaryOperatorAggregate.update`` checks
+``isinstance(value, langgraph.types.Overwrite)`` before it bypasses the
+reducer; a look-alike class would be fed to the reducer and raise.
 
 ``Interrupt`` is the *payload* a paused node surfaces to its client. It is
 deliberately not an exception: middleware that catches ``Exception`` to wrap
@@ -60,24 +64,17 @@ __all__ = (
 )
 
 
-@dataclass(slots=True)
-class Overwrite:
-    """Bypass a reducer and write the wrapped value directly to a channel.
+class _OverwriteBehavior:
+    """Semantics shared by the native and host-bridged ``Overwrite``."""
 
-    Receiving multiple ``Overwrite`` values for the same channel in one
-    super-step is an error; the channel raises rather than guessing which one
-    wins.
-    """
-
-    value: Any
-    type: Literal["__overwrite__"] = OVERWRITE
+    __slots__ = ()
 
     @staticmethod
     def is_overwrite(value: Any) -> tuple[bool, Any]:
         """Return ``(is_overwrite, overwrite_value)`` for any accepted form.
 
-        Recognises the typed instance plus both serialized shapes:
-        ``{"__overwrite__": value}`` and the dataclass-erased
+        Recognises the typed instance (engine or host), plus both serialized
+        shapes: ``{"__overwrite__": value}`` and the dataclass-erased
         ``{"value": ..., "type": "__overwrite__"}`` that JSON produces.
         """
         if isinstance(value, Overwrite):
@@ -88,6 +85,66 @@ class Overwrite:
             if value.get("type") == OVERWRITE and "value" in value:
                 return True, value["value"]
         return False, None
+
+
+def _host_overwrite() -> type | None:
+    """Return LangGraph's ``Overwrite`` class when it is importable."""
+    try:
+        from langgraph.types import Overwrite as HostOverwrite
+    except ImportError:  # pragma: no cover - langgraph is an optional host dep
+        return None
+    return HostOverwrite
+
+
+HostOverwrite = _host_overwrite()
+
+
+class _OverwriteMeta(type):
+    """Recognise host-created ``Overwrite`` objects as engine overwrites.
+
+    Engine-produced overwrites are host subclasses. External callers may still
+    construct the host class directly (DeerFlow's rollback paths did), and
+    engine ``isinstance`` checks must accept those too. Only the framework
+    base is widened, never unrelated subclasses.
+    """
+
+    def __instancecheck__(cls, instance: object) -> bool:
+        if HostOverwrite is not None and isinstance(instance, HostOverwrite):
+            return True
+        return super().__instancecheck__(instance)
+
+    def __subclasscheck__(cls, subclass: type) -> bool:
+        if HostOverwrite is not None and issubclass(subclass, HostOverwrite):
+            return True
+        return super().__subclasscheck__(subclass)
+
+
+if HostOverwrite is None:
+
+    @dataclass(slots=True)
+    class Overwrite(_OverwriteBehavior):
+        """Bypass a reducer and write the wrapped value directly to a channel.
+
+        Receiving multiple ``Overwrite`` values for the same channel in one
+        super-step is an error; the channel raises rather than guessing which
+        one wins.
+        """
+
+        value: Any
+        type: Literal["__overwrite__"] = OVERWRITE
+
+else:
+
+    class Overwrite(_OverwriteBehavior, HostOverwrite, metaclass=_OverwriteMeta):
+        """Engine ``Overwrite`` that is also a ``langgraph.types.Overwrite``.
+
+        The host class owns the dataclass field declarations, ``__init__``,
+        equality and unhashability; declaring the slots again keeps the
+        engine's ``__slots__`` surface pinned and stops an instance dict from
+        appearing.
+        """
+
+        __slots__ = ("value", "type")
 
 
 @final
