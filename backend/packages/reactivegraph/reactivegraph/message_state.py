@@ -33,26 +33,61 @@ Messages = list[MessageLikeRepresentation] | MessageLikeRepresentation
 Value = TypeVar("Value")
 
 
-class EphemeralValue(Generic[Value]):
-    """Marker channel whose value lasts for one super-step.
+def _host_ephemeral_value() -> type | None:
+    """Return LangGraph's channel class when it is importable.
 
-    The native engine records the marker in state annotations; graph runtimes
-    that understand it clear the value after the step.  The class deliberately
-    does not inherit from a host channel implementation, so middleware state
-    schemas remain engine-neutral.
+    A state annotation may name a channel *class*. Host compilers resolve it by
+    checking ``issubclass(item, BaseChannel)``; a plain marker class is instead
+    silently compiled into a persistent ``LastValue``, so middleware directives
+    such as ``jump_to`` never clear. Inheriting the real host channel is the
+    only way for the annotation to mean the same thing on both sides of the
+    bridge. LangGraph stays optional: without it the native marker below keeps
+    the engine self-contained.
+    """
+    try:
+        from langgraph.channels.ephemeral_value import EphemeralValue as Host
+    except ImportError:  # pragma: no cover - langgraph is an optional host dep
+        return None
+    return Host
+
+
+_HostEphemeralValue = _host_ephemeral_value()
+
+
+if _HostEphemeralValue is None:
+
+    class _EphemeralValueBase(Generic[Value]):
+        __slots__ = ("guard", "typ")
+
+        def __init__(self, typ: Any, guard: bool = True) -> None:
+            self.typ = typ
+            self.guard = guard
+
+        def __eq__(self, value: object) -> bool:
+            return isinstance(value, EphemeralValue) and value.guard == self.guard
+
+else:
+
+    class _EphemeralValueBase(_HostEphemeralValue, Generic[Value]):  # type: ignore[misc]
+        __slots__ = ()
+
+        def __init__(self, typ: Any, guard: bool = True) -> None:
+            super().__init__(typ, guard)
+
+
+class EphemeralValue(_EphemeralValueBase):
+    """Channel whose value lasts for one super-step.
+
+    The engine records this marker in state annotations; runtimes that
+    understand it clear the value after the step. When LangGraph is installed
+    the class is also the host's own ``EphemeralValue`` channel, so a host
+    compiler gives the annotation identical semantics.
     """
 
-    __slots__ = ("guard", "typ")
-
-    def __init__(self, typ: Any, guard: bool = True) -> None:
-        self.typ = typ
-        self.guard = guard
+    __slots__ = ()
 
     def __repr__(self) -> str:
         return f"EphemeralValue({self.typ!r}, guard={self.guard!r})"
-
-    def __eq__(self, value: object) -> bool:
-        return isinstance(value, EphemeralValue) and value.guard == self.guard
 
 
 def _add_messages_wrapper(

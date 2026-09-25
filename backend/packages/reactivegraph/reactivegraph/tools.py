@@ -647,7 +647,34 @@ def _format_tool_to_openai_function(tool: BaseTool) -> dict[str, Any]:
     )
 
 
-class BaseTool(BaseModel):
+def _host_base_tool() -> type | None:
+    """Return langchain-core's ``BaseTool`` as an extra base, if installed.
+
+    Hosts hand our tools to *their* ``ToolNode`` (``langchain.agents``
+    ``create_agent`` collects ``middleware.tools`` and builds one). ``ToolNode``
+    does ``isinstance(tool, langchain_core.tools.BaseTool)`` and, when that is
+    false, tries to re-coerce the object through ``create_tool`` — which dies
+    with ``ValueError: The first argument must be a string or a callable…``.
+    A structurally identical but unrelated class therefore cannot cross the
+    boundary; inheriting the real host class is the only way to be a drop-in
+    base. Measured on the real DeerFlow suite: every TodoMiddleware graph test
+    failed this way.
+
+    langchain-core stays optional: without it this returns ``None`` and the
+    classes are plain pydantic models with the identical surface.
+    """
+    try:
+        from langchain_core.tools import BaseTool as HostBaseTool
+    except ImportError:  # pragma: no cover - langchain-core is an optional host dep
+        return None
+    return HostBaseTool
+
+
+HostBaseTool = _host_base_tool()
+_ToolBase = HostBaseTool or BaseModel
+
+
+class BaseTool(_ToolBase):
     """Base class for all tools."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)

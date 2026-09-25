@@ -19,9 +19,9 @@ flow signal is :class:`reactivegraph.errors.GraphInterrupt`.
 from __future__ import annotations
 
 import warnings
-from collections.abc import Sequence
+from collections.abc import Hashable, Sequence
 from dataclasses import asdict, dataclass
-from typing import Any, ClassVar, Literal, TypeAlias, final
+from typing import Any, ClassVar, Generic, Literal, TypeAlias, TypeVar, final
 
 from reactivegraph.checkpoint import CheckpointStore
 from reactivegraph.messages import ToolOutputMixin
@@ -261,8 +261,12 @@ class _CommandBehavior:
         return []
 
 
+N = TypeVar("N", bound=Hashable)
+"""Type parameter of the host ``Command``; mirrored so annotations match."""
+
+
 @dataclass(slots=True)
-class _NativeCommand(_CommandBehavior, ToolOutputMixin):
+class _NativeCommand(_CommandBehavior, ToolOutputMixin, Generic[N]):
     """The engine's own ``Command`` used when LangGraph is not installed."""
 
     graph: str | None = None
@@ -313,7 +317,7 @@ if HostCommand is None:
     Command = _NativeCommand
 else:
     class Command(  # type: ignore[no-redef]
-        _CommandBehavior, HostCommand, metaclass=_CommandMeta
+        _CommandBehavior, HostCommand, Generic[N], metaclass=_CommandMeta
     ):
         """Engine ``Command`` that is also a ``langgraph.types.Command``."""
 
