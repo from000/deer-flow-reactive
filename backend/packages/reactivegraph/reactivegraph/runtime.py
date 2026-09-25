@@ -194,6 +194,24 @@ def _host_helper(name: str) -> Any | None:
     return getattr(host_config, name, None)
 
 
+def _host_runtime_helper() -> Any | None:
+    """Return ``langgraph.runtime.get_runtime`` when the host is importable.
+
+    ``langgraph.config`` has never exposed ``get_runtime`` — it only carries
+    ``get_config``/``get_store``/``get_stream_writer``. The accessor lives in
+    ``langgraph.runtime``, so probing ``langgraph.config`` alone made every
+    engine ``get_runtime()`` call from inside a *host* graph node raise
+    ``RuntimeError`` (measured against LangGraph 1.2.9: DeerFlow's MCP
+    interceptor then reported request-scoped secrets missing and denied the
+    tool call).
+    """
+    try:
+        import langgraph.runtime as host_runtime
+    except ImportError:  # pragma: no cover - langgraph is an optional host dep
+        return None
+    return getattr(host_runtime, "get_runtime", None)
+
+
 def get_config() -> dict[str, Any]:
     """Return the active run config, or raise outside a run.
 
@@ -215,14 +233,15 @@ def get_runtime(context_schema: type | None = None) -> Runtime:
     *context_schema* is accepted for call-site type inference only; the
     returned runtime is the one bound by :func:`runtime_context`.
     """
-    del context_schema
     runtime = _current_runtime.get()
     if runtime is not None:
         return runtime
-    host_get_runtime = _host_helper("get_runtime")
+    host_get_runtime = _host_runtime_helper()
     if host_get_runtime is None:
         raise RuntimeError(_OUTSIDE_RUN)
-    return host_get_runtime()
+    # ``context_schema`` is forwarded: the host accessor accepts it for call-site
+    # type inference, exactly as this one does.
+    return host_get_runtime(context_schema)
 
 
 def get_stream_writer() -> StreamWriter:

@@ -215,13 +215,25 @@ class ThreadCheckpointer:
         (``TypeError``) so callers that already guard ``create_agent`` see the
         same failure; silently ignoring the object would make every threaded
         turn start a blank thread.
+
+        A saver is drivable when it can complete *either* read/write family:
+        the sync pair (``get_tuple``/``put``) or the async pair
+        (``aget_tuple``/``aput``). Probing the sync trio only rejected
+        async-only duck savers that upstream LangGraph drives happily — e.g.
+        DeerFlow's race-injecting test wrappers, which forward just
+        ``aget_tuple``/``aput``. ``put_writes``/``aput_writes`` are needed only
+        when a caller commits with a ``task_id``, so they are guarded at the
+        call site instead of being demanded up front.
         """
-        missing = [
-            name
-            for name in ("get_tuple", "put", "put_writes")
-            if not callable(getattr(self._saver, name, None))
-        ]
-        if missing:
+        sync_ok = all(
+            callable(getattr(self._saver, name, None))
+            for name in ("get_tuple", "put")
+        )
+        async_ok = all(
+            callable(getattr(self._saver, name, None))
+            for name in ("aget_tuple", "aput")
+        )
+        if not (sync_ok or async_ok):
             raise TypeError(
                 "Invalid checkpointer provided. Expected an instance of "
                 "`BaseCheckpointSaver`, `True`, `False`, or `None`. "
@@ -230,9 +242,15 @@ class ThreadCheckpointer:
             )
 
     def _supports_async(self) -> bool:
+        """True when the saver can serve the async read/write family.
+
+        ``aput_writes`` is deliberately not part of the probe: a task-scoped
+        commit that needs it fails closed in :meth:`acommit` with a named
+        error, while state-only commits (the common case) still work.
+        """
         return all(
             callable(getattr(self._saver, name, None))
-            for name in ("aget_tuple", "aput", "aput_writes")
+            for name in ("aget_tuple", "aput")
         )
 
     # -- config plumbing ---------------------------------------------------
@@ -572,7 +590,15 @@ class ThreadCheckpointer:
             # Pending writes are the durability signal DeerFlow reads to decide
             # whether a turn is still in flight; record the same channel values
             # the checkpoint committed so the pair never disagrees.
-            self._saver.put_writes(
+            put_writes = getattr(self._saver, "put_writes", None)
+            if not callable(put_writes):
+                raise CheckpointStateError(
+                    f"checkpointer {type(self._saver).__name__!r} cannot record "
+                    "pending writes, so a task-scoped commit cannot be honoured. "
+                    "Refusing to commit a checkpoint whose durability signal "
+                    "would be missing."
+                )
+            put_writes(
                 result,
                 [(channel, values[channel]) for channel in written if channel in values],
                 task_id,
@@ -621,7 +647,15 @@ class ThreadCheckpointer:
             checkpoint_id=new_id,
         )
         if task_id:
-            await self._saver.aput_writes(
+            aput_writes = getattr(self._saver, "aput_writes", None)
+            if not callable(aput_writes):
+                raise CheckpointStateError(
+                    f"checkpointer {type(self._saver).__name__!r} cannot record "
+                    "pending writes, so a task-scoped commit cannot be honoured. "
+                    "Refusing to commit a checkpoint whose durability signal "
+                    "would be missing."
+                )
+            await aput_writes(
                 result,
                 [(channel, values[channel]) for channel in written if channel in values],
                 task_id,
