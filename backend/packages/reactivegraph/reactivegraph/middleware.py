@@ -264,7 +264,108 @@ class _DefaultAgentState(AgentState[Any]):
     """AgentMiddleware default state."""
 
 
-class AgentMiddleware(Generic[StateT, ContextT, ResponseT]):
+_HOOK_NAMES = (
+    "before_agent",
+    "abefore_agent",
+    "before_model",
+    "abefore_model",
+    "after_model",
+    "aafter_model",
+    "after_agent",
+    "aafter_agent",
+    "wrap_model_call",
+    "awrap_model_call",
+    "wrap_tool_call",
+    "awrap_tool_call",
+)
+"""The full hook surface, sync and async, in upstream's declaration order."""
+
+_UNSET = object()
+_host_middleware_base: Any = _UNSET
+
+
+def host_middleware_base() -> type | None:
+    """LangChain's ``AgentMiddleware`` when it is importable, else ``None``.
+
+    Hosts that install LangChain before us declare their middleware against
+    *its* base. That class cannot become ours — importing it drags in
+    LangGraph, which must stay optional — but a middleware written against it
+    must still satisfy our ``isinstance``/``issubclass`` checks, because the
+    harness's feature flags are typed on our base.
+
+    Successful lookups are cached; failures are not, so a process that made
+    LangGraph temporarily unimportable and later restored it still converges.
+    """
+    global _host_middleware_base
+    if _host_middleware_base is not _UNSET:
+        return _host_middleware_base
+    try:
+        from langchain.agents.middleware import AgentMiddleware as HostAgentMiddleware
+    except ImportError:  # pragma: no cover - langchain is an optional host dep
+        return None
+    _host_middleware_base = HostAgentMiddleware
+    return HostAgentMiddleware
+
+
+class _MiddlewareMeta(type):
+    """Accept host middleware classes as instances of ours.
+
+    ``AgentMiddleware`` is our class, so a class deriving from LangChain's is
+    not a real subclass. Type checks in the harness (feature flags, ``@Next``
+    anchors, extension placement) must nevertheless accept both, otherwise a
+    host middleware is silently dropped into the "not an instance" branch.
+    """
+
+    def __subclasscheck__(cls, subclass: Any) -> bool:
+        if cls is not AgentMiddleware or type.__subclasscheck__(cls, subclass):
+            # The bridge widens only the framework base. Leaking it into
+            # every subclass would make ``issubclass(X, ClarificationMiddleware)``
+            # true for any host middleware, so anchor resolution in the
+            # harness would match the wrong middleware.
+            return type.__subclasscheck__(cls, subclass)
+        host = host_middleware_base()
+        if host is None:
+            return False
+        return type.__subclasscheck__(host, subclass)
+
+    def __instancecheck__(cls, instance: Any) -> bool:
+        if cls is not AgentMiddleware or type.__instancecheck__(cls, instance):
+            return type.__instancecheck__(cls, instance)
+        host = host_middleware_base()
+        if host is None:
+            return False
+        return type.__instancecheck__(host, instance)
+
+
+def _install_host_hook_identity() -> type | None:
+    """Adopt the host base's hook *function objects* on our class.
+
+    Upstream's ``create_agent`` decides whether a middleware participates in a
+    chain by identity against its own base::
+
+        m.__class__.wrap_tool_call is not AgentMiddleware.wrap_tool_call
+
+    A middleware inheriting from our base fails that test for every hook and
+    is compiled into every chain, where the inherited stub raises
+    ``NotImplementedError``. Sharing the host's function objects makes an
+    unoverridden hook compare identical again, so upstream skips it — while an
+    override still differs and participates, exactly as upstream intends.
+
+    Bodies are byte-identical to the host's (they were ported from it), so no
+    behaviour changes; only identity does. Without LangChain the native
+    definitions stay in place.
+    """
+    host = host_middleware_base()
+    if host is None:
+        return None
+    for hook in _HOOK_NAMES:
+        fn = getattr(host, hook, None)
+        if fn is not None:
+            setattr(AgentMiddleware, hook, fn)
+    return host
+
+
+class AgentMiddleware(Generic[StateT, ContextT, ResponseT], metaclass=_MiddlewareMeta):
     """Base class for agent middleware.
 
     Hooks are no-ops by default.  ``wrap_*`` defaults raise
@@ -387,13 +488,44 @@ class AgentMiddleware(Generic[StateT, ContextT, ResponseT]):
         raise NotImplementedError(msg)
 
 
+_install_host_hook_identity()
+
+
 class _ToolCallRequestOverrides(TypedDict, total=False):
     tool_call: dict[str, Any]
     tool: Any
     state: Any
 
 
-class _DirectlyInjectedToolArg:
+def _host_directly_injected_tool_arg() -> type | None:
+    """LangChain's ``_DirectlyInjectedToolArg`` marker, when installed.
+
+    ``langchain_core.tools``' ``@tool`` decorator keeps a directly injected
+    argument out of ``tool_call_schema`` only when the annotation is a
+    subclass of *its own* marker. DeerFlow builds its builtins (``present_files``
+    among them) with that decorator while annotating them with our
+    ``ToolRuntime``, so without this base the runtime stays in the schema and
+    ``bind_tools`` dies generating a JSON schema for ``stream_writer: Callable``.
+    """
+    try:
+        from langchain_core.tools.base import (
+            _DirectlyInjectedToolArg as HostDirectlyInjectedToolArg,
+        )
+    except ImportError:  # pragma: no cover - langchain is an optional host dep
+        return None
+    return HostDirectlyInjectedToolArg
+
+
+HostDirectlyInjectedToolArg = _host_directly_injected_tool_arg()
+
+
+class _DirectlyInjectedToolArg(
+    *(
+        (HostDirectlyInjectedToolArg,)
+        if HostDirectlyInjectedToolArg is not None
+        else (object,)
+    )
+):
     """Base marker for tool arguments injected directly by type annotation."""
 
 

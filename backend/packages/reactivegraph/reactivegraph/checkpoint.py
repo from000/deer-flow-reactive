@@ -22,10 +22,10 @@ import random
 import threading
 import time
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Generic, TypeVar
 
 # Reserved channels are keyed by a fixed negative index instead of their
 # position in the batch. Regular writes are first-write-wins so replaying a
@@ -41,14 +41,18 @@ WRITES_IDX_MAP: dict[str, int] = {
 __all__ = (
     "LATEST_CHECKPOINT_VERSION",
     "WRITES_IDX_MAP",
+    "BaseCheckpointSaver",
     "CheckpointStore",
     "CheckpointTuple",
     "MemoryCheckpointSaver",
+    "PendingWrite",
     "empty_checkpoint",
     "get_checkpointer",
     "reset_checkpointer",
     "uuid6",
 )
+
+V = TypeVar("V")
 
 LATEST_CHECKPOINT_VERSION = 2
 """Checkpoint schema version written by :func:`empty_checkpoint`."""
@@ -122,6 +126,204 @@ class CheckpointTuple:
     metadata: dict[str, Any]
     parent_config: dict[str, Any] | None
     pending_writes: list[tuple[str, str, Any]]
+
+
+PendingWrite = tuple[str, str, Any]
+"""One pending write: ``(task_id, channel, value)``.
+
+The tuple shape is LangGraph's, so a saver written against either engine can
+read the other's ``pending_writes`` entries without translation.
+"""
+
+
+class _NativeBaseCheckpointSaver(Generic[V]):
+    """LangGraph's ``BaseCheckpointSaver`` surface, implemented natively.
+
+    This is the fallback used only when ``langgraph`` cannot be imported. The
+    method bodies mirror upstream exactly where a host could observe a
+    difference: unimplemented storage operations raise ``NotImplementedError``
+    (fail closed) rather than silently returning empty state, ``get`` derives
+    the checkpoint from ``get_tuple``, ``get_next_version`` does integer
+    arithmetic, and ``get_delta_channel_history`` walks the parent chain the
+    same way. ``serde`` is ``None`` here: the engine's own storage layer
+    serialises with msgpack, and a host that needs typed serialisation must
+    supply its own.
+    """
+
+    serde: Any = None
+
+    def __init__(self, *, serde: Any | None = None) -> None:
+        self.serde = serde
+
+    @property
+    def config_specs(self) -> list:
+        return []
+
+    def get(self, config: Mapping[str, Any]) -> dict[str, Any] | None:
+        value = self.get_tuple(config)
+        return value.checkpoint if value else None
+
+    def get_tuple(self, config: Mapping[str, Any]) -> CheckpointTuple | None:
+        raise NotImplementedError
+
+    def list(
+        self,
+        config: Mapping[str, Any] | None,
+        *,
+        filter: Mapping[str, Any] | None = None,
+        before: Mapping[str, Any] | None = None,
+        limit: int | None = None,
+    ) -> Iterator[CheckpointTuple]:
+        raise NotImplementedError
+
+    def put(
+        self,
+        config: Mapping[str, Any],
+        checkpoint: dict[str, Any],
+        metadata: dict[str, Any],
+        new_versions: dict[str, Any],
+    ) -> Mapping[str, Any]:
+        raise NotImplementedError
+
+    def put_writes(
+        self,
+        config: Mapping[str, Any],
+        writes: Sequence[tuple[str, Any]],
+        task_id: str,
+        task_path: str = "",
+    ) -> None:
+        raise NotImplementedError
+
+    def delete_thread(self, thread_id: str) -> None:
+        raise NotImplementedError
+
+    def delete_for_runs(self, run_ids: Sequence[str]) -> None:
+        raise NotImplementedError
+
+    def copy_thread(self, source_thread_id: str, target_thread_id: str) -> None:
+        raise NotImplementedError
+
+    def prune(self, thread_ids: Sequence[str], *, strategy: str = "keep_latest") -> None:
+        raise NotImplementedError
+
+    async def aget_tuple(self, config: Mapping[str, Any]) -> CheckpointTuple | None:
+        raise NotImplementedError
+
+    async def alist(
+        self,
+        config: Mapping[str, Any] | None,
+        *,
+        filter: Mapping[str, Any] | None = None,
+        before: Mapping[str, Any] | None = None,
+        limit: int | None = None,
+    ):
+        raise NotImplementedError
+
+    async def aput(
+        self,
+        config: Mapping[str, Any],
+        checkpoint: dict[str, Any],
+        metadata: dict[str, Any],
+        new_versions: dict[str, Any],
+    ) -> Mapping[str, Any]:
+        raise NotImplementedError
+
+    async def aput_writes(
+        self,
+        config: Mapping[str, Any],
+        writes: Sequence[tuple[str, Any]],
+        task_id: str,
+        task_path: str = "",
+    ) -> None:
+        raise NotImplementedError
+
+    async def adelete_thread(self, thread_id: str) -> None:
+        raise NotImplementedError
+
+    async def adelete_for_runs(self, run_ids: Sequence[str]) -> None:
+        raise NotImplementedError
+
+    async def acopy_thread(self, source_thread_id: str, target_thread_id: str) -> None:
+        raise NotImplementedError
+
+    async def aprune(self, thread_ids: Sequence[str], *, strategy: str = "keep_latest") -> None:
+        raise NotImplementedError
+
+    def get_delta_channel_history(
+        self, *, config: Mapping[str, Any], channels: Sequence[str]
+    ) -> dict[str, Any]:
+        """Walk the parent chain accumulating per-channel writes and seed."""
+        if not channels:
+            return {}
+        collected: dict[str, list[PendingWrite]] = {c: [] for c in channels}
+        seeds: dict[str, Any] = {}
+        remaining = set(channels)
+        target = self.get_tuple(config)
+        cursor = target.parent_config if target else None
+        while cursor is not None and remaining:
+            tup = self.get_tuple(cursor)
+            if tup is None:
+                break
+            for write in reversed(tup.pending_writes or ()):
+                channel = write[1]
+                if channel in remaining:
+                    collected[channel].append(write)
+            for channel in list(remaining):
+                if channel in (tup.checkpoint.get("channel_values") or {}):
+                    seeds[channel] = tup.checkpoint["channel_values"][channel]
+                    remaining.discard(channel)
+            cursor = tup.parent_config
+        result: dict[str, Any] = {}
+        for channel in channels:
+            entry: dict[str, Any] = {"writes": list(reversed(collected[channel]))}
+            if channel in seeds:
+                entry["seed"] = seeds[channel]
+            result[channel] = entry
+        return result
+
+    async def aget_delta_channel_history(
+        self, *, config: Mapping[str, Any], channels: Sequence[str]
+    ) -> dict[str, Any]:
+        if not channels:
+            return {}
+        collected: dict[str, list[PendingWrite]] = {c: [] for c in channels}
+        seeds: dict[str, Any] = {}
+        remaining = set(channels)
+        target = await self.aget_tuple(config)
+        cursor = target.parent_config if target else None
+        while cursor is not None and remaining:
+            tup = await self.aget_tuple(cursor)
+            if tup is None:
+                break
+            for write in reversed(tup.pending_writes or ()):
+                channel = write[1]
+                if channel in remaining:
+                    collected[channel].append(write)
+            for channel in list(remaining):
+                if channel in (tup.checkpoint.get("channel_values") or {}):
+                    seeds[channel] = tup.checkpoint["channel_values"][channel]
+                    remaining.discard(channel)
+            cursor = tup.parent_config
+        result: dict[str, Any] = {}
+        for channel in channels:
+            entry: dict[str, Any] = {"writes": list(reversed(collected[channel]))}
+            if channel in seeds:
+                entry["seed"] = seeds[channel]
+            result[channel] = entry
+        return result
+
+    def get_next_version(self, current: Any, channel: Any) -> Any:
+        if isinstance(current, str):
+            raise NotImplementedError
+        if current is None:
+            return 1
+        return current + 1
+
+
+try:  # pragma: no cover - exercised by the optional-integration tests
+    from langgraph.checkpoint.base import BaseCheckpointSaver as BaseCheckpointSaver
+except ImportError:  # pragma: no cover - langgraph is an optional host dep
+    BaseCheckpointSaver = _NativeBaseCheckpointSaver  # type: ignore[misc,assignment]
 
 
 class CheckpointStore:

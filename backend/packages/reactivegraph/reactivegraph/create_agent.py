@@ -541,7 +541,11 @@ class AgentGraph:
         # overrides middleware/base annotations (upstream merge order).
         self.channels = resolve_channels(list(schemas.values()))
         self.builder = _GraphBuilderView(schemas, self.channels)
-        self._threads = (
+        # Validate eagerly (upstream ``ensure_valid_checkpointer`` raises here
+        # for a bogus saver), but re-bind on every access: hosts such as
+        # DeerFlow's run worker assign ``agent.checkpointer`` *after*
+        # construction, and ``CompiledStateGraph`` has the same contract.
+        self._threads: ThreadCheckpointer | None = (
             ThreadCheckpointer(self.checkpointer, self.channels)
             if self.checkpointer is not None and not self._checkpointer_is_inherit
             else None
@@ -915,11 +919,25 @@ class AgentGraph:
                 "checkpointer=True cannot be used for root graphs."
             )
 
+    def _bind_threads(self) -> ThreadCheckpointer | None:
+        """Re-bind on every access: hosts assign ``agent.checkpointer`` late."""
+        if self._checkpointer_is_inherit:
+            return None
+        checkpointer = self.checkpointer
+        if checkpointer is None:
+            return None
+        threads = self._threads
+        if threads is None or threads._saver is not checkpointer:  # noqa: SLF001
+            threads = ThreadCheckpointer(checkpointer, self.channels)
+            self._threads = threads
+        return threads
+
     def _threads_or_raise(self) -> ThreadCheckpointer:
         self._reject_inherited_checkpointer()
-        if self._threads is None:
+        threads = self._bind_threads()
+        if threads is None:
             raise ValueError(NO_CHECKPOINTER_MESSAGE)
-        return self._threads
+        return threads
 
     def _seed_budget(self, payload: dict[str, Any], config: dict | None) -> dict[str, Any]:
         """Install this run's budget as graph state before the first task runs.
@@ -1004,13 +1022,14 @@ class AgentGraph:
         payload = _normalize_input(input)
         head = None
         written: list[str] = []
-        if self._threads is not None:
-            head = self._threads.get_head(config)
+        threads = self._bind_threads()
+        if threads is not None:
+            head = threads.get_head(config)
             payload, written = self._seed_payload(payload, head)
         payload = self._seed_budget(payload, config)
         with runtime_context(runtime=_resolve_runtime(config, kwargs.get("context"))):
             state = self._graph.invoke("run", payload, config=config)
-        if self._threads is not None:
+        if threads is not None:
             # Commit before raising: upstream checkpoints every super-step, so
             # an exhausted thread keeps the work it already did. DeerFlow's
             # subagent executor reads that partial state back when it catches
@@ -1026,14 +1045,17 @@ class AgentGraph:
         payload = _normalize_input(input)
         head = None
         written: list[str] = []
-        if self._threads is not None:
-            head = await self._threads.aget_head(config)
+        threads = self._bind_threads()
+        if threads is not None:
+            head = await threads.aget_head(config)
             payload, written = self._seed_payload(payload, head)
         payload = self._seed_budget(payload, config)
-        with runtime_context(runtime=_resolve_runtime(config, kwargs.get("context"))):
-            state = await self._graph.ainvoke("run", payload)
-        if self._threads is not None:
-            await self._threads.acommit(
+        with runtime_context(
+            config=config, runtime=_resolve_runtime(config, kwargs.get("context"))
+        ):
+            state = await self._graph.ainvoke("run", payload, config=config)
+        if threads is not None:
+            await threads.acommit(
                 config,
                 head,
                 _public_state(state),

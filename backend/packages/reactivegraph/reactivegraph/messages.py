@@ -1015,13 +1015,54 @@ class AIMessageChunk(AIMessage, BaseMessageChunk, *_upstream("AIMessageChunk")):
         return self
 
 
-class ToolOutputMixin:
+def _host_tool_output_mixin() -> type | None:
+    """Return langchain-core's ``ToolOutputMixin`` when it is installed.
+
+    ``langgraph.types.Command`` and langchain-core's own ``ToolMessage`` are
+    members of that marker, and DeerFlow returns both from tools. The engine
+    must therefore recognise the host marker's members as pass-through
+    outputs, or a control-flow command is silently stringified into a
+    ``ToolMessage`` and the graph never jumps.
+    """
+    try:
+        from langchain_core.messages.tool import ToolOutputMixin as HostMixin
+    except ImportError:  # pragma: no cover - langchain-core is optional
+        return None
+    return HostMixin
+
+
+HostToolOutputMixin = _host_tool_output_mixin()
+
+
+class ToolOutputMixin(
+    *((HostToolOutputMixin,) if HostToolOutputMixin is not None else ())
+):
     """Marker for objects a tool may return directly.
 
     When a tool is invoked with a model tool call and returns an object that is
-    not a ``ToolOutputMixin``, the runtime wraps the normalized result in a
+    not a tool output, the runtime wraps the normalized result in a
     ``ToolMessage``. Returning a ``ToolMessage`` directly bypasses that wrap.
+
+    When langchain-core is installed this class also inherits its
+    ``ToolOutputMixin``, so engine-built outputs satisfy the host's identity
+    checks. Host-built objects (``langgraph.types.Command``, langchain-core
+    messages) are covered by :func:`is_tool_output`, because they cannot be
+    added to this class's MRO after the fact.
     """
+
+
+def is_tool_output(value: object) -> bool:
+    """Return whether *value* is a tool output from either side of the bridge.
+
+    LangGraph's ``Command`` subclasses the host ``ToolOutputMixin`` directly
+    and is not an instance of our subclass, so checking only
+    :class:`ToolOutputMixin` silently re-wraps host-constructed commands. Both
+    markers must be consulted; this is the consumer half of the identity
+    bridge in this module.
+    """
+    if isinstance(value, ToolOutputMixin):
+        return True
+    return HostToolOutputMixin is not None and isinstance(value, HostToolOutputMixin)
 
 
 class ToolMessage(BaseMessage, ToolOutputMixin, *_upstream("ToolMessage")):

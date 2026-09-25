@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 __all__ = (
+    "BaseStore",
     "InvalidNamespaceError",
     "Item",
     "MemoryStore",
@@ -69,6 +70,130 @@ def _validate_namespace(namespace: Sequence[str]) -> None:
         raise InvalidNamespaceError(
             f'Root label for namespace cannot be "langgraph". Got: {namespace}'
         )
+
+
+class _NativeBaseStore:
+    """LangGraph's ``BaseStore`` surface, implemented natively.
+
+    Used only when ``langgraph`` cannot be imported. As with the checkpoint
+    saver, unimplemented operations raise instead of silently reporting an
+    empty namespace: a host that forgets to configure a backend must see a
+    failure, not data loss. Concrete stores (including :class:`MemoryStore`)
+    are duck-typed and need not inherit from this class.
+    """
+
+    supports_ttl: bool = False
+    ttl_config: Any = None
+
+    def get(
+        self, namespace: Sequence[str], key: str, *, refresh_ttl: bool | None = None
+    ) -> Item | None:
+        del namespace, key, refresh_ttl
+        raise NotImplementedError
+
+    def put(
+        self,
+        namespace: Sequence[str],
+        key: str,
+        value: dict[str, Any],
+        index: Any = None,
+        *,
+        ttl: Any = None,
+    ) -> None:
+        del namespace, key, value, index, ttl
+        raise NotImplementedError
+
+    def delete(self, namespace: Sequence[str], key: str) -> None:
+        del namespace, key
+        raise NotImplementedError
+
+    def search(
+        self,
+        namespace_prefix: Sequence[str],
+        /,
+        *,
+        query: str | None = None,
+        filter: dict[str, Any] | None = None,
+        limit: int = 10,
+        offset: int = 0,
+        refresh_ttl: bool | None = None,
+    ) -> list[SearchItem]:
+        del namespace_prefix, query, filter, limit, offset, refresh_ttl
+        raise NotImplementedError
+
+    def list_namespaces(
+        self,
+        *,
+        prefix: Sequence[str] | None = None,
+        suffix: Sequence[str] | None = None,
+        max_depth: int | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[tuple[str, ...]]:
+        del prefix, suffix, max_depth, limit, offset
+        raise NotImplementedError
+
+    def batch(self, ops: Iterable[Any]) -> list[Any]:
+        del ops
+        raise NotImplementedError
+
+    async def aget(
+        self, namespace: Sequence[str], key: str, *, refresh_ttl: bool | None = None
+    ) -> Item | None:
+        del namespace, key, refresh_ttl
+        raise NotImplementedError
+
+    async def aput(
+        self,
+        namespace: Sequence[str],
+        key: str,
+        value: dict[str, Any],
+        index: Any = None,
+        *,
+        ttl: Any = None,
+    ) -> None:
+        del namespace, key, value, index, ttl
+        raise NotImplementedError
+
+    async def adelete(self, namespace: Sequence[str], key: str) -> None:
+        del namespace, key
+        raise NotImplementedError
+
+    async def asearch(
+        self,
+        namespace_prefix: Sequence[str],
+        /,
+        *,
+        query: str | None = None,
+        filter: dict[str, Any] | None = None,
+        limit: int = 10,
+        offset: int = 0,
+        refresh_ttl: bool | None = None,
+    ) -> list[SearchItem]:
+        del namespace_prefix, query, filter, limit, offset, refresh_ttl
+        raise NotImplementedError
+
+    async def alist_namespaces(
+        self,
+        *,
+        prefix: Sequence[str] | None = None,
+        suffix: Sequence[str] | None = None,
+        max_depth: int | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[tuple[str, ...]]:
+        del prefix, suffix, max_depth, limit, offset
+        raise NotImplementedError
+
+    async def abatch(self, ops: Iterable[Any]) -> list[Any]:
+        del ops
+        raise NotImplementedError
+
+
+try:  # pragma: no cover - exercised by the optional-integration tests
+    from langgraph.store.base import BaseStore as BaseStore
+except ImportError:  # pragma: no cover - langgraph is an optional host dep
+    BaseStore = _NativeBaseStore  # type: ignore[misc,assignment]
 
 
 @dataclass(frozen=True)

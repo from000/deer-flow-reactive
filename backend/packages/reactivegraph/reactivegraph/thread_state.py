@@ -356,7 +356,13 @@ class ThreadCheckpointer:
             )
         if filter is not None:
             kwargs["filter"] = dict(filter)
-        for record in lister(read_config, **kwargs):
+        # Drain before yielding, exactly as upstream does ("eagerly consume
+        # list() to avoid holding up the db cursor"): a consumer that stops
+        # early must not leave the saver's cursor open, and materializing the
+        # snapshots up front keeps a mid-iteration saver error from surfacing
+        # halfway through a caller's write.
+        records = list(lister(read_config, **kwargs))
+        for record in records:
             head = self._to_head(record, read_config)
             if head is not None:
                 yield self.snapshot(head, config)
@@ -383,7 +389,11 @@ class ThreadCheckpointer:
             )
         if filter is not None:
             kwargs["filter"] = dict(filter)
-        async for record in self._saver.alist(read_config, **kwargs):
+        # Same eager drain as the sync path: ``AsyncSqliteSaver.alist`` closes
+        # its cursor in an async-with, and a consumer ``break`` would otherwise
+        # leave it open (``ValueError: Connection closed``).
+        records = [record async for record in self._saver.alist(read_config, **kwargs)]
+        for record in records:
             head = self._to_head(record, read_config)
             if head is not None:
                 yield self.snapshot(head, config)

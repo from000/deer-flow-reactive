@@ -92,8 +92,8 @@ class Overwrite:
 
 @final
 @dataclass(init=False, slots=True)
-class Interrupt:
-    """Information about an interrupt that occurred in a node.
+class _NativeInterrupt:
+    """Engine-native interrupt payload, used when LangGraph is absent.
 
     ``id`` is stable for a given node namespace, which is what lets a client
     resume a specific interrupt instead of only the most recent one.
@@ -120,7 +120,7 @@ class Interrupt:
             self.id = id
 
     @classmethod
-    def from_ns(cls, value: Any, ns: str) -> Interrupt:
+    def from_ns(cls, value: Any, ns: str) -> _NativeInterrupt:
         """Build an interrupt whose id is derived from *ns*."""
         return cls(value=value, id=_hash_namespace(ns))
 
@@ -135,23 +135,44 @@ class Interrupt:
         return self.id
 
 
-@dataclass(slots=True)
-class Command(ToolOutputMixin):
-    """Update the graph's state and/or route execution to other nodes.
+def _host_interrupt() -> type | None:
+    """Return LangGraph's ``Interrupt`` class when it is importable.
 
-    A node (or a tool) returns ``Command`` when it needs to do more than merge
-    a value into state: jump to another node, hand a task to a specific node
-    with a private input (``Send``), or resume an interrupt.
+    The payload crosses package boundaries: DeerFlow's serializer checks
+    ``isinstance(obj, reactivegraph.Interrupt)`` on objects raised by
+    ``langgraph.types.interrupt`` inside graphs still running on the host
+    runtime. Only the *same object* satisfies both directions, so the engine
+    re-exports the host class when present. The import stays lazy so the
+    engine remains usable without LangGraph.
+    """
+    try:
+        from langgraph.types import Interrupt as HostInterrupt
+    except ImportError:  # pragma: no cover - langgraph is an optional host dep
+        return None
+    return HostInterrupt
 
-    ``goto`` accepts one node name, a sequence of node names, a ``Send``, or a
-    sequence of ``Send`` objects. ``Command.PARENT`` targets the closest parent
-    graph.
+
+HostInterrupt = _host_interrupt()
+
+# ``Interrupt`` has no engine-specific behaviour to add: field names, the
+# xxh3 id derivation and the slot-only storage are all pinned against the
+# host. Aliasing (rather than subclassing) is required because host code also
+# checks engine-produced payloads against ``langgraph.types.Interrupt``.
+Interrupt = HostInterrupt or _NativeInterrupt
+
+
+class _CommandBehavior:
+    """Engine semantics shared by the native and host-bridged ``Command``.
+
+    LangGraph's ``Command`` is a frozen slotted dataclass; subclassing it is
+    the only way host ``isinstance(..., langgraph.types.Command)`` checks can
+    accept engine-produced commands. The host class also owns the field
+    declarations and equality/hash behaviour, so this mixin carries only the
+    parts the engine must keep control of: mutation (the engine's public
+    contract), repr, and update normalisation.
     """
 
-    graph: str | None = None
-    update: Any | None = None
-    resume: Any | None = None
-    goto: Any = ()
+    __slots__ = ()
 
     PARENT: ClassVar[str] = "__parent__"
 
@@ -164,7 +185,13 @@ class Command(ToolOutputMixin):
         return f"Command({contents})"
 
     def _update_as_tuples(self) -> Sequence[tuple[str, Any]]:
-        """Normalise ``update`` into ``(channel, value)`` pairs."""
+        """Normalise ``update`` into ``(channel, value)`` pairs.
+
+        The host implementation also consults annotated dataclass keys for
+        non-dict updates; the engine's tool contract instead treats a plain
+        value as a root update. Keeping this method here prevents a bridge
+        choice from silently changing ``ToolNode`` behaviour.
+        """
         if isinstance(self.update, dict):
             return list(self.update.items())
         if isinstance(self.update, (list, tuple)) and all(
@@ -175,6 +202,85 @@ class Command(ToolOutputMixin):
         if self.update is not None:
             return [("__root__", self.update)]
         return []
+
+
+@dataclass(slots=True)
+class _NativeCommand(_CommandBehavior, ToolOutputMixin):
+    """The engine's own ``Command`` used when LangGraph is not installed."""
+
+    graph: str | None = None
+    update: Any | None = None
+    resume: Any | None = None
+    goto: Any = ()
+
+
+def _host_command() -> type | None:
+    """Return LangGraph's ``Command`` class when it is importable.
+
+    ``Command`` is a plain class, so it cannot act as a virtual ABC base.
+    Subclassing it keeps the host's own ``isinstance`` checks true without
+    requiring the host to know about the engine; the import stays lazy so the
+    engine remains usable without LangGraph.
+    """
+    try:
+        from langgraph.types import Command as HostCommand
+    except ImportError:
+        return None
+    return HostCommand
+
+
+HostCommand = _host_command()
+
+
+class _CommandMeta(type):
+    """Recognise host-created ``Command`` objects as engine commands.
+
+    Engine-produced commands are host subclasses. External tools may still
+    construct the host class directly, and the engine's ``isinstance`` checks
+    must accept those too. Only the framework base is widened, never unrelated
+    subclasses.
+    """
+
+    def __instancecheck__(cls, instance: object) -> bool:
+        if HostCommand is not None and isinstance(instance, HostCommand):
+            return True
+        return super().__instancecheck__(instance)
+
+    def __subclasscheck__(cls, subclass: type) -> bool:
+        if HostCommand is not None and issubclass(subclass, HostCommand):
+            return True
+        return super().__subclasscheck__(subclass)
+
+
+if HostCommand is None:
+    Command = _NativeCommand
+else:
+    class Command(  # type: ignore[no-redef]
+        _CommandBehavior, HostCommand, metaclass=_CommandMeta
+    ):
+        """Engine ``Command`` that is also a ``langgraph.types.Command``."""
+
+        __slots__ = ("graph", "update", "resume", "goto")
+
+        def __init__(
+            self,
+            graph: str | None = None,
+            update: Any | None = None,
+            resume: Any | None = None,
+            goto: Any = (),
+        ) -> None:
+            object.__setattr__(self, "graph", graph)
+            object.__setattr__(self, "update", update)
+            object.__setattr__(self, "resume", resume)
+            object.__setattr__(self, "goto", goto)
+
+        def __setattr__(self, name: str, value: Any) -> None:
+            # The host base is frozen; the engine's contract is mutable and
+            # callers do assign to fields after construction.
+            object.__setattr__(self, name, value)
+
+        def __delattr__(self, name: str) -> None:
+            object.__delattr__(self, name)
 
 
 class Send:

@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError,
 from pydantic.fields import FieldInfo
 from typing_extensions import is_typeddict
 
-from reactivegraph.messages import ToolMessage, ToolOutputMixin
+from reactivegraph.messages import ToolMessage, ToolOutputMixin, is_tool_output
 from reactivegraph.middleware import ToolRuntime, _DirectlyInjectedToolArg
 
 __all__ = (
@@ -950,10 +950,10 @@ def _format_output(
     if (
         isinstance(content, list)
         and content
-        and all(isinstance(item, ToolOutputMixin) for item in content)
+        and all(is_tool_output(item) for item in content)
     ):
         return content
-    if isinstance(content, ToolOutputMixin) or tool_call_id is None:
+    if is_tool_output(content) or tool_call_id is None:
         return content
     normalized_content = _normalize_message_content(content)
     content = _stringify(content) if normalized_content is None else normalized_content

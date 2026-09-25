@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import contextvars
 import copy
+import functools
 import json
 import threading
 from collections import deque
@@ -692,16 +693,24 @@ class ReactiveGraph:
     # 底层 Driver 本身就是异步引擎;Python 端经 executor 线程跑同步内核,
     # 让调用方的事件循环不被阻塞(并发 invoke 由线程池承载)。
 
-    async def ainvoke(self, event: str, payload: Any) -> dict:
+    async def ainvoke(
+        self, event: str, payload: Any, *, config: dict | None = None
+    ) -> dict:
         """异步 invoke:在 executor 线程执行同步内核,不阻塞当前 event loop。
 
         `run_in_executor` 不继承调用方 ContextVar（`get_config`/`get_runtime`
         在任务体里读的就是它），因此在调用线程上先 copy_context，再把
         context 带进 executor 线程重入。
+
+        `config` 与同步 `invoke` 同义：它必须透传到内核，否则异步运行里的
+        `get_config()["configurable"]` 会是空的，中间件读不到调用方传入的
+        `thread_id`（DeerFlow 的 ThreadDataMiddleware 正是这样读的）。
         """
         loop = asyncio.get_running_loop()
         ctx = contextvars.copy_context()
-        return await loop.run_in_executor(None, ctx.run, self.invoke, event, payload)
+        return await loop.run_in_executor(
+            None, ctx.run, functools.partial(self.invoke, event, payload, config=config)
+        )
 
     async def astream(
         self, event: str, payload: Any, *, config: dict | None = None

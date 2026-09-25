@@ -177,6 +177,23 @@ def runtime_context(
             var.reset(token)
 
 
+def _host_helper(name: str) -> Any | None:
+    """Return ``langgraph.config.<name>`` when the host module is importable.
+
+    DeerFlow middleware was written against ``langgraph.config``. Modules that
+    were switched to the engine import must keep working when they are *hosted*
+    by a real LangGraph run (a graph still using ``langgraph.graph``), so the
+    engine helpers delegate to the host helper instead of raising. Delegating
+    to the module attribute — rather than re-deriving the writer from the host
+    config — also preserves the seam host code (and its tests) install there.
+    """
+    try:
+        import langgraph.config as host_config
+    except ImportError:  # pragma: no cover - langgraph is an optional host dep
+        return None
+    return getattr(host_config, name, None)
+
+
 def get_config() -> dict[str, Any]:
     """Return the active run config, or raise outside a run.
 
@@ -184,9 +201,12 @@ def get_config() -> dict[str, Any]:
     "no thread id because we are not in a run" from a real empty config.
     """
     config = _current_config.get()
-    if config is None:
+    if config is not None:
+        return config
+    host_get_config = _host_helper("get_config")
+    if host_get_config is None:
         raise RuntimeError(_OUTSIDE_RUN)
-    return config
+    return host_get_config()
 
 
 def get_runtime(context_schema: type | None = None) -> Runtime:
@@ -197,11 +217,24 @@ def get_runtime(context_schema: type | None = None) -> Runtime:
     """
     del context_schema
     runtime = _current_runtime.get()
-    if runtime is None:
+    if runtime is not None:
+        return runtime
+    host_get_runtime = _host_helper("get_runtime")
+    if host_get_runtime is None:
         raise RuntimeError(_OUTSIDE_RUN)
-    return runtime
+    return host_get_runtime()
 
 
 def get_stream_writer() -> StreamWriter:
-    """Return the writer that publishes custom frames for the active run."""
-    return get_runtime().stream_writer
+    """Return the writer that publishes custom frames for the active run.
+
+    The engine's own binding always wins; outside an engine run this is the
+    host helper, so a module written against either import keeps emitting.
+    """
+    runtime = _current_runtime.get()
+    if runtime is not None:
+        return runtime.stream_writer
+    host_get_stream_writer = _host_helper("get_stream_writer")
+    if host_get_stream_writer is None:
+        raise RuntimeError(_OUTSIDE_RUN)
+    return host_get_stream_writer()
