@@ -18,7 +18,7 @@ from contextlib import AbstractAsyncContextManager
 from typing import Any, Literal, NamedTuple
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langgraph.checkpoint.base import empty_checkpoint, uuid6
+from reactivegraph import empty_checkpoint, uuid6
 
 import deerflow.utils.llm_text as llm_text
 from deerflow.agents.goal_state import GoalBlocker, GoalEvaluation, GoalState

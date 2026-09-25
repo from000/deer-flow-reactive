@@ -26,15 +26,11 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import override
 
-from langchain.agents import AgentState
-from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.types import (
-    ModelCallResult,
-    ModelRequest,
-    ModelResponse,
-)
+from reactivegraph.middleware import AgentState
+from reactivegraph.middleware import AgentMiddleware
+from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import HumanMessage
-from langgraph.errors import GraphBubbleUp
+from reactivegraph.errors import GraphBubbleUp
 
 from deerflow.agents.middlewares.message_utils import requires_input_sanitization
 from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY, message_content_to_text

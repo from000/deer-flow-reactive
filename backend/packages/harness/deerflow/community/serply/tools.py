@@ -15,7 +15,7 @@ import os
 import re
 
 import httpx
-from langchain.tools import tool
+from langchain_core.tools import tool
 
 from deerflow.config import get_app_config
 

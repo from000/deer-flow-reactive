@@ -1,6 +1,6 @@
 from typing import Literal, Required, TypedDict
 
-from langchain.tools import tool
+from langchain_core.tools import tool
 
 
 class ClarificationFormField(TypedDict, total=False):

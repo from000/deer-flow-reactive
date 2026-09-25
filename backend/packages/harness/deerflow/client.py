@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from langchain.agents.middleware import AgentMiddleware
+from reactivegraph.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from reactivegraph.create_agent import create_agent

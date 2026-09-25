@@ -26,16 +26,16 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING, Annotated, Any
 
-from langchain.tools import BaseTool
+from langchain_core.tools import BaseTool
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
 from langchain_core.utils.function_calling import convert_to_openai_function
-from langgraph.types import Command
+from reactivegraph import Command
 
 from deerflow.tools.mcp_metadata import get_mcp_routing, is_mcp_tool
 
 if TYPE_CHECKING:
-    from langchain.agents.middleware import AgentMiddleware
+    from reactivegraph.middleware import AgentMiddleware
 
 logger = logging.getLogger(__name__)
 

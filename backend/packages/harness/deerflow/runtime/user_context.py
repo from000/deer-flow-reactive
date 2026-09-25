@@ -228,7 +228,7 @@ def _user_id_from_langgraph_auth() -> str | None:
     is unavailable.
     """
     try:
-        from langgraph.config import get_config
+        from reactivegraph import get_config
 
         config = get_config()
     except RuntimeError:

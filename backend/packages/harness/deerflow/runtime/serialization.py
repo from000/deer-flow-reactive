@@ -38,7 +38,7 @@ def serialize_lc_object(obj: Any) -> Any:
     # Interrupt is a __slots__ class — no model_dump/dict/__dict__, so it
     # would reach str() and produce a malformed payload.
     try:
-        from langgraph.types import Interrupt
+        from reactivegraph import Interrupt
     except ImportError:
         pass
     else:

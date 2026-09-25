@@ -47,7 +47,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from langchain.agents.middleware import AgentMiddleware
+from reactivegraph.middleware import AgentMiddleware
 
 # The nodes every turn traverses whatever the middleware chain looks like:
 # LangChain's ``model`` node, and the ``tools`` node the loop returns through.

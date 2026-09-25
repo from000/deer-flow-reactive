@@ -20,12 +20,12 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import override
 
-from langchain.agents import AgentState
-from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse
+from reactivegraph.middleware import AgentState
+from reactivegraph.middleware import AgentMiddleware
+from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langgraph.prebuilt.tool_node import ToolCallRequest
-from langgraph.types import Command
+from reactivegraph import ToolCallRequest
+from reactivegraph import Command
 
 from deerflow.agents.middlewares.message_utils import insert_after_leading_system_messages, is_genuine_user_message
 from deerflow.agents.middlewares.tool_receipt import (

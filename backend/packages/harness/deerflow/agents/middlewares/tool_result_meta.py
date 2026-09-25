@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Literal, get_args
 
 from langchain_core.messages import ToolMessage
-from langgraph.types import Command
+from reactivegraph import Command
 
 TOOL_META_KEY = "deerflow_tool_meta"
 PROGRESS_GUARD_ERROR_TYPE = "blocked_by_progress_guard"

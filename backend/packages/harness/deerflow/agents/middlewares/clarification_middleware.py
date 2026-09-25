@@ -7,13 +7,13 @@ from collections.abc import Callable
 from hashlib import sha256
 from typing import Any, override
 
-from langchain.agents import AgentState
-from langchain.agents.middleware import AgentMiddleware
+from reactivegraph.middleware import AgentState
+from reactivegraph.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, ToolMessage
-from langgraph.graph import END
-from langgraph.prebuilt.tool_node import ToolCallRequest
-from langgraph.runtime import Runtime
-from langgraph.types import Command
+from reactivegraph import END
+from reactivegraph import ToolCallRequest
+from reactivegraph import Runtime
+from reactivegraph import Command
 
 from deerflow.agents.interaction_policy import resolve_run_interaction_policy
 from deerflow.agents.middlewares.tool_call_metadata import clone_ai_message_with_tool_calls

@@ -1,6 +1,6 @@
 import json
 
-from langchain.tools import tool
+from langchain_core.tools import tool
 from tavily import TavilyClient
 
 from deerflow.community.search_time_range import SearchTimeRange

@@ -22,9 +22,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
-from langchain.tools import InjectedToolCallId, tool
+from langchain_core.tools import InjectedToolCallId, tool
 from langchain_core.messages import ToolMessage
-from langgraph.types import Command
+from reactivegraph import Command
 
 from deerflow.community.url_safety import resolve_host_addresses as _resolve_host_addresses
 from deerflow.community.url_safety import validate_public_http_url

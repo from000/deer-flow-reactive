@@ -46,7 +46,7 @@ def _current_runtime() -> Any | None:
     ContextVar, so failures here reduce accuracy but never crash the call.
     """
     try:
-        from langgraph.runtime import get_runtime
+        from reactivegraph import get_runtime
 
         return get_runtime()
     except Exception:

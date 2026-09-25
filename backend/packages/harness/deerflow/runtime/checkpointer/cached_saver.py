@@ -23,7 +23,7 @@ from collections.abc import Iterator, Sequence
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.base import BaseCheckpointSaver, CheckpointTuple, PendingWrite
+from reactivegraph import BaseCheckpointSaver, CheckpointTuple, PendingWrite
 
 from deerflow.runtime.checkpoint_cache.base import make_history_key
 

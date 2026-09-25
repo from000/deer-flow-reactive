@@ -18,10 +18,10 @@ from typing import TYPE_CHECKING, Annotated
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
-from langgraph.types import Command
+from reactivegraph import Command
 
 if TYPE_CHECKING:
-    from langchain.tools import BaseTool
+    from langchain_core.tools import BaseTool
 
 from deerflow.constants import DEFAULT_SKILLS_CONTAINER_PATH
 from deerflow.skills.catalog import SkillCatalog

@@ -52,17 +52,13 @@ from dataclasses import dataclass
 from dataclasses import replace as dc_replace
 from typing import override
 
-from langchain.agents import AgentState
-from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.types import (
-    ModelCallResult,
-    ModelRequest,
-    ModelResponse,
-)
+from reactivegraph.middleware import AgentState
+from reactivegraph.middleware import AgentMiddleware
+from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import HumanMessage, ToolMessage
-from langgraph.errors import GraphBubbleUp
-from langgraph.prebuilt.tool_node import ToolCallRequest
-from langgraph.types import Command
+from reactivegraph.errors import GraphBubbleUp
+from reactivegraph import ToolCallRequest
+from reactivegraph import Command
 
 from deerflow.agents.middlewares.message_utils import requires_input_sanitization
 from deerflow.agents.middlewares.tool_result_sanitization_middleware import _REMOTE_CONTENT_TOOL_NAMES

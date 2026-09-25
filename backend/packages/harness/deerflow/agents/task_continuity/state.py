@@ -3,7 +3,7 @@
 import re
 from collections.abc import Sequence
 
-from langgraph.channels import BinaryOperatorAggregate
+from reactivegraph.channels import BinaryOperatorAggregate
 
 MAX_NOTES = 8
 MAX_NOTE_CHARS = 750

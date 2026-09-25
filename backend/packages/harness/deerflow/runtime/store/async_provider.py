@@ -22,7 +22,7 @@ import contextlib
 import logging
 from collections.abc import AsyncIterator
 
-from langgraph.store.base import BaseStore
+from reactivegraph import BaseStore
 
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.persistence.postgres_schema import dsn_with_search_path, ensure_postgres_schema_async

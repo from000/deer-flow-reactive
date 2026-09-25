@@ -51,11 +51,11 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, override
 
-from langchain.agents import AgentState
-from langchain.agents.middleware import AgentMiddleware
+from reactivegraph.middleware import AgentState
+from reactivegraph.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage
-from langgraph.errors import GraphBubbleUp
-from langgraph.runtime import Runtime
+from reactivegraph.errors import GraphBubbleUp
+from reactivegraph import Runtime
 
 from deerflow.agents.middlewares.safety_termination_detectors import (
     SafetyTermination,
@@ -255,7 +255,7 @@ class SafetyFinishReasonMiddleware(AgentMiddleware[AgentState]):
         already streamed to the user. Failures are logged at debug and
         ignored — this is a best-effort signal."""
         try:
-            from langgraph.config import get_stream_writer
+            from reactivegraph import get_stream_writer
 
             writer = get_stream_writer()
         except GraphBubbleUp:
@@ -278,7 +278,7 @@ class SafetyFinishReasonMiddleware(AgentMiddleware[AgentState]):
         runtime: Runtime,
     ) -> None:
         try:
-            from langgraph.config import get_stream_writer
+            from reactivegraph import get_stream_writer
 
             writer = get_stream_writer()
         except GraphBubbleUp:

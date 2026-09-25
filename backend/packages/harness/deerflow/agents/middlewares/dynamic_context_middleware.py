@@ -53,10 +53,10 @@ from typing import TYPE_CHECKING, override
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from deerflow_extension_api import ContentKind, provenance_kwargs
-from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse
+from reactivegraph.middleware import AgentMiddleware
+from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import HumanMessage, RemoveMessage, SystemMessage
-from langgraph.runtime import Runtime
+from reactivegraph import Runtime
 
 from deerflow.projects.context import build_project_context_message, is_project_context_message, pinned_project_snapshot, project_context_insertion_index, render_documents_block, render_project_block
 from deerflow.runtime.context_keys import CURRENT_RUN_PRE_EXISTING_MESSAGE_IDS_KEY

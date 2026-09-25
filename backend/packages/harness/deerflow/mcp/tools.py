@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from langchain_core.tools import BaseTool, StructuredTool
-from langgraph.config import get_config
+from reactivegraph import get_config
 
 from deerflow.config.extensions_config import ExtensionsConfig, McpServerConfig, resolve_effective_mcp_routing
 from deerflow.config.paths import VIRTUAL_PATH_PREFIX, Paths, get_paths
@@ -390,7 +390,7 @@ def _convert_call_tool_result(
 
     # Pass LangGraph Command through directly when langgraph is installed.
     try:
-        from langgraph.types import Command
+        from reactivegraph import Command
 
         if isinstance(call_tool_result, Command):
             return call_tool_result, None

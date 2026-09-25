@@ -1,6 +1,6 @@
 import logging
 
-from langchain.chat_models import BaseChatModel
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai.chat_models.base import BaseChatOpenAI
 
 from deerflow.config import get_app_config

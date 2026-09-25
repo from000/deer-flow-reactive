@@ -12,7 +12,7 @@ from ipaddress import IPv4Address, ip_address
 from urllib.parse import urlparse
 
 import httpx
-from langchain.tools import tool
+from langchain_core.tools import tool
 
 from deerflow.config import get_app_config
 

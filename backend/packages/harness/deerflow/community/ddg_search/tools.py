@@ -5,7 +5,7 @@ Web Search Tool - Search the web using DuckDuckGo (no API key required).
 import json
 import logging
 
-from langchain.tools import tool
+from langchain_core.tools import tool
 
 from deerflow.community.search_time_range import DDGS_TIMELIMIT_BY_TIME_RANGE, SearchTimeRange
 from deerflow.config import get_app_config

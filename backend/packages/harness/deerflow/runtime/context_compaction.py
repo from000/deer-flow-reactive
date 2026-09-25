@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-from langgraph.types import Overwrite
+from reactivegraph import Overwrite
 
 from deerflow.agents.middlewares.summarization_middleware import DeerFlowSummarizationMiddleware, SummaryGenerationError, create_summarization_middleware
 from deerflow.config.agents_config import validate_agent_name

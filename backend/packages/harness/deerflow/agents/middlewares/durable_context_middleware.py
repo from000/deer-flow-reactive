@@ -16,11 +16,11 @@ from html import escape
 from typing import override
 
 from deerflow_extension_api import ContentKind, provenance_kwargs
-from langchain.agents import AgentState
-from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse
+from reactivegraph.middleware import AgentState
+from reactivegraph.middleware import AgentMiddleware
+from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
-from langgraph.runtime import Runtime
+from reactivegraph import Runtime
 
 from deerflow.agents.middlewares.delegation_ledger import extract_delegations, render_delegation_ledger
 from deerflow.agents.middlewares.message_utils import insert_after_leading_system_messages

@@ -1,7 +1,7 @@
 import json
 import logging
 
-from langchain.tools import tool
+from langchain_core.tools import tool
 
 from deerflow.community.search_time_range import SearchTimeRange
 from deerflow.config import get_app_config

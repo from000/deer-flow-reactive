@@ -12,7 +12,7 @@ from contextvars import ContextVar
 from functools import lru_cache
 from pathlib import Path
 
-from langchain.tools import tool
+from langchain_core.tools import tool
 
 from deerflow.agents.thread_state import ThreadDataState
 from deerflow.authz.sandbox_authz import (

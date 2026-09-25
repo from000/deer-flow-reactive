@@ -19,7 +19,7 @@ overrides those ops (DeerMem does; noop inherits the raises -> errors).
 import json
 import logging
 
-from langchain.tools import tool
+from langchain_core.tools import tool
 
 from deerflow.agents.memory.manager import get_memory_manager
 from deerflow.runtime.user_context import resolve_runtime_user_id

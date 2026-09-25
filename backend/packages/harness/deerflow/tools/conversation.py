@@ -9,7 +9,7 @@ import json
 import re
 from typing import Annotated
 
-from langchain.tools import tool
+from langchain_core.tools import tool
 from pydantic import Field
 
 from deerflow.constants import CONVERSATION_READER_CONTEXT_KEY as CONVERSATION_READER_CONTEXT_KEY

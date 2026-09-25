@@ -17,10 +17,10 @@ from __future__ import annotations
 import logging
 from typing import Any, override
 
-from langchain.agents import AgentState
-from langchain.agents.middleware import AgentMiddleware
+from reactivegraph.middleware import AgentState
+from reactivegraph.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage
-from langgraph.runtime import Runtime
+from reactivegraph import Runtime
 
 from deerflow.agents.middlewares.model_length_termination_detectors import (
     ModelLengthTermination,

@@ -6,12 +6,12 @@ import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import Any, override
 
-from langchain.agents import AgentState
-from langchain.agents.middleware import AgentMiddleware
+from reactivegraph.middleware import AgentState
+from reactivegraph.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
-from langgraph.prebuilt.tool_node import ToolCallRequest
-from langgraph.runtime import Runtime
-from langgraph.types import Command
+from reactivegraph import ToolCallRequest
+from reactivegraph import Runtime
+from reactivegraph import Command
 
 from deerflow.agents.middlewares.audit_context import (
     TOOL_PROMOTION_RECORDER_CONTEXT_KEY,

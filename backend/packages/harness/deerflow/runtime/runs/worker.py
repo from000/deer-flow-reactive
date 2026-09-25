@@ -33,8 +33,8 @@ from datetime import datetime
 from functools import lru_cache
 from typing import Any, Final, Literal, cast
 
-from langgraph.checkpoint.base import empty_checkpoint
-from langgraph.types import Overwrite
+from reactivegraph import empty_checkpoint
+from reactivegraph import Overwrite
 
 from deerflow.agents.goal_state import GoalEvaluation, GoalState
 from deerflow.agents.middlewares.input_sanitization_middleware import neutralize_untrusted_tags
@@ -1076,7 +1076,7 @@ async def run_agent(
 
         # 3. Build the agent
         from langchain_core.runnables import RunnableConfig
-        from langgraph.runtime import Runtime
+        from reactivegraph import Runtime
 
         # Inject runtime context so middlewares and tools (via ToolRuntime.context) can
         # access thread-level data. langgraph-cli does this automatically; we must do it

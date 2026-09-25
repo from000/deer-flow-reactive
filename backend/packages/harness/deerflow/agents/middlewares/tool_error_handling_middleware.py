@@ -5,12 +5,12 @@ import secrets
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, override
 
-from langchain.agents import AgentState
-from langchain.agents.middleware import AgentMiddleware
+from reactivegraph.middleware import AgentState
+from reactivegraph.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
-from langgraph.errors import GraphBubbleUp
-from langgraph.prebuilt.tool_node import ToolCallRequest
-from langgraph.types import Command
+from reactivegraph.errors import GraphBubbleUp
+from reactivegraph import ToolCallRequest
+from reactivegraph import Command
 
 from deerflow.agents.middlewares.skill_context import (
     SKILL_CONTEXT_ENTRY_KEY,

@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from langchain.tools import BaseTool
+from langchain_core.tools import BaseTool
 
 MCP_TOOL_METADATA_KEY = "deerflow_mcp"
 MCP_TOOL_ROUTING_METADATA_KEY = "deerflow_mcp_routing"

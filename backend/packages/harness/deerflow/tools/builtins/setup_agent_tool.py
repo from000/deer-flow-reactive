@@ -2,7 +2,7 @@ import logging
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import tool
-from langgraph.types import Command
+from reactivegraph import Command
 
 from deerflow.config.agents_config import SOUL_FILENAME, validate_agent_name
 from deerflow.config.paths import get_paths

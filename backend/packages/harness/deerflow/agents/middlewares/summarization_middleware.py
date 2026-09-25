@@ -9,13 +9,16 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol, override, runtime_checkable
 
 from deerflow_extension_api import CompactionEvent, canonical_hash
-from langchain.agents import AgentState
-from langchain.agents.middleware import SummarizationMiddleware
-from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage, SystemMessage, get_buffer_string, trim_messages
-from langgraph.config import get_config
-from langgraph.constants import TAG_NOSTREAM
-from langgraph.graph.message import REMOVE_ALL_MESSAGES
-from langgraph.runtime import Runtime
+from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, get_buffer_string, trim_messages
+from reactivegraph import (
+    REMOVE_ALL_MESSAGES,
+    TAG_NOSTREAM,
+    AgentState,
+    RemoveMessage,
+    Runtime,
+    get_config,
+)
+from reactivegraph.summarization import SummarizationMiddleware
 
 from deerflow.agents.middlewares.dynamic_context_middleware import is_dynamic_context_reminder
 from deerflow.agents.middlewares.message_utils import is_genuine_user_message

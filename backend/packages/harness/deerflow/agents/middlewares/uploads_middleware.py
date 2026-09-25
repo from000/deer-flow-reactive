@@ -9,11 +9,11 @@ from collections import Counter
 from pathlib import Path
 from typing import NotRequired, override
 
-from langchain.agents import AgentState
-from langchain.agents.middleware import AgentMiddleware
+from reactivegraph.middleware import AgentState
+from reactivegraph.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import run_in_executor
-from langgraph.runtime import Runtime
+from reactivegraph import Runtime
 
 from deerflow.agents.middlewares.input_sanitization_middleware import neutralize_untrusted_tags
 from deerflow.config.paths import Paths, get_paths
@@ -221,7 +221,7 @@ class UploadsMiddleware(AgentMiddleware[UploadsMiddlewareState]):
         thread_id = (runtime.context or {}).get("thread_id")
         if thread_id is None:
             try:
-                from langgraph.config import get_config
+                from reactivegraph import get_config
 
                 thread_id = get_config().get("configurable", {}).get("thread_id")
             except RuntimeError:

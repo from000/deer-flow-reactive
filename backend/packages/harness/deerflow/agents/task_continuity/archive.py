@@ -16,7 +16,7 @@ from contextlib import closing
 from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langgraph.config import get_config
+from reactivegraph import get_config
 
 from deerflow.agents.human_input import read_human_input_response
 from deerflow.agents.task_continuity.state import normalize_task_history

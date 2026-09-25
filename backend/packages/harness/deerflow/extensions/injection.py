@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 
 from deerflow_extension_api import AgentBuildContext, AgentScope, MiddlewarePlacement, Placement
-from langchain.agents.middleware import AgentMiddleware
+from reactivegraph.middleware import AgentMiddleware
 
 from deerflow.extensions.anchors import PlacementAnchor
 from deerflow.extensions.isolation import IsolatedMiddleware, graph_safe_middleware_name

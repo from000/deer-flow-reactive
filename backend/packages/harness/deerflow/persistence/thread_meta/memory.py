@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from langgraph.store.base import BaseStore
+from reactivegraph import BaseStore
 
 from deerflow.persistence.json_compat import json_value_matches
 from deerflow.persistence.thread_meta.base import PROJECT_FILTER_UNSET, THREAD_ARCHIVED_METADATA_KEY, THREAD_PINNED_METADATA_KEY, ThreadMetaStore, ThreadOwnershipConflictError, _ProjectFilterUnset

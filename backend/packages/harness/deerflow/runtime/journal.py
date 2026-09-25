@@ -31,7 +31,7 @@ from uuid import UUID
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, ToolMessage, messages_from_dict
-from langgraph.types import Command
+from reactivegraph import Command
 
 from deerflow.agents.human_input import read_human_input_response
 from deerflow.runtime.events.catalog import (

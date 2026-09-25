@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from langchain_core.callbacks import adispatch_custom_event, dispatch_custom_event
-from langgraph.errors import GraphBubbleUp
+from reactivegraph.errors import GraphBubbleUp
 
 logger = logging.getLogger(__name__)
 

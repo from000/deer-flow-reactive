@@ -4,10 +4,10 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, override
 
-from langchain.agents import AgentState
-from langchain.agents.middleware import AgentMiddleware
-from langgraph.config import get_config
-from langgraph.runtime import Runtime
+from reactivegraph.middleware import AgentState
+from reactivegraph.middleware import AgentMiddleware
+from reactivegraph import get_config
+from reactivegraph import Runtime
 
 from deerflow.agents.memory import get_memory_manager
 from deerflow.config.memory_config import get_memory_config

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 from weakref import WeakValueDictionary
 
-from langchain.tools import tool
+from langchain_core.tools import tool
 
 from deerflow.agents.lead_agent.prompt import refresh_user_skills_system_prompt_cache_async
 from deerflow.runtime.user_context import resolve_runtime_user_id

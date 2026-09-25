@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from langchain.tools import tool
+from langchain_core.tools import tool
 
 from deerflow.agents.middlewares.input_sanitization_middleware import neutralize_untrusted_tags
 from deerflow.mcp.tasks.runtime import get_mcp_task_submitter

@@ -8,9 +8,9 @@ from contextvars import ContextVar
 from dataclasses import asdict, replace
 from typing import Annotated, Any, cast
 
-from langchain.tools import InjectedToolCallId, tool
+from langchain_core.tools import InjectedToolCallId, tool
 from langchain_core.messages import ToolMessage
-from langgraph.types import Command
+from reactivegraph import Command
 from pydantic import BaseModel, Field
 
 from deerflow.authz.principal import normalize_authz_attributes

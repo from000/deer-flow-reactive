@@ -1,6 +1,6 @@
 """Helpers for ``langgraph.types.Overwrite``-wrapped channel values."""
 
-from langgraph.types import Overwrite
+from reactivegraph import Overwrite
 
 
 def unwrap_sandbox(sandbox: object) -> tuple[object, bool]:

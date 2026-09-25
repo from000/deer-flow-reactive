@@ -24,9 +24,9 @@ from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable
 from typing import override
 
-from langchain.agents import AgentState
-from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse
+from reactivegraph.middleware import AgentState
+from reactivegraph.middleware import AgentMiddleware
+from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import ToolMessage
 
 logger = logging.getLogger(__name__)

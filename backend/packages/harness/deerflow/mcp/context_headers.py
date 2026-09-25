@@ -66,7 +66,7 @@ def _current_runtime() -> Any | None:
     handles through ``on_missing``.
     """
     try:
-        from langgraph.runtime import get_runtime
+        from reactivegraph import get_runtime
 
         return get_runtime()
     except Exception:

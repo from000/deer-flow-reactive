@@ -49,11 +49,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, override
 
-from langchain.agents import AgentState
-from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse
+from reactivegraph.middleware import AgentState
+from reactivegraph.middleware import AgentMiddleware
+from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage
-from langgraph.runtime import Runtime
+from reactivegraph import Runtime
 
 from deerflow.agents.middlewares._bounded_dict import BoundedDict
 from deerflow.agents.middlewares.tool_call_metadata import clone_ai_message_with_tool_calls

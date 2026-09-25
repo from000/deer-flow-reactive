@@ -13,15 +13,11 @@ from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from typing import Any, override
 
-from langchain.agents import AgentState
-from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.types import (
-    ModelCallResult,
-    ModelRequest,
-    ModelResponse,
-)
+from reactivegraph.middleware import AgentState
+from reactivegraph.middleware import AgentMiddleware
+from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage
-from langgraph.errors import GraphBubbleUp
+from reactivegraph.errors import GraphBubbleUp
 
 from deerflow.agents.middlewares.model_response import append_visible_text, finish_reason, has_tool_call_intent, has_visible_content, last_ai_message
 from deerflow.config.app_config import AppConfig
@@ -856,7 +852,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         max_attempts: int,
     ) -> None:
         try:
-            from langgraph.config import get_stream_writer
+            from reactivegraph import get_stream_writer
 
             writer = get_stream_writer()
             emit_custom_event(
@@ -877,7 +873,7 @@ class LLMErrorHandlingMiddleware(AgentMiddleware[AgentState]):
         max_attempts: int,
     ) -> None:
         try:
-            from langgraph.config import get_stream_writer
+            from reactivegraph import get_stream_writer
 
             writer = get_stream_writer()
             await aemit_custom_event(

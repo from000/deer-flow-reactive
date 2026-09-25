@@ -24,10 +24,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterator, Sequence
 from typing import Any
 
-from langgraph.checkpoint.base import (
-    BaseCheckpointSaver,
-    CheckpointTuple as LangGraphCheckpointTuple,
-)
+from reactivegraph import BaseCheckpointSaver, CheckpointTuple as LangGraphCheckpointTuple
 from reactivegraph.checkpoint import CheckpointStore, CheckpointTuple
 
 __all__ = ("ReactiveGraphSaver",)

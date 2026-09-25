@@ -17,7 +17,7 @@ from ipaddress import IPv4Address, IPv6Address, ip_address, ip_network
 from urllib.parse import urlparse
 
 import httpx
-from langchain.tools import tool
+from langchain_core.tools import tool
 
 from deerflow.community.search_time_range import BRAVE_FRESHNESS_BY_TIME_RANGE, SearchTimeRange
 from deerflow.config import get_app_config

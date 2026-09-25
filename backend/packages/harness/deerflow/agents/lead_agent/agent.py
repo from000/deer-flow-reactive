@@ -30,7 +30,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from langchain.agents.middleware import AgentMiddleware
+from reactivegraph.middleware import AgentMiddleware
 from langchain_core.runnables import RunnableConfig
 from reactivegraph.create_agent import create_agent
 

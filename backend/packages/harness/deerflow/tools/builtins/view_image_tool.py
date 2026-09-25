@@ -3,10 +3,10 @@ import mimetypes
 from pathlib import Path
 from typing import Annotated
 
-from langchain.tools import InjectedToolCallId
+from langchain_core.tools import InjectedToolCallId
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
-from langgraph.types import Command
+from reactivegraph import Command
 
 from deerflow.agents.thread_state import ThreadDataState
 from deerflow.config.paths import VIRTUAL_PATH_PREFIX

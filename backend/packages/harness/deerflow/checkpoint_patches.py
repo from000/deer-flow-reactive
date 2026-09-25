@@ -24,18 +24,43 @@ released ``langgraph-checkpoint`` distribution.
 from __future__ import annotations
 
 import logging
+import sys
 from collections.abc import Sequence
 from typing import Any
 
-from langgraph.channels.binop import BinaryOperatorAggregate
-from langgraph.errors import ErrorCode, InvalidUpdateError, create_error_message
-from langgraph.types import Overwrite
+from reactivegraph.channels.binop import BinaryOperatorAggregate
+from reactivegraph.errors import ErrorCode, InvalidUpdateError, create_error_message
+from reactivegraph import Overwrite
+
+try:  # pragma: no cover - exercised by the host-class patch tests
+    from langgraph.channels.binop import (
+        BinaryOperatorAggregate as HostBinaryOperatorAggregate,
+    )
+except Exception:  # pragma: no cover - LangGraph is an optional host
+    HostBinaryOperatorAggregate = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 
 
 _BINOP_PATCH_FLAG = "_deerflow_overwrite_first_write_patched"
 _unpatched_binop_update = BinaryOperatorAggregate.update
+_unpatched_updates: dict[type, Any] = {BinaryOperatorAggregate: _unpatched_binop_update}
+if HostBinaryOperatorAggregate is not None:
+    _unpatched_updates[HostBinaryOperatorAggregate] = HostBinaryOperatorAggregate.update
+
+
+def _managed_binop_classes() -> tuple[type, ...]:
+    """Every ``BinaryOperatorAggregate`` this process may compile graphs with.
+
+    ReactiveGraph's own channel already unwraps an ``Overwrite`` first write, so
+    the probe below reports it as fixed and it is never patched. The host's
+    class still carries the bug, and third-party LangGraph subgraphs hosted
+    inside DeerFlow keep using it — patching both keeps the guarantee
+    independent of which compiler built the graph.
+    """
+    if HostBinaryOperatorAggregate is None:
+        return (BinaryOperatorAggregate,)
+    return (BinaryOperatorAggregate, HostBinaryOperatorAggregate)
 
 
 def _as_overwrite(value: Any) -> tuple[bool, Any]:
@@ -52,20 +77,35 @@ def _as_overwrite(value: Any) -> tuple[bool, Any]:
     """
     if isinstance(value, Overwrite):
         return True, value.value
+    if HostBinaryOperatorAggregate is not None:
+        # The host's ``Overwrite`` is a distinct class object; DeerFlow's write
+        # paths (branch, /state) construct it while targeting engine channels.
+        host_overwrite = getattr(
+            sys.modules.get("langgraph.types"), "Overwrite", None
+        )
+        if host_overwrite is not None and isinstance(value, host_overwrite):
+            return True, value.value
     return False, None
 
 
-def _binop_first_write_stores_overwrite_wrapper() -> bool:
-    """Probe whether upstream still stores an Overwrite first write literally.
+def _stores_overwrite_wrapper(cls: type) -> bool:
+    """Probe *cls*: does a first ``Overwrite`` write stay stored literally?
 
     Uses a Union-typed channel (no constructible default, so it starts
     MISSING) - the same shape as ``ThreadState``'s ``sandbox`` / ``goal`` /
-    ``todos`` / ``promoted`` channels.
+    ``todos`` / ``promoted`` channels. Probed per class because the engine's
+    channel is fixed natively while the host's may still carry the bug.
     """
-    channel = BinaryOperatorAggregate(dict | None, lambda existing, new: new)
+    channel = cls(dict | None, lambda existing, new: new)
     channel.key = "deerflow-overwrite-probe"
     channel.update([Overwrite({"probe": True})])
-    return isinstance(channel.get(), Overwrite)
+    stored = channel.get()
+    return isinstance(stored, Overwrite) or type(stored).__name__ == "Overwrite"
+
+
+def _binop_first_write_stores_overwrite_wrapper() -> bool:
+    """Backwards-compatible aggregate probe across every managed class."""
+    return any(_stores_overwrite_wrapper(cls) for cls in _managed_binop_classes())
 
 
 def _binop_update_unwrapping_empty_channel(self: Any, values: Sequence[Any]) -> bool:
@@ -88,7 +128,8 @@ def _binop_update_unwrapping_empty_channel(self: Any, values: Sequence[Any]) -> 
                     )
                     raise InvalidUpdateError(msg)
             return True
-    return _unpatched_binop_update(self, values)
+    original = _unpatched_updates.get(type(self), _unpatched_binop_update)
+    return original(self, values)
 
 
 def ensure_binop_overwrite_first_write_patch() -> None:
@@ -110,14 +151,22 @@ def ensure_binop_overwrite_first_write_patch() -> None:
     future LangGraph unwraps the first write itself, the probe reports the
     bug as absent and the patch stands down.
     """
-    if getattr(BinaryOperatorAggregate, _BINOP_PATCH_FLAG, False):
+    targets = [
+        cls
+        for cls in _managed_binop_classes()
+        if not getattr(cls, _BINOP_PATCH_FLAG, False)
+    ]
+    if not targets:
         return
     try:
-        if not _binop_first_write_stores_overwrite_wrapper():
-            # Upstream unwraps the first write itself: nothing to patch.
-            return
-        BinaryOperatorAggregate.update = _binop_update_unwrapping_empty_channel  # type: ignore[method-assign]
-        setattr(BinaryOperatorAggregate, _BINOP_PATCH_FLAG, True)
+        for cls in targets:
+            if not _stores_overwrite_wrapper(cls):
+                # This class already unwraps the first write itself. Mark it so
+                # the probe is not repeated on every import.
+                setattr(cls, _BINOP_PATCH_FLAG, True)
+                continue
+            cls.update = _binop_update_unwrapping_empty_channel  # type: ignore[method-assign]
+            setattr(cls, _BINOP_PATCH_FLAG, True)
     except Exception:
         logger.warning("Failed to apply the BinaryOperatorAggregate Overwrite first-write patch; leaving the upstream implementation untouched.", exc_info=True)
 

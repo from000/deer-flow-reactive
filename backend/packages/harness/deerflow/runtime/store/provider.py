@@ -26,7 +26,7 @@ import logging
 import threading
 from collections.abc import Iterator
 
-from langgraph.store.base import BaseStore
+from reactivegraph import BaseStore
 
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.config.checkpointer_config import CheckpointerConfig, ensure_config_loaded, get_checkpointer_config

@@ -5,13 +5,13 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, override
 
-from langchain.agents import AgentState
-from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse
+from reactivegraph.middleware import AgentState
+from reactivegraph.middleware import AgentMiddleware
+from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import HumanMessage, ToolMessage
-from langgraph.prebuilt.tool_node import ToolCallRequest
-from langgraph.runtime import Runtime
-from langgraph.types import Command
+from reactivegraph import ToolCallRequest
+from reactivegraph import Runtime
+from reactivegraph import Command
 
 from deerflow.knowledge_scope import (
     KNOWLEDGE_SCOPE_KEY,

@@ -14,7 +14,7 @@ from types import MappingProxyType
 from deerflow_extension_api.auth import ExtensionPrincipal
 from deerflow_extension_api.plugins import ToolContext
 from jsonschema import Draft202012Validator
-from langchain.tools import ToolRuntime
+from reactivegraph.tools import ToolRuntime
 from langchain_core.tools import StructuredTool, ToolException
 
 from deerflow.config.plugin_settings import defaults

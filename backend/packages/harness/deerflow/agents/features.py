@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from langchain.agents.middleware import AgentMiddleware
+from reactivegraph.middleware import AgentMiddleware
 
 if TYPE_CHECKING:
     from deerflow.config.memory_config import MemoryConfig

@@ -10,7 +10,7 @@ from deerflow.persistence.thread_meta.model import ThreadMetaRow
 from deerflow.persistence.thread_meta.sql import ThreadMetaRepository
 
 if TYPE_CHECKING:
-    from langgraph.store.base import BaseStore
+    from reactivegraph import BaseStore
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 __all__ = [

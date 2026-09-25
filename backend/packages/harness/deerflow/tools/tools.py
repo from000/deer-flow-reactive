@@ -2,7 +2,7 @@ import copy
 import logging
 import threading
 
-from langchain.tools import BaseTool
+from langchain_core.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel
 

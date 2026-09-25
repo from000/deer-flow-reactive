@@ -21,7 +21,7 @@ import json
 import logging
 from typing import Annotated, Any
 
-from langchain.tools import tool
+from langchain_core.tools import tool
 
 from deerflow.agents.middlewares.input_sanitization_middleware import neutralize_untrusted_tags
 from deerflow.config.paths import Paths, get_paths

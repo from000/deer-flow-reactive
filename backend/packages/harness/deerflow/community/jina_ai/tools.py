@@ -1,6 +1,6 @@
 import asyncio
 
-from langchain.tools import tool
+from langchain_core.tools import tool
 
 from deerflow.community.jina_ai.jina_client import JinaClient
 from deerflow.config import get_app_config

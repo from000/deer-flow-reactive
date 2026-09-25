@@ -3,7 +3,7 @@
 import logging
 from typing import TYPE_CHECKING, Any
 
-from langchain.agents.middleware import AgentMiddleware
+from reactivegraph.middleware import AgentMiddleware
 
 from deerflow.config.extensions_config import ConfiguredMiddlewareSpec
 from deerflow.reflection import resolve_class

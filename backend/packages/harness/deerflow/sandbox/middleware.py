@@ -4,13 +4,13 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace as dc_replace
 from typing import NotRequired, override
 
-from langchain.agents import AgentState
-from langchain.agents.middleware import AgentMiddleware
+from reactivegraph.middleware import AgentState
+from reactivegraph.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage, ToolMessage
-from langgraph.graph import END
-from langgraph.prebuilt.tool_node import ToolCallRequest
-from langgraph.runtime import Runtime
-from langgraph.types import Command, Overwrite
+from reactivegraph import END
+from reactivegraph import ToolCallRequest
+from reactivegraph import Runtime
+from reactivegraph import Command, Overwrite
 
 from deerflow.agents.human_input import read_human_input_response
 from deerflow.agents.interaction_policy import resolve_run_interaction_policy

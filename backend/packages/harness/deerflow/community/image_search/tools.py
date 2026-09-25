@@ -5,7 +5,7 @@ Image Search Tool - Search images using DuckDuckGo for reference in image genera
 import json
 import logging
 
-from langchain.tools import tool
+from langchain_core.tools import tool
 
 from deerflow.config import get_app_config
 

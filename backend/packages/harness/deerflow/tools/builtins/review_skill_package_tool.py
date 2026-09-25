@@ -7,7 +7,7 @@ from typing import Literal
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import tool
-from langgraph.types import Command
+from reactivegraph import Command
 
 from deerflow.runtime.user_context import resolve_runtime_user_id
 from deerflow.skills.review.analyzer import analyze_skill_package

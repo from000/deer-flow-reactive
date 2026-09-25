@@ -58,7 +58,7 @@ def build_state_mutation_graph(
     """
     if not as_node:
         raise ValueError("as_node is required for checkpoint state mutation")
-    from langgraph.graph import StateGraph
+    from reactivegraph import StateGraph
 
     builder = StateGraph(state_schema if state_schema is not None else get_thread_state_schema(mode, snapshot_frequency))
     builder.add_node(as_node, _finish_state_mutation)
@@ -101,7 +101,7 @@ def graph_reducer_channels(graph: Any) -> frozenset[str] | None:
     Returns ``None`` when the graph does not expose channels (stub
     accessors), so callers can fall back to the base ThreadState set.
     """
-    from langgraph.channels import BinaryOperatorAggregate, DeltaChannel
+    from reactivegraph.channels import BinaryOperatorAggregate, DeltaChannel
 
     channels = getattr(graph, "channels", None)
     if channels is None:

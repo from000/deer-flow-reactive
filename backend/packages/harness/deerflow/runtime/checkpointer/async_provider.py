@@ -22,7 +22,7 @@ import contextlib
 import logging
 from collections.abc import AsyncIterator
 
-from langgraph.types import Checkpointer
+from reactivegraph import Checkpointer
 
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.persistence.postgres_schema import create_schema_sql, dsn_with_search_path, normalize_libpq_dsn

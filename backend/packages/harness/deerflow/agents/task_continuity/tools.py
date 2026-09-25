@@ -4,7 +4,7 @@ import json
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
-from langgraph.types import Command
+from reactivegraph import Command
 
 from deerflow.agents.task_continuity.archive import lookup
 from deerflow.agents.task_continuity.state import MAX_NOTE_CHARS, MAX_NOTE_SOURCES, MAX_NOTES, NOTE_KEY_PATTERN, SOURCE_ID_PATTERN, normalize_task_notes

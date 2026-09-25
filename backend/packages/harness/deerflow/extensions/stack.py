@@ -184,7 +184,7 @@ def middleware_implements(middleware: object, hook_name: str) -> bool:
     position only means something on the chains it participates in. This is how
     the guarantee tests tell participation from mere presence.
     """
-    from langchain.agents.middleware import AgentMiddleware
+    from reactivegraph.middleware import AgentMiddleware
 
     own = getattr(type(middleware), hook_name, None)
     base = getattr(AgentMiddleware, hook_name, None)
