@@ -53,13 +53,22 @@ def _stub_app_config() -> SimpleNamespace:
     )
 
 
-def _executor(module, model, **kwargs):
+def _executor(module, model, monkeypatch, **kwargs):
+    """Build a real SubagentExecutor with only the provider model stubbed.
+
+    ``_create_agent`` imports ``build_subagent_runtime_middlewares`` from this
+    module at call time, so the stub must be installed through ``monkeypatch``:
+    writing to ``sys.modules`` directly leaks the stub into every later test in
+    the session.
+    """
     from deerflow.subagents.config import SubagentConfig
 
-    module.create_chat_model = lambda **_: model
+    monkeypatch.setattr(module, "create_chat_model", lambda **_: model)
     middleware_module = ModuleType("deerflow.agents.middlewares.tool_error_handling_middleware")
     middleware_module.build_subagent_runtime_middlewares = lambda **_: []
-    sys.modules["deerflow.agents.middlewares.tool_error_handling_middleware"] = middleware_module
+    monkeypatch.setitem(
+        sys.modules, "deerflow.agents.middlewares.tool_error_handling_middleware", middleware_module
+    )
 
     config = SubagentConfig(name="rg-probe", description="probe", model="probe-model")
     return module.SubagentExecutor(
@@ -71,10 +80,10 @@ def _executor(module, model, **kwargs):
     )
 
 
-def test_real_subagent_executor_builds_an_engine_graph_and_completes_a_turn() -> None:
+def test_real_subagent_executor_builds_an_engine_graph_and_completes_a_turn(monkeypatch) -> None:
     module = _real_executor_module()
     model = _ToolBindingFakeChatModel(messages=iter([LCAIMessage(content="done")]))
-    executor = _executor(module, model)
+    executor = _executor(module, model, monkeypatch)
 
     agent = executor._create_agent()
 
@@ -87,7 +96,7 @@ def test_real_subagent_executor_builds_an_engine_graph_and_completes_a_turn() ->
     assert [m.content for m in out["messages"]] == ["go", "done"]
 
 
-def test_real_subagent_executor_budget_is_two_nodes_per_turn() -> None:
+def test_real_subagent_executor_budget_is_two_nodes_per_turn(monkeypatch) -> None:
     """``max_turns`` reaches the engine as a super-step budget, not verbatim.
 
     With no middleware the chain is ``model`` -> ``tools``; one turn costs two
@@ -97,7 +106,7 @@ def test_real_subagent_executor_budget_is_two_nodes_per_turn() -> None:
     """
     module = _real_executor_module()
     model = _ToolBindingFakeChatModel(messages=iter([LCAIMessage(content="done")]))
-    executor = _executor(module, model)
+    executor = _executor(module, model, monkeypatch)
 
     assert executor._recursion_limit is None  # resolved during assembly
     executor._create_agent()
@@ -125,7 +134,7 @@ class _AlwaysToolCallingModel(_ToolBindingFakeChatModel):
         )
 
 
-def test_real_subagent_executor_graph_raises_the_error_its_handler_catches() -> None:
+def test_real_subagent_executor_graph_raises_the_error_its_handler_catches(monkeypatch) -> None:
     """End-to-end: our engine raises exactly the class the executor catches.
 
     A mocked-graph test can only prove the ``except`` clause names a symbol; it
@@ -143,7 +152,7 @@ def test_real_subagent_executor_graph_raises_the_error_its_handler_catches() -> 
         """Return a fixed token."""
         return "pong"
 
-    executor = _executor(module, model)
+    executor = _executor(module, model, monkeypatch)
     executor.tools = [ping]
     agent = executor._create_agent()
 
@@ -154,7 +163,7 @@ def test_real_subagent_executor_graph_raises_the_error_its_handler_catches() -> 
     assert "recursion" in str(excinfo.value).lower()
 
 
-def test_engine_error_message_matches_langchain_verbatim() -> None:
+def test_engine_error_message_matches_langchain_verbatim(monkeypatch) -> None:
     """Operators grep logs for this string; the swap must not change it."""
     from langchain.agents import create_agent as lc_create_agent
     from langchain_core.tools import tool
