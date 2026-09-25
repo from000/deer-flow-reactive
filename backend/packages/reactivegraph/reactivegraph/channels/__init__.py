@@ -635,6 +635,16 @@ def _channel_for(name: str, annotation: Any) -> Any:
         if isinstance(item, type) and issubclass(item, BaseChannel):
             return item(typ)
         if _is_host_channel(item):
+            if isinstance(item, type):
+                # A *class* annotation must be instantiated, never copied:
+                # ``copy.copy`` on a class returns the class itself, so writing
+                # ``key`` would shadow ``BaseChannel``'s slot descriptor on the
+                # host class process-wide. Every later construction anywhere in
+                # the interpreter then died with "attribute 'key' is read-only".
+                channel = item(typ)
+                if hasattr(channel, "key"):
+                    channel.key = name
+                return channel
             channel = copy.copy(item)
             if hasattr(channel, "key"):
                 channel.key = name
