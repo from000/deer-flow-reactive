@@ -36,8 +36,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, NamedTuple
 
-from reactivegraph.channels import channel_reducer
-from reactivegraph.types import Overwrite
+from reactivegraph.channels import _MISSING as _CHANNEL_EMPTY
+from reactivegraph.channels import DeltaChannel, channel_reducer
 
 __all__ = (
     "NO_CHECKPOINTER_MESSAGE",
@@ -108,6 +108,24 @@ def _empty_checkpoint(checkpoint_id: str) -> dict[str, Any]:
         "pending_sends": [],
         "updated_channels": None,
     }
+
+
+def _as_delta_write(write: Sequence[Any]) -> tuple[Any, Any, Any]:
+    """Normalize a pending write to ``(task_id, channel, value)``.
+
+    Upstream stores triples; a duck-typed saver may store ``(channel, value)``
+    pairs. ``DeltaChannel.replay_writes`` only reads the value, but the shape
+    has to be uniform before it is handed over.
+    """
+    if len(write) >= 3:
+        return write[0], write[1], write[2]
+    return "", write[0], write[1]
+
+
+def _normalize_delta_writes(writes: Any) -> list[tuple[Any, Any, Any]]:
+    if not isinstance(writes, Sequence) or isinstance(writes, (str, bytes)):
+        return []
+    return [_as_delta_write(write) for write in writes if len(write) >= 2]
 
 
 def _configurable(config: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -319,9 +337,40 @@ class ThreadCheckpointer:
                 tasks=(),
                 interrupts=(),
             )
-        values = head.checkpoint.get("channel_values")
         return StateSnapshot(
-            values=dict(values) if isinstance(values, Mapping) else {},
+            values=self.load_values(head),
+            next=(),
+            config=copy.deepcopy(head.config),
+            metadata=dict(head.metadata),
+            created_at=head.checkpoint.get("ts"),
+            parent_config=copy.deepcopy(head.parent_config),
+            tasks=(),
+            interrupts=(),
+        )
+
+
+    async def asnapshot(
+        self, head: _Head | None, config: Mapping[str, Any] | None
+    ) -> StateSnapshot:
+        """Async twin of :meth:`snapshot`.
+
+        A saver with an async delta-history override (``AsyncSqliteSaver``)
+        rejects the synchronous walk from the event loop thread, so the async
+        read path must never fall back to :meth:`load_values`.
+        """
+        if head is None:
+            return StateSnapshot(
+                values={},
+                next=(),
+                config=copy.deepcopy(dict(config)) if isinstance(config, Mapping) else {},
+                metadata=None,
+                created_at=None,
+                parent_config=None,
+                tasks=(),
+                interrupts=(),
+            )
+        return StateSnapshot(
+            values=await self.aload_values(head),
             next=(),
             config=copy.deepcopy(head.config),
             metadata=dict(head.metadata),
@@ -396,7 +445,7 @@ class ThreadCheckpointer:
         for record in records:
             head = self._to_head(record, read_config)
             if head is not None:
-                yield self.snapshot(head, config)
+                yield await self.asnapshot(head, config)
 
     # -- writes ------------------------------------------------------------
 
@@ -582,10 +631,187 @@ class ThreadCheckpointer:
     # -- channel folding ---------------------------------------------------
 
     def load_values(self, head: _Head | None) -> dict[str, Any]:
+        """Materialize every channel of *head*, replaying delta channels.
+
+        A delta channel keeps its value out of ``channel_values`` except on the
+        snapshot cadence; between snapshots the value exists only as
+        ``pending_writes`` on the ancestors that produced it. Upstream's
+        ``channels_from_checkpoint`` therefore replays the ancestor history for
+        exactly those channels, and reading ``channel_values`` alone would
+        silently report an empty transcript.
+        """
         if head is None:
             return {}
         values = head.checkpoint.get("channel_values")
-        return copy.deepcopy(dict(values)) if isinstance(values, Mapping) else {}
+        loaded = copy.deepcopy(dict(values)) if isinstance(values, Mapping) else {}
+        loaded.update(self._replay_delta_values(head, loaded))
+        return loaded
+
+    async def aload_values(self, head: _Head | None) -> dict[str, Any]:
+        """Async twin of :meth:`load_values`."""
+        if head is None:
+            return {}
+        values = head.checkpoint.get("channel_values")
+        loaded = copy.deepcopy(dict(values)) if isinstance(values, Mapping) else {}
+        loaded.update(await self._areplay_delta_values(head, loaded))
+        return loaded
+
+    # -- delta reconstruction ----------------------------------------------
+
+    def _replay_delta_values(
+        self, head: _Head, stored: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Rebuild delta channels whose stored value needs an ancestor replay.
+
+        Mirrors upstream ``_needs_replay``: only a channel whose spec is a
+        ``DeltaChannel`` *and* whose ``channel_values`` entry is absent needs
+        the walk. A snapshot blob or a legacy plain value restores directly.
+        """
+        pending = [
+            name
+            for name, spec in self._channels.items()
+            if isinstance(spec, DeltaChannel)
+            and stored.get(name, _CHANNEL_EMPTY) is _CHANNEL_EMPTY
+        ]
+        if not pending:
+            return {}
+        histories = self._delta_histories(head, pending)
+        replayed: dict[str, Any] = {}
+        for name in pending:
+            history = histories.get(name)
+            if not isinstance(history, Mapping):
+                continue
+            channel = self._channels[name].from_checkpoint(
+                history.get("seed", _CHANNEL_EMPTY)
+            )
+            channel.replay_writes(_normalize_delta_writes(history.get("writes")))
+            if channel.is_available():
+                replayed[name] = channel.get()
+        return replayed
+
+    async def _areplay_delta_values(
+        self, head: _Head, stored: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        pending = [
+            name
+            for name, spec in self._channels.items()
+            if isinstance(spec, DeltaChannel)
+            and stored.get(name, _CHANNEL_EMPTY) is _CHANNEL_EMPTY
+        ]
+        if not pending:
+            return {}
+        histories = await self._adelta_histories(head, pending)
+        replayed: dict[str, Any] = {}
+        for name in pending:
+            history = histories.get(name)
+            if not isinstance(history, Mapping):
+                continue
+            channel = self._channels[name].from_checkpoint(
+                history.get("seed", _CHANNEL_EMPTY)
+            )
+            channel.replay_writes(_normalize_delta_writes(history.get("writes")))
+            if channel.is_available():
+                replayed[name] = channel.get()
+        return replayed
+
+    async def _adelta_histories(
+        self, head: _Head, channels: Sequence[str]
+    ) -> Mapping[str, Any]:
+        getter = getattr(self._saver, "aget_delta_channel_history", None)
+        if callable(getter):
+            histories = await getter(config=head.config, channels=list(channels))
+            return histories if isinstance(histories, Mapping) else {}
+        sync_getter = getattr(self._saver, "get_delta_channel_history", None)
+        if callable(sync_getter) and not self._supports_async():
+            histories = sync_getter(config=head.config, channels=list(channels))
+            return histories if isinstance(histories, Mapping) else {}
+        return await self._awalk_delta_history(head.config, channels)
+
+    async def _awalk_delta_history(
+        self, config: Mapping[str, Any], channels: Sequence[str]
+    ) -> dict[str, Any]:
+        collected: dict[str, list[tuple[Any, Any, Any]]] = {name: [] for name in channels}
+        seeds: dict[str, Any] = {}
+        remaining = set(channels)
+        target = await self._saver.aget_tuple(config)
+        cursor = getattr(target, "parent_config", None) if target is not None else None
+        while cursor is not None and remaining:
+            record = await self._saver.aget_tuple(cursor)
+            if record is None:
+                break
+            for write in reversed(getattr(record, "pending_writes", None) or ()):
+                if len(write) < 2 or write[1] not in remaining:
+                    continue
+                collected[write[1]].append(_as_delta_write(write))
+            values = getattr(record, "checkpoint", None)
+            values = values.get("channel_values") if isinstance(values, Mapping) else None
+            values = values if isinstance(values, Mapping) else {}
+            for name in list(remaining):
+                if name in values:
+                    seeds[name] = values[name]
+                    remaining.discard(name)
+            cursor = getattr(record, "parent_config", None)
+        result: dict[str, Any] = {}
+        for name in channels:
+            entry: dict[str, Any] = {"writes": list(reversed(collected[name]))}
+            if name in seeds:
+                entry["seed"] = seeds[name]
+            result[name] = entry
+        return result
+
+    def _delta_histories(
+        self, head: _Head, channels: Sequence[str]
+    ) -> Mapping[str, Any]:
+        """One batched ancestor walk, preferring the saver's own override.
+
+        ``BaseCheckpointSaver.get_delta_channel_history`` is the upstream
+        contract; savers with direct storage access override it for speed. A
+        duck-typed saver that predates the method still gets the documented
+        parent-chain walk rather than a silently empty value.
+        """
+        getter = getattr(self._saver, "get_delta_channel_history", None)
+        if callable(getter):
+            histories = getter(config=head.config, channels=list(channels))
+            return histories if isinstance(histories, Mapping) else {}
+        return self._walk_delta_history(head.config, channels)
+
+    def _walk_delta_history(
+        self, config: Mapping[str, Any], channels: Sequence[str]
+    ) -> dict[str, Any]:
+        """Upstream's default walk: collect ancestor writes and the nearest seed.
+
+        The target checkpoint's own writes belong to its child, so the walk
+        starts at ``parent_config``; it terminates per channel at the nearest
+        ancestor that stored a blob for it.
+        """
+        collected: dict[str, list[tuple[Any, Any, Any]]] = {name: [] for name in channels}
+        seeds: dict[str, Any] = {}
+        remaining = set(channels)
+        target = self._saver.get_tuple(config)
+        cursor = getattr(target, "parent_config", None) if target is not None else None
+        while cursor is not None and remaining:
+            record = self._saver.get_tuple(cursor)
+            if record is None:
+                break
+            for write in reversed(getattr(record, "pending_writes", None) or ()):
+                if len(write) < 2 or write[1] not in remaining:
+                    continue
+                collected[write[1]].append(_as_delta_write(write))
+            values = getattr(record, "checkpoint", None)
+            values = values.get("channel_values") if isinstance(values, Mapping) else None
+            values = values if isinstance(values, Mapping) else {}
+            for name in list(remaining):
+                if name in values:
+                    seeds[name] = values[name]
+                    remaining.discard(name)
+            cursor = getattr(record, "parent_config", None)
+        result: dict[str, Any] = {}
+        for name in channels:
+            entry: dict[str, Any] = {"writes": list(reversed(collected[name]))}
+            if name in seeds:
+                entry["seed"] = seeds[name]
+            result[name] = entry
+        return result
 
     def fold_input(
         self, values: Mapping[str, Any], update: Mapping[str, Any]
@@ -594,24 +820,44 @@ class ThreadCheckpointer:
 
         Returns the folded values and the channel names that changed. A reducer
         channel accumulates (``messages`` appends); a last-value channel is
-        replaced. ``Overwrite`` bypasses the reducer, which is how DeerFlow's
-        compaction and rollback restore a transcript instead of appending to it.
+        replaced. The write is handed to the channel's own ``update`` hook, so
+        an ``Overwrite`` replacement and every subclass normalisation behave
+        exactly as they do inside a graph run.
         """
         current = dict(values)
         written: list[str] = []
         for key, write in update.items():
-            is_overwrite, raw = Overwrite.is_overwrite(write)
-            if is_overwrite:
-                current[key] = raw
-                written.append(key)
-                continue
-            channel = self._channels.get(key)
-            reducer = channel_reducer(channel) if channel is not None else None
-            if reducer is None or key not in current:
-                # First write initializes the channel; ``add_messages`` rejects
-                # a ``None`` left operand, and upstream behaves the same way.
-                current[key] = write
-            else:
-                current[key] = reducer(current[key], write)
+            present = key in current
+            current[key] = self._apply_write(
+                key, current.get(key), write, present=present
+            )
             written.append(key)
         return current, written
+
+    def _apply_write(
+        self, key: str, current: Any, write: Any, *, present: bool
+    ) -> Any:
+        """Fold one write through the channel's own ``update`` contract.
+
+        Upstream's runtime restores the channel from its stored value and then
+        calls ``channel.update([write])`` — the write is never unwrapped first,
+        because a reducer channel is expected to interpret ``Overwrite``
+        itself. That hook is part of the contract: DeerFlow's
+        ``TaskNotesChannel`` re-validates and re-canonicalizes *every* write
+        there, including first writes and replacements. Calling the raw
+        ``operator`` (or unwrapping before the call) bypasses that validation
+        and persists caller-supplied values verbatim.
+
+        Last-value channels keep replacement semantics, and a missing channel
+        table entry fails open to replacement as before.
+        """
+        channel = self._channels.get(key)
+        if channel is None or channel_reducer(channel) is None:
+            return write
+        restored = channel.from_checkpoint(current if present else _CHANNEL_EMPTY)
+        restored.update([write])
+        if not restored.is_available():
+            # ``add_messages`` rejects a ``None`` left operand; upstream leaves
+            # the channel empty rather than storing a sentinel value.
+            return write
+        return restored.get()

@@ -998,6 +998,29 @@ class AgentGraph:
             return merged, []
         return folded, written
 
+    async def _aseed_payload(
+        self, payload: dict[str, Any], head: Any
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Async twin of :meth:`_seed_payload`.
+
+        ``AsyncSqliteSaver`` refuses the synchronous delta walk from the event
+        loop thread, so the async run path has to reconstruct through
+        ``aload_values``.
+        """
+        threads = self._threads_or_raise()
+        stored = await threads.aload_values(head)
+        if not stored:
+            folded, written = threads.fold_input({}, payload)
+            return folded, written
+        merged = dict(stored)
+        merged.update({key: value for key, value in payload.items() if key not in stored})
+        folded, written = threads.fold_input(
+            stored, {key: value for key, value in payload.items() if key in stored}
+        )
+        if not written:
+            return merged, []
+        return folded, written
+
     def _commit_run(
         self, config: dict | None, head: Any, state: dict[str, Any], written: list[str]
     ) -> None:
@@ -1048,7 +1071,7 @@ class AgentGraph:
         threads = self._bind_threads()
         if threads is not None:
             head = await threads.aget_head(config)
-            payload, written = self._seed_payload(payload, head)
+            payload, written = await self._aseed_payload(payload, head)
         payload = self._seed_budget(payload, config)
         with runtime_context(
             config=config, runtime=_resolve_runtime(config, kwargs.get("context"))
@@ -1074,7 +1097,7 @@ class AgentGraph:
 
     async def aget_state(self, config: dict | None = None, **kwargs: Any) -> StateSnapshot:
         threads = self._threads_or_raise()
-        return threads.snapshot(await threads.aget_head(config), config)
+        return await threads.asnapshot(await threads.aget_head(config), config)
 
     def get_state_history(
         self,
@@ -1140,7 +1163,7 @@ class AgentGraph:
         threads = self._threads_or_raise()
         head = await threads.aget_head(config)
         folded, written = threads.fold_input(
-            threads.load_values(head), _adopt_messages(dict(values or {}))
+            await threads.aload_values(head), _adopt_messages(dict(values or {}))
         )
         return await threads.acommit(
             config,

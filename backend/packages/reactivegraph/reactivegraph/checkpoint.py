@@ -326,6 +326,23 @@ except ImportError:  # pragma: no cover - langgraph is an optional host dep
     BaseCheckpointSaver = _NativeBaseCheckpointSaver  # type: ignore[misc,assignment]
 
 
+def _iter_writes(writes: Sequence[tuple[Any, ...]]) -> Iterator[tuple[str, Any]]:
+    """Yield ``(channel, value)`` from either accepted write shape.
+
+    Upstream's ``BaseCheckpointSaver.put_writes`` contract is
+    ``Sequence[tuple[str, Any]]``; the engine's own storage layer has always
+    stored ``(task_id, channel, value)`` triples and hands those back from
+    ``get_tuple``. Accepting both keeps a host graph able to drive this saver
+    without translating its writes, while the canonical triple remains the
+    only thing callers ever read back.
+    """
+    for write in writes:
+        if len(write) >= 3:
+            yield write[1], write[2]
+        else:
+            yield write[0], write[1]
+
+
 class CheckpointStore:
     """In-process checkpoint store with an append-only lineage.
 
@@ -463,7 +480,7 @@ class CheckpointStore:
                     f"unknown checkpoint {checkpoint_id!r} for thread {thread_key[0]!r}"
                 )
             slots = self._writes.setdefault(key, {})
-            for index, (channel, value) in enumerate((w[1], w[2]) for w in writes):
+            for index, (channel, value) in enumerate(_iter_writes(writes)):
                 slot = WRITES_IDX_MAP.get(channel, index)
                 if slot >= 0 and (task_id, slot) in slots:
                     # A regular write already occupies this position, so this is

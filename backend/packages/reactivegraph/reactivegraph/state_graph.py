@@ -138,7 +138,7 @@ class CompiledStateGraph:
         threads = self._bind_checkpointer()
         head = await threads.aget_head(config)
         folded, written = threads.fold_input(
-            threads.load_values(head), _adopt_messages(dict(values or {}))
+            await threads.aload_values(head), _adopt_messages(dict(values or {}))
         )
         return await threads.acommit(
             config,
@@ -161,7 +161,7 @@ class CompiledStateGraph:
     ) -> StateSnapshot:
         del kwargs
         threads = self._bind_checkpointer()
-        return threads.snapshot(await threads.aget_head(config), config)
+        return await threads.asnapshot(await threads.aget_head(config), config)
 
     def get_state_history(
         self,
@@ -229,7 +229,7 @@ class CompiledStateGraph:
         threads = self._bind_checkpointer()
         head = await threads.aget_head(config)
         seeded, _ = threads.fold_input(
-            threads.load_values(head), _adopt_messages(dict(input or {}))
+            await threads.aload_values(head), _adopt_messages(dict(input or {}))
         )
         update = self._apply_node(seeded)
         folded, written = threads.fold_input(seeded, _adopt_messages(update))

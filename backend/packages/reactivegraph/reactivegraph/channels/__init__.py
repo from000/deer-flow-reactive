@@ -255,7 +255,39 @@ def _operators_equal(a: Callable, b: Callable) -> bool:
     return a is b
 
 
-class BinaryOperatorAggregate(Generic[Value], BaseChannel[Value, Value, Value]):
+def _is_host_binop(item: Any) -> bool:
+    """Whether *item* is LangGraph's ``BinaryOperatorAggregate`` instance/class."""
+    if _lg_channels is None:
+        return False
+    host = getattr(_lg_channels, "BinaryOperatorAggregate", None)
+    if host is None:  # pragma: no cover - a host without the class is unusable
+        return False
+    if isinstance(item, host):
+        return True
+    return item is host
+
+
+class _BinopMeta(abc.ABCMeta):
+    """Recognise the host's ``BinaryOperatorAggregate`` as a virtual sibling.
+
+    ``_channel_for`` deliberately hands back the *host* class for a
+    two-argument reducer annotation, because the host storage layer
+    isinstance-checks against it. The reverse direction cannot use ``register``
+    (the host ABC already virtually inherits from our class through
+    ``_bridge_host_channel_identity``, which would create a cycle), so
+    ``isinstance`` against our class is widened explicitly and only for the
+    host's own class.
+    """
+
+    def __instancecheck__(cls, instance: object) -> bool:
+        if cls.__name__ == "BinaryOperatorAggregate" and _is_host_binop(instance):
+            return True
+        return super().__instancecheck__(instance)
+
+
+class BinaryOperatorAggregate(
+    Generic[Value], BaseChannel[Value, Value, Value], metaclass=_BinopMeta
+):
     """Folds each write into the running value with a two-argument operator.
 
     ``Annotated[dict, merge]`` compiles to one of these, and the checkpoint
@@ -713,7 +745,6 @@ def channel_reducer(channel: Any) -> Callable[[Any, Any], Any] | None:
         return channel.operator
     if _is_host_delta(channel):
         return _delta_fold(channel)
-    if _lg_channels is not None:
-        if isinstance(channel, _lg_channels.BinaryOperatorAggregate):
-            return channel.operator
+    if _is_host_binop(channel):
+        return channel.operator
     return None
