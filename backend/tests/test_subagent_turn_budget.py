@@ -192,6 +192,48 @@ def _smallest_limit_completing(chain: list[AgentMiddleware], turns: int) -> int:
     return low
 
 
+def _smallest_limit_completing_reactivegraph(chain: list[AgentMiddleware], turns: int) -> int:
+    """Same binary search, but against the ReactiveGraph engine."""
+    from reactivegraph.create_agent import create_agent as rg_create_agent
+    from reactivegraph.errors import GraphRecursionError as RGRecursionError
+
+    low, high = 1, 512
+    while low < high:
+        candidate = (low + high) // 2
+        agent = rg_create_agent(
+            model=_ScriptedModel(turns=turns), tools=[ping], middleware=chain
+        )
+        try:
+            agent.invoke({"messages": [("user", "go")]}, {"recursion_limit": candidate})
+        except RGRecursionError:
+            low = candidate + 1
+        else:
+            high = candidate
+    return low
+
+
+class TestReactiveGraphMatchesLangChainAccounting:
+    """The engine swap must not move the budget the operator configured."""
+
+    @pytest.mark.parametrize(
+        "hooks",
+        [
+            (),
+            (("Before", "before_model"),),
+            (("After", "after_model"),),
+            (("Before", "before_model"), ("After1", "after_model"), ("After2", "after_model")),
+            (("Lifecycle", "before_agent", "after_agent"), ("After", "after_model")),
+        ],
+    )
+    @pytest.mark.parametrize("turns", [1, 3])
+    def test_smallest_completing_limit_matches_langchain(self, hooks, turns):
+        chain = [_middleware(*spec) for spec in hooks]
+
+        assert _smallest_limit_completing_reactivegraph(chain, turns) == _smallest_limit_completing(
+            chain, turns
+        )
+
+
 class TestFormulaMatchesCompiledGraph:
     """Pins the arithmetic against the installed LangChain, not against its docs.
 

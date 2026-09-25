@@ -301,6 +301,17 @@ def msg(classes):
 # -----------------------------------------------------------------------------
 
 
+def test_executor_module_uses_the_reactivegraph_engine(classes):
+    """Identity pin: the executor must not silently fall back to LangChain."""
+    from langchain.agents import create_agent as lc_create_agent
+    from reactivegraph.create_agent import create_agent as rg_create_agent
+
+    executor_module = sys.modules["deerflow.subagents.executor"]
+
+    assert executor_module.create_agent is rg_create_agent
+    assert executor_module.create_agent is not lc_create_agent
+
+
 class TestAgentConstruction:
     """Test _create_agent() wiring before execution starts."""
 
@@ -2168,7 +2179,7 @@ class TestAsyncExecutionPath:
         ``except Exception`` and was misclassified as FAILED; #3949 then used a
         ``MAX_TURNS_REACHED`` enum that diverged from the agreed additive-field
         contract, which this change corrects."""
-        from langgraph.errors import GraphRecursionError
+        from reactivegraph.errors import GraphRecursionError
 
         SubagentExecutor = classes["SubagentExecutor"]
         SubagentStatus = classes["SubagentStatus"]
@@ -2210,7 +2221,7 @@ class TestAsyncExecutionPath:
         with the normal-completion path (both consult
         ``_consume_guard_stop_reason``) and pops the reason so it is not
         orphaned in the guard's bounded dict."""
-        from langgraph.errors import GraphRecursionError
+        from reactivegraph.errors import GraphRecursionError
 
         SubagentExecutor = classes["SubagentExecutor"]
         SubagentStatus = classes["SubagentStatus"]
@@ -2242,7 +2253,7 @@ class TestAsyncExecutionPath:
         no usable partial work to recover; the result is ``failed`` +
         ``stop_reason=turn_capped`` so the budget-cap signal survives even when
         nothing was streamed."""
-        from langgraph.errors import GraphRecursionError
+        from reactivegraph.errors import GraphRecursionError
 
         SubagentExecutor = classes["SubagentExecutor"]
         SubagentStatus = classes["SubagentStatus"]
@@ -2283,7 +2294,7 @@ class TestAsyncExecutionPath:
         indistinguishable from genuine partial output and gets misclassified
         as a completed task rather than the failed provider error it is.
         """
-        from langgraph.errors import GraphRecursionError
+        from reactivegraph.errors import GraphRecursionError
 
         AIMessage = classes["AIMessage"]
         SubagentExecutor = classes["SubagentExecutor"]
@@ -5195,7 +5206,7 @@ class TestToolReceiptHarvest:
         msg,
         monkeypatch,
     ):
-        from langgraph.errors import GraphRecursionError
+        from reactivegraph.errors import GraphRecursionError
 
         SubagentExecutor = classes["SubagentExecutor"]
         SubagentStatus = classes["SubagentStatus"]

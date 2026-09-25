@@ -9,13 +9,12 @@ so a silent fall back to LangChain would fail here rather than pass.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage as LCAIMessage
 from langchain_core.runnables import Runnable
-
 from reactivegraph.create_agent import AgentGraph
 
 

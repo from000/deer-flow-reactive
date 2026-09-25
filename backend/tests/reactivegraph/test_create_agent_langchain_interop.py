@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from typing import Annotated
 
-import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage as LCAIMessage
 from langchain_core.messages import ToolMessage as LCToolMessage
@@ -21,7 +20,6 @@ from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, InjectedToolCallId, tool
 from langgraph.prebuilt import ToolRuntime
 from langgraph.types import Command
-
 from reactivegraph.create_agent import create_agent
 from reactivegraph.messages import HumanMessage
 

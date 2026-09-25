@@ -35,6 +35,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from reactivegraph.channels import channel_reducer, resolve_channels
+from reactivegraph.errors import (
+    ErrorCode,
+    GraphRecursionError,
+    create_error_message,
+)
 from reactivegraph.graph import GraphBuilder, ReactiveGraph, TaskOutcome
 from reactivegraph.messages import (
     AIMessage,
@@ -64,6 +69,230 @@ __all__ = ("AgentGraph", "create_agent")
 
 # Upstream sets this on the compiled graph; DeerFlow reads it back.
 _DEFAULT_RECURSION_LIMIT = 9_999
+
+# The compiled task budget is a fixed wire value, so a run whose
+# ``recursion_limit`` exceeds it would be silently truncated by the scheduler's
+# at-most-once gate instead of raising. Refuse the run instead: the fallback's
+# own event-propagation guard sits at the same ceiling, so one bound covers
+# both execution paths.
+_MAX_RECURSION_LIMIT = 10_000
+
+
+# ---------------------------------------------------------------------------
+# recursion_limit accounting
+# ---------------------------------------------------------------------------
+
+# The compiled graph's "the one-shot lifecycle hook already fired" marker.
+_AGENT_STARTED = "__reactivegraph_agent_started__"
+
+# Run-private state keys. They ride the graph like any other channel so a task
+# re-entry reads the budget its predecessor spent, and they are stripped from
+# every public surface (``invoke`` result, ``values``/``updates`` frames,
+# checkpoints), exactly as ``_AGENT_STARTED`` already was.
+_RECURSION_LIMIT_KEY = "__reactivegraph_recursion_limit__"
+_STEP_COUNT_KEY = "__reactivegraph_step_count__"
+_EXHAUSTED_KEY = "__reactivegraph_recursion_exhausted__"
+_RUN_PRIVATE_KEYS = frozenset(
+    {_AGENT_STARTED, _RECURSION_LIMIT_KEY, _STEP_COUNT_KEY, _EXHAUSTED_KEY}
+)
+
+# Hook name -> the sync/async pair LangChain compiles into one node. The
+# ordering here is the order the nodes run in, which is also the order the
+# step budget must be charged in: when the limit lands between two nodes, the
+# earlier node's writes are the ones LangGraph committed before giving up.
+_HOOK_PAIRS: dict[str, tuple[str, str]] = {
+    "before_agent": ("before_agent", "abefore_agent"),
+    "before_model": ("before_model", "abefore_model"),
+    "after_model": ("after_model", "aafter_model"),
+    "after_agent": ("after_agent", "aafter_agent"),
+}
+
+
+_ALL_HOOKS = tuple(hook for pair in _HOOK_PAIRS.values() for hook in pair)
+
+
+def _middleware_base(middleware_type: type) -> type | None:
+    """The middleware base class *middleware_type* ultimately derives from.
+
+    Both frameworks' bases declare the whole hook surface (sync and async of
+    every pair) in their own ``__dict__``, so the *most-base* class in the MRO
+    that does so is the base the chain was built on — ours
+    (``reactivegraph.middleware.AgentMiddleware``) or the host's
+    (``langchain.agents.middleware.AgentMiddleware``) — without importing
+    either one. A user's intermediate base declares only the hooks it overrides
+    and is therefore not mistaken for the framework base.
+    """
+    for klass in reversed(middleware_type.__mro__):
+        if all(hook in klass.__dict__ for hook in _ALL_HOOKS):
+            return klass
+    return None
+
+
+def _overrides_hook(middleware_type: type, hook: str) -> bool:
+    """Whether *hook* is overridden, using upstream's identity comparison.
+
+    LangChain's factory decides participation with
+    ``m.__class__.hook is not AgentMiddleware.hook`` — identity against the
+    framework base, not against the most-base definition of *this* hook. That
+    distinction matters for a user's intermediate base class: a hook it defines
+    is an override even though it is the most-base definition in the MRO.
+
+    A structural "does the body do anything" test cannot substitute here: a
+    real override that returns ``None`` compiles to the same bytecode as the
+    base's docstring-only stub, and upstream still compiles a node for it.
+    """
+    resolved = getattr(middleware_type, hook, None)
+    if resolved is None:
+        return False
+    base = _middleware_base(middleware_type)
+    if base is not None and resolved is getattr(base, hook, None):
+        return False
+    return not _is_unimplemented_stub(resolved, hook)
+
+
+def _implements_hook_pair(middleware: Any, pair: tuple[str, str]) -> bool:
+    """Whether *middleware* overrides either side of one sync/async hook pair."""
+    middleware_type = type(middleware)
+    return any(_overrides_hook(middleware_type, hook) for hook in pair)
+
+
+def _validate_recursion_limit(limit: Any) -> Any:
+    """Validate a run's ``recursion_limit`` exactly the way upstream does.
+
+    ``0``/negative raise ``ValueError``; a non-numeric value raises ``TypeError``
+    from the comparison itself, which is what LangGraph's own check does.
+    ``None`` means "use the compiled default" and is resolved by the caller.
+
+    One bound is *ours*, not upstream's: the compiled task budgets and the
+    fallback event guard are fixed wire values, so a run whose limit exceeds
+    them would be truncated silently instead of raising. Fail closed instead.
+    """
+    if limit is None:
+        return None
+    if limit < 1:
+        raise ValueError("recursion_limit must be at least 1")
+    if limit > _MAX_RECURSION_LIMIT:
+        raise ValueError(
+            f"recursion_limit {limit!r} exceeds ReactiveGraph's compiled ceiling "
+            f"of {_MAX_RECURSION_LIMIT}; a larger limit would be silently "
+            "truncated by the engine's task budget"
+        )
+    return limit
+
+
+def _run_recursion_limit(config: dict | None, default: Any) -> Any:
+    """Resolve a run's limit: an explicit config value wins over the default.
+
+    ``config['recursion_limit'] = None`` keeps the compiled default, matching
+    upstream (probe-verified against langgraph 1.2.9).
+    """
+    limit = default
+    if config:
+        raw = config.get("recursion_limit")
+        if raw is not None:
+            limit = raw
+    return _validate_recursion_limit(limit)
+
+
+def _run_exhausted(state: Any) -> bool:
+    """Whether a finished run spent its whole budget without stopping in time.
+
+    Two independent signals, because the two paths notice exhaustion in
+    different places: a task that was *refused* mid-run records
+    ``_EXHAUSTED_KEY``; a run that converged normally still owes the
+    terminating super-step upstream charges while discovering there is no more
+    work (``count + 1``).
+    """
+    if not isinstance(state, dict):
+        return False
+    if state.get(_EXHAUSTED_KEY):
+        return True
+    limit = state.get(_RECURSION_LIMIT_KEY)
+    if limit is None:
+        return False
+    count = int(state.get(_STEP_COUNT_KEY) or 0)
+    return count + 1 > limit
+
+
+def _graph_recursion_error(limit: Any) -> GraphRecursionError:
+    """Upstream's exact exhaustion message, troubleshooting link included."""
+    return GraphRecursionError(
+        create_error_message(
+            message=(
+                f"Recursion limit of {limit} reached without hitting a stop "
+                "condition. You can increase the limit by setting the "
+                "`recursion_limit` config key."
+            ),
+            error_code=ErrorCode.GRAPH_RECURSION_LIMIT,
+        )
+    )
+
+
+class _RecursionBudgetExceeded(Exception):
+    """Internal control flow: this run spent more super-steps than allowed.
+
+    It is deliberately *not* :class:`GraphRecursionError`: the node that would
+    have run must not run, but the nodes that already ran have to keep their
+    writes, because LangGraph commits every super-step before it notices the
+    limit. The task catches this, returns a stopping outcome, and the
+    compatibility layer raises the real error once the graph has stopped.
+    """
+
+    def __init__(self, node: str, limit: Any) -> None:
+        super().__init__(node)
+        self.node = node
+        self.limit = limit
+        # Filled in by :meth:`AgentGraph._compile._run_hook` when the refusal
+        # lands part-way through a middleware chain: upstream compiles one node
+        # per middleware instance, so the instances that already ran keep their
+        # writes. Empty when the very first node was refused.
+        self.partial: dict[str, Any] = {}
+
+
+class _StepBudget:
+    """LangGraph-compatible super-step accounting for one run.
+
+    ``recursion_limit`` counts *super-steps*, not turns. Upstream advances its
+    step counter once per loop iteration — including the final iteration that
+    finds no runnable task — and refuses to prepare tasks once the counter
+    exceeds the limit, so a graph that executes exactly ``limit`` nodes still
+    raises. Exhaustion is only observable *after* those nodes committed.
+
+    The engine runs one task per node, so this reproduces that arithmetic:
+    every node is charged in upstream's order, and the terminating super-step
+    is charged once the graph has stopped (``finish``). The spent count rides
+    the graph state, because a task re-entry starts from committed values and
+    would otherwise restart the count on every round.
+    """
+
+    def __init__(self, state: dict, default_limit: Any) -> None:
+        raw = state.get(_RECURSION_LIMIT_KEY)
+        self.limit = default_limit if raw is None else raw
+        # ``count`` is the *tick index* upstream is currently on. The first
+        # tick (index 0) is the one that seeds the input and prepares the
+        # entry node, so an untouched run is at 0 and each node advances it.
+        raw_count = state.get(_STEP_COUNT_KEY)
+        self.count = 0 if raw_count is None else int(raw_count)
+
+    def charge(self, node: str) -> None:
+        """Advance one tick to prepare *node*, refusing if the budget is spent.
+
+        ``SyncPregelLoop.tick`` runs while ``self.step <= self.stop`` where
+        ``stop = recursion_limit`` for a fresh run, so tick *n* prepares a node
+        iff ``n <= limit``. The node prepared at tick ``limit`` therefore still
+        executes; only the tick after it is refused.
+        """
+        self.count += 1
+        if self.count > self.limit:
+            raise _RecursionBudgetExceeded(node, self.limit)
+
+    def exhausted_update(self) -> dict[str, Any]:
+        """The bookkeeping patch a task returns when its budget ran out."""
+        return {_STEP_COUNT_KEY: self.count, _EXHAUSTED_KEY: True}
+
+    def spent_update(self) -> dict[str, Any]:
+        """The bookkeeping patch every completed task commits."""
+        return {_STEP_COUNT_KEY: self.count}
 
 
 class _BoundModel:
@@ -329,7 +558,7 @@ class AgentGraph:
         """
         updated = _plain_state(state)
         for key, write in writes.items():
-            if key == _AGENT_STARTED:
+            if key in _RUN_PRIVATE_KEYS:
                 updated[key] = write
                 continue
             channel = self.channels.get(key)
@@ -349,12 +578,17 @@ class AgentGraph:
         tools = self._tools
         tool_node = self._tool_node
         model = self._model
-        recursion_limit = self.config["recursion_limit"]
+        default_limit = self.config["recursion_limit"]
         system_prompt = self._system_prompt
         middleware = self._middleware
+        # LangGraph compiles one node per middleware hook *pair*, so the budget
+        # is spent per node, not per turn. ``_run_hook`` charges each
+        # participating middleware as it reaches it, which is what makes a
+        # refusal land between two middleware nodes rather than before the
+        # whole chain.
 
         def _run_hook(
-            name: str, state: dict, reverse: bool = False
+            name: str, state: dict, reverse: bool = False, *, budget: _StepBudget
         ) -> tuple[dict[str, Any], dict[str, Any]]:
             """Run one hook across the middleware chain.
 
@@ -374,7 +608,23 @@ class AgentGraph:
             written: set[str] = set()
             runtime = get_runtime()
             items = list(reversed(middleware)) if reverse else list(middleware)
+            hook_pair = _HOOK_PAIRS[name]
             for mw in items:
+                # Upstream's factory gives every middleware that overrides
+                # either side of the pair its own node, so the step is charged
+                # whether or not this particular instance implements the hook.
+                if _implements_hook_pair(mw, hook_pair):
+                    try:
+                        budget.charge(name)
+                    except _RecursionBudgetExceeded as exc:
+                        # The middleware chain is one *logical* node per
+                        # instance upstream, so the writes of the instances
+                        # that already ran are committed state by the time the
+                        # next one is refused. Hand them to the caller.
+                        exc.partial = {
+                            key: current[key] for key in written if key in current
+                        }
+                        raise
                 hook = getattr(mw, name, None)
                 if hook is None:
                     continue
@@ -420,22 +670,60 @@ class AgentGraph:
             return request
 
         def _model(state: dict) -> TaskOutcome:
+            budget = _StepBudget(state, default_limit)
             # Hook return values are state updates and must reach the caller.
             # Upstream merges every before_*/after_* dict into graph state;
             # DeerFlow's ThreadDataMiddleware returns {"thread_data": ...}
             # here and the CLI reads it back off the final state.
             hook_updates: dict[str, Any] = {}
-            if not state.get(_AGENT_STARTED):
-                # ``before_agent`` fires exactly once per run, before the first
-                # model call (probe-verified upstream ordering). The marker is
-                # written back so a model re-entry after the tool node does not
-                # replay it.
-                hook_updates[_AGENT_STARTED] = True
-                state = self._apply_channel_writes(state, {_AGENT_STARTED: True})
-                state, before_agent_updates = _run_hook("before_agent", state)
-                hook_updates.update(before_agent_updates)
-            state, before_model_updates = _run_hook("before_model", state)
-            hook_updates.update(before_model_updates)
+            # Every write this task makes, in commit order. When the budget runs
+            # out part-way through, the writes already folded into ``state``
+            # must still reach the caller (upstream commits each super-step),
+            # while the node that would have run next must not.
+            committed: dict[str, Any] = {}
+
+            def _stop(exc: _RecursionBudgetExceeded) -> TaskOutcome:
+                """Turn a refusal into a normal, non-emitting task outcome.
+
+                The refusal must not be raised out of the task: the fallback
+                engine would abort the run without committing this task's
+                writes, and the Driver would fail the run instead of stopping
+                it. Returning ``emits=()`` ends the branch, and the
+                compatibility layer raises ``GraphRecursionError`` once the
+                graph has drained.
+                """
+                update = {key: state[key] for key in committed if key in state}
+                update.update(exc.partial)
+                update.update(budget.exhausted_update())
+                return TaskOutcome(update=update, emits=())
+
+            try:
+                if not state.get(_AGENT_STARTED):
+                    # ``before_agent`` fires exactly once per run, before the
+                    # first model call (probe-verified upstream ordering). The
+                    # marker is written back so a model re-entry after the tool
+                    # node does not replay it.
+                    hook_updates[_AGENT_STARTED] = True
+                    committed[_AGENT_STARTED] = True
+                    state = self._apply_channel_writes(state, {_AGENT_STARTED: True})
+                    state, before_agent_updates = _run_hook(
+                        "before_agent", state, budget=budget
+                    )
+                    hook_updates.update(before_agent_updates)
+                    committed.update(before_agent_updates)
+                # Probe-verified upstream node order: every ``before_model``
+                # middleware is its own super-step and the ``model`` node is
+                # prepared in the tick *after* them, so the hooks are charged
+                # first and the model is refused when the budget runs out
+                # between the two.
+                state, before_model_updates = _run_hook(
+                    "before_model", state, budget=budget
+                )
+                hook_updates.update(before_model_updates)
+                committed.update(before_model_updates)
+                budget.charge("model")
+            except _RecursionBudgetExceeded as exc:
+                return _stop(exc)
             request = _request(state)
 
             def _handler(req: ModelRequest) -> ModelResponse:
@@ -496,10 +784,17 @@ class AgentGraph:
             if structured is not None:
                 produced["structured_response"] = structured
             state = self._apply_channel_writes(state, produced)
+            committed.update(produced)
             updates: dict[str, Any] = {**hook_updates, **produced}
 
-            state, after_model_updates = _run_hook("after_model", state, reverse=True)
+            try:
+                state, after_model_updates = _run_hook(
+                    "after_model", state, reverse=True, budget=budget
+                )
+            except _RecursionBudgetExceeded as exc:
+                return _stop(exc)
             updates.update(after_model_updates)
+            committed.update(after_model_updates)
 
             # Routing reads the *post-hook* state: a middleware that strips
             # ``tool_calls`` (DeerFlow's token-budget cap) must stop the tool
@@ -511,18 +806,36 @@ class AgentGraph:
             # nothing (this is the conditional-edge "go to end" decision).
             if pending:
                 updates = {key: state[key] for key in updates if key in state}
+                updates.update(budget.spent_update())
                 return TaskOutcome(update=updates, emits=("model:written",))
-            # Loop converged: ``after_agent`` fires once, in reverse order,
-            # and its updates join this final model write.
-            state, after_agent_updates = _run_hook("after_agent", state, reverse=True)
+            # Loop converged: ``after_agent`` fires once, in reverse order, and
+            # its updates join this final model write. LangGraph routes to it
+            # in the *same* super-step that produced the final answer, so the
+            # step is charged before the answer's own step is recorded.
+            try:
+                state, after_agent_updates = _run_hook(
+                    "after_agent", state, reverse=True, budget=budget
+                )
+            except _RecursionBudgetExceeded as exc:
+                return _stop(exc)
             updates.update(after_agent_updates)
+            committed.update(after_agent_updates)
             # Every write above was folded into ``state``; emit full committed
             # values so the graph's raw patch commit is equivalent to the
             # channel semantics the compatibility layer promises.
             updates = {key: state[key] for key in updates if key in state}
+            updates.update(budget.spent_update())
             return TaskOutcome(update=updates, emits=())
 
         def _tools(state: dict) -> TaskOutcome:
+            budget = _StepBudget(state, default_limit)
+            try:
+                budget.charge("tools")
+            except _RecursionBudgetExceeded:
+                return TaskOutcome(
+                    update=budget.exhausted_update(),
+                    emits=(),
+                )
             # Execution is delegated to ``ToolNode``, which already carries the
             # ported upstream semantics: argument validation becomes an error
             # ``ToolMessage``, every other tool exception propagates, tools may
@@ -561,6 +874,7 @@ class AgentGraph:
                     else:
                         produced.append(item)
             updates["messages"] = [*messages, *produced]
+            updates.update(budget.spent_update())
 
             # A tool result always hands control back to the model unless a
             # tool explicitly routed to END (DeerFlow's sandbox approval does).
@@ -569,21 +883,26 @@ class AgentGraph:
             return TaskOutcome(update=updates, emits=("tools:written",))
 
         def build(b: GraphBuilder) -> None:
-            # max_runs is the re-entry budget: the model may run up to the
-            # configured recursion limit, the tool node once per model turn.
+            # ``max_runs`` is the engine's own re-entry budget, distinct from
+            # ``recursion_limit``: the compatibility layer charges super-steps
+            # and raises GraphRecursionError itself, while this bound only has
+            # to be large enough not to truncate a legal run first. A limit
+            # above the compiled ceiling is rejected in ``_seed_budget`` rather
+            # than silently truncated here.
+            compiled_budget = _MAX_RECURSION_LIMIT + 2
             b.task(
                 "model",
                 fn=_model,
                 on=("run", "tools:written"),
                 writes=("messages", "structured_response"),
-                max_runs=max(2, recursion_limit),
+                max_runs=compiled_budget,
             )
             b.task(
                 "tools",
                 fn=_tools,
                 on=("model:written",),
                 writes=("messages",),
-                max_runs=max(2, recursion_limit),
+                max_runs=compiled_budget,
             )
 
         return ReactiveGraph.build(build, graph_id=self.name or "create_agent")
@@ -601,6 +920,38 @@ class AgentGraph:
         if self._threads is None:
             raise ValueError(NO_CHECKPOINTER_MESSAGE)
         return self._threads
+
+    def _seed_budget(self, payload: dict[str, Any], config: dict | None) -> dict[str, Any]:
+        """Install this run's budget as graph state before the first task runs.
+
+        Upstream gives every ``invoke`` a *fresh* loop, so the counter resets
+        per run even when the thread already has checkpoints (probe-verified:
+        a second ``invoke`` starts at its own step allowance). The limit is
+        resolved here rather than at compile time so a run config can override
+        the compiled default, and validated here so a bad limit fails before
+        any node — or any tool — runs.
+        """
+        limit = _run_recursion_limit(config, self.config["recursion_limit"])
+        return {
+            **_plain_state(payload),
+            _RECURSION_LIMIT_KEY: limit,
+            _STEP_COUNT_KEY: 0,
+            # A previous run's exhaustion must not leak into this one; the
+            # counter resets per run, so the flag has to as well.
+            _EXHAUSTED_KEY: False,
+        }
+
+    def _raise_if_exhausted(self, state: Any) -> None:
+        """Raise ``GraphRecursionError`` after a run that ran out of budget.
+
+        Called only once the graph has stopped, so every super-step it managed
+        to commit has already been streamed to the caller — the same ordering
+        upstream produces, where the error surfaces after the partial frames.
+        """
+        if not _run_exhausted(state):
+            return
+        limit = state.get(_RECURSION_LIMIT_KEY, self.config["recursion_limit"])
+        raise _graph_recursion_error(limit)
 
     def _seed_payload(
         self, payload: dict[str, Any], head: Any
@@ -656,10 +1007,16 @@ class AgentGraph:
         if self._threads is not None:
             head = self._threads.get_head(config)
             payload, written = self._seed_payload(payload, head)
+        payload = self._seed_budget(payload, config)
         with runtime_context(runtime=_resolve_runtime(config, kwargs.get("context"))):
             state = self._graph.invoke("run", payload, config=config)
         if self._threads is not None:
+            # Commit before raising: upstream checkpoints every super-step, so
+            # an exhausted thread keeps the work it already did. DeerFlow's
+            # subagent executor reads that partial state back when it catches
+            # ``GraphRecursionError`` and reports ``turn_capped``.
             self._commit_run(config, head, state, written)
+        self._raise_if_exhausted(state)
         return _public_state(state)
 
     async def ainvoke(
@@ -672,6 +1029,7 @@ class AgentGraph:
         if self._threads is not None:
             head = await self._threads.aget_head(config)
             payload, written = self._seed_payload(payload, head)
+        payload = self._seed_budget(payload, config)
         with runtime_context(runtime=_resolve_runtime(config, kwargs.get("context"))):
             state = await self._graph.ainvoke("run", payload)
         if self._threads is not None:
@@ -682,6 +1040,7 @@ class AgentGraph:
                 written=written or [key for key in state if key in self.channels],
                 metadata={"source": "loop", "step": 1, "parents": {}},
             )
+        self._raise_if_exhausted(state)
         return _public_state(state)
 
     # -- checkpoint state surface ------------------------------------------
@@ -795,7 +1154,7 @@ class AgentGraph:
         """
         self._reject_inherited_checkpointer()
         modes, as_list = _normalize_stream_modes(stream_mode)
-        payload = _normalize_input(input)
+        payload = self._seed_budget(_normalize_input(input), config)
         runtime = _resolve_runtime(config, kwargs.get("context"))
         return self._stream_modes(payload, config, modes, runtime, as_list=as_list)
 
@@ -815,7 +1174,7 @@ class AgentGraph:
         """
         self._reject_inherited_checkpointer()
         modes, as_list = _normalize_stream_modes(stream_mode)
-        payload = _normalize_input(input)
+        payload = self._seed_budget(_normalize_input(input), config)
         async for item in self._astream_modes(
             payload, config, modes, context, as_list=as_list
         ):
@@ -849,12 +1208,17 @@ class AgentGraph:
         # own callbacks, and ``get_runtime()`` must already be live there.
         with runtime_context(runtime=runtime):
             raw = self._graph.stream("run", payload, config=run_config)
-            yield from _adapt_stream(
-                raw,
+            adapter = _AdaptState(
                 modes,
                 as_list=as_list,
                 integration=self.config["metadata"]["ls_integration"],
             )
+            for frame in raw:
+                yield from adapter.push(frame)
+            yield from adapter.finish()
+            # Only now, with every committed super-step already handed to the
+            # caller, is exhaustion observable — exactly upstream's ordering.
+            self._raise_if_exhausted(adapter.previous)
 
     async def _astream_modes(
         self,
@@ -873,13 +1237,17 @@ class AgentGraph:
             run_config["trace"] = True
         with runtime_context(runtime=_resolve_runtime(config, context)):
             raw = self._graph.astream("run", payload, config=run_config)
-            async for item in _aadapt_stream(
-                raw,
+            adapter = _AdaptState(
                 modes,
                 as_list=as_list,
                 integration=self.config["metadata"]["ls_integration"],
-            ):
+            )
+            async for frame in raw:
+                for item in adapter.push(frame):
+                    yield item
+            for item in adapter.finish():
                 yield item
+            self._raise_if_exhausted(adapter.previous)
 
 
 # ---------------------------------------------------------------------------
@@ -889,8 +1257,6 @@ class AgentGraph:
 # Modes the real product asks for. ``messages-tuple`` is DeerFlow's public
 # spelling of LangGraph's ``messages`` and is translated before we get here.
 _SUPPORTED_STREAM_MODES = ("values", "updates", "messages", "custom", "tasks", "debug")
-
-_AGENT_STARTED = "__reactivegraph_agent_started__"
 
 
 class UnsupportedStreamModeError(ValueError):
@@ -940,7 +1306,7 @@ def _public_state(state: Any) -> dict[str, Any]:
     """Strip run-private bookkeeping keys from a returned state."""
     if not isinstance(state, dict):
         return state
-    return {k: v for k, v in state.items() if k != _AGENT_STARTED}
+    return {k: v for k, v in state.items() if k not in _RUN_PRIVATE_KEYS}
 
 
 def _messages_delta(previous: Any, current: Any) -> list[Any]:
@@ -960,7 +1326,7 @@ def _node_update(node: str, new_messages: list[Any], state: dict[str, Any]) -> d
     if new_messages:
         update["messages"] = new_messages
     for key, value in state.items():
-        if key in {"messages", _AGENT_STARTED}:
+        if key == "messages" or key in _RUN_PRIVATE_KEYS:
             continue
         update[key] = value
     return {node: update}
