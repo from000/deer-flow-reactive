@@ -1006,6 +1006,15 @@ def test_compiled_skill_policy_chain_filters_schema_and_blocks_execution(monkeyp
     assert "not allowed by the active skill policy" in blocked[0].content
 
 
+def test_lead_agent_module_uses_the_reactivegraph_engine():
+    """Identity pin: the lead-agent factory must not silently fall back."""
+    from langchain.agents import create_agent as lc_create_agent
+    from reactivegraph.create_agent import create_agent as rg_create_agent
+
+    assert lead_agent_module.create_agent is rg_create_agent
+    assert lead_agent_module.create_agent is not lc_create_agent
+
+
 def test_build_middlewares_places_mcp_routing_before_deferred_filter(monkeypatch):
     from deerflow.agents.middlewares.deferred_tool_filter_middleware import DeferredToolFilterMiddleware
     from deerflow.agents.middlewares.mcp_routing_middleware import McpRoutingMiddleware
