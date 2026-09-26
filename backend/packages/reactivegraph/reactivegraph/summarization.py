@@ -8,10 +8,10 @@ messages are kept verbatim; only the import roots changed:
 * messages, ``REMOVE_ALL_MESSAGES``, ``Runtime``, ``AgentMiddleware``/``AgentState``
   now come from ReactiveGraph;
 * ``count_tokens_approximately``/``trim_messages``/``get_buffer_string`` come
-  from ``langchain_core.messages.utils``, which is LangGraph-free (the engine's
-  own ``get_buffer_string`` is prefix-only and this middleware needs ``xml``);
+  from the engine's own :mod:`reactivegraph.message_utils`;
 * ``BaseChatModel`` is a typing-only import and ``init_chat_model`` is imported
-  lazily, so importing this module never imports ``langchain``.
+  lazily, so importing this module never imports ``langchain`` or
+  ``langchain_core``.
 
 The ``DEFAULT_SUMMARY_PROMPT`` text is a public contract (the ``<messages>``
 marker and ``{messages}`` placeholder are spliced by downstream consumers), so
@@ -26,14 +26,14 @@ from collections.abc import Callable, Iterable, Mapping
 from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 
-from langchain_core.messages.utils import (
+from typing_extensions import override
+
+from reactivegraph.constants import REMOVE_ALL_MESSAGES
+from reactivegraph.message_utils import (
     count_tokens_approximately,
     get_buffer_string,
     trim_messages,
 )
-from typing_extensions import override
-
-from reactivegraph.constants import REMOVE_ALL_MESSAGES
 from reactivegraph.messages import (
     AIMessage,
     AnyMessage,

@@ -21,13 +21,13 @@ from __future__ import annotations
 import warnings
 from collections.abc import Hashable, Sequence
 from dataclasses import asdict, dataclass
-from typing import Any, ClassVar, Generic, Literal, TypeAlias, TypeVar, final
+from typing import Any, ClassVar, Generic, Literal, TypeAlias, TypeVar, cast, final
 
 from reactivegraph.checkpoint import CheckpointStore
 from reactivegraph.messages import ToolOutputMixin
 from reactivegraph.warnings import ReactiveGraphDeprecatedSinceV10
 
-OVERWRITE = "__overwrite__"
+OVERWRITE: Literal["__overwrite__"] = "__overwrite__"
 """Sentinel key/discriminator for the serialized ``Overwrite`` forms."""
 
 DEFAULT_INTERRUPT_ID = "placeholder-id"
@@ -135,7 +135,9 @@ if HostOverwrite is None:
 
 else:
 
-    class Overwrite(_OverwriteBehavior, HostOverwrite, metaclass=_OverwriteMeta):
+    class Overwrite(  # type: ignore[misc, no-redef, valid-type, unused-ignore]
+        _OverwriteBehavior, HostOverwrite, metaclass=_OverwriteMeta  # type: ignore[misc, valid-type]
+    ):
         """Engine ``Overwrite`` that is also a ``langgraph.types.Overwrite``.
 
         The host class owns the dataclass field declarations, ``__init__``,
@@ -232,12 +234,15 @@ class _CommandBehavior:
     __slots__ = ()
 
     PARENT: ClassVar[str] = "__parent__"
+    update: Any
 
     def __repr__(self) -> str:
         # Upstream omits every falsy field, so ``Command(resume=0)`` prints as
         # ``Command()``; keeping that quirk means log output stays comparable.
         contents = ", ".join(
-            f"{key}={value!r}" for key, value in asdict(self).items() if value
+            f"{key}={value!r}"
+            for key, value in asdict(cast("Any", self)).items()
+            if value
         )
         return f"Command({contents})"
 
@@ -265,7 +270,7 @@ N = TypeVar("N", bound=Hashable)
 """Type parameter of the host ``Command``; mirrored so annotations match."""
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, repr=False)
 class _NativeCommand(_CommandBehavior, ToolOutputMixin, Generic[N]):
     """The engine's own ``Command`` used when LangGraph is not installed."""
 
@@ -316,8 +321,8 @@ class _CommandMeta(type):
 if HostCommand is None:
     Command = _NativeCommand
 else:
-    class Command(  # type: ignore[no-redef]
-        _CommandBehavior, HostCommand, Generic[N], metaclass=_CommandMeta
+    class Command(  # type: ignore[no-redef, misc, valid-type, unused-ignore]
+        _CommandBehavior, HostCommand, Generic[N], metaclass=_CommandMeta  # type: ignore[misc, valid-type]
     ):
         """Engine ``Command`` that is also a ``langgraph.types.Command``."""
 

@@ -323,7 +323,7 @@ class _NativeBaseCheckpointSaver(Generic[V]):
 try:  # pragma: no cover - exercised by the optional-integration tests
     from langgraph.checkpoint.base import BaseCheckpointSaver as BaseCheckpointSaver
 except ImportError:  # pragma: no cover - langgraph is an optional host dep
-    BaseCheckpointSaver = _NativeBaseCheckpointSaver  # type: ignore[misc,assignment]
+    BaseCheckpointSaver = _NativeBaseCheckpointSaver  # type: ignore[misc, assignment, unused-ignore]
 
 
 def _iter_writes(writes: Sequence[tuple[Any, ...]]) -> Iterator[tuple[str, Any]]:
@@ -497,10 +497,10 @@ class CheckpointStore:
                 del self._checkpoints[key]
             for key in [k for k in self._writes if k[0] == target]:
                 del self._writes[key]
-            for key in [k for k in self._order if k[0] == target]:
-                del self._order[key]
-            for key in [k for k in self._latest if k[0] == target]:
-                del self._latest[key]
+            for order_key in [k for k in self._order if k[0] == target]:
+                del self._order[order_key]
+            for latest_key in [k for k in self._latest if k[0] == target]:
+                del self._latest[latest_key]
 
     # -- reads -------------------------------------------------------------
 

@@ -193,7 +193,7 @@ class _NativeBaseStore:
 try:  # pragma: no cover - exercised by the optional-integration tests
     from langgraph.store.base import BaseStore as BaseStore
 except ImportError:  # pragma: no cover - langgraph is an optional host dep
-    BaseStore = _NativeBaseStore  # type: ignore[misc,assignment]
+    BaseStore = _NativeBaseStore  # type: ignore[misc, assignment, unused-ignore]
 
 
 @dataclass(frozen=True)
@@ -666,7 +666,7 @@ def _op_namespace(op: Any) -> tuple[str, ...]:
     raw = getattr(op, "namespace", None)
     if raw is None:
         raw = getattr(op, "namespace_prefix", ())
-    return tuple(raw)
+    return tuple(raw or ())
 
 
 def _op_key(op: Any) -> str:

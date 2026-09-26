@@ -579,10 +579,11 @@ class ThreadCheckpointer:
         values: Mapping[str, Any],
         written: Sequence[str],
         delta_writes: Mapping[str, Any] | None,
-    ) -> tuple[set[str], dict[str, Any], dict[str, Any]]:
+    ) -> tuple[set[str], dict[str, Any], dict[str, Any], bool]:
         """Plan DeltaChannel snapshot/counter state for one state mutation.
 
-        Returns ``(channels_to_snapshot, metadata_extra, parent_writes)``.
+        Returns ``(channels_to_snapshot, metadata_extra, parent_writes,
+        plan_delta)``.
         Only callers that provide the *raw* writes can use the non-snapshot
         path: a folded full value cannot be replayed through a reducer without
         duplicating it.
@@ -607,12 +608,12 @@ class ThreadCheckpointer:
             if name in delta_channels and name in delta_writes
         }
         if head is None:
-            snapshots = {
+            head_snapshots = {
                 name for name in delta_channels if name in values or name in raw
             }
             # A fresh thread has no parent to carry pending writes; upstream
             # therefore snapshots the folded value into this first checkpoint.
-            return snapshots, {}, {}, True
+            return head_snapshots, {}, {}, True
         counters: dict[str, Any] = {}
         previous = dict(head.metadata.get("counters_since_delta_snapshot") or {})
         snapshots: set[str] = set()

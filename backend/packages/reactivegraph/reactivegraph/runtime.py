@@ -16,7 +16,9 @@ from collections.abc import Callable, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
-from typing import Any
+from typing import Any, Generic
+
+from typing_extensions import TypeVar
 
 __all__ = (
     "Runtime",
@@ -27,6 +29,7 @@ __all__ = (
 )
 
 StreamWriter = Callable[[Any], None]
+ContextT = TypeVar("ContextT", default=None)
 
 
 def _no_op_stream_writer(_chunk: Any) -> None:
@@ -38,7 +41,7 @@ def _no_op_heartbeat() -> None:
 
 
 @dataclass
-class Runtime:
+class Runtime(Generic[ContextT]):
     """Run-scoped context and utilities handed to nodes and middleware.
 
     ``config`` is deliberately *not* a field here: read it with
@@ -46,7 +49,7 @@ class Runtime:
     ``configurable`` and tracing metadata.
     """
 
-    context: Any = None
+    context: ContextT | None = None
     store: Any = None
     stream_writer: StreamWriter = field(default=_no_op_stream_writer)
     heartbeat: Callable[[], None] = field(default=_no_op_heartbeat)
@@ -55,7 +58,7 @@ class Runtime:
     server_info: Any = None
     control: Any = None
 
-    def merge(self, other: Runtime) -> Runtime:
+    def merge(self, other: Runtime[ContextT]) -> Runtime[ContextT]:
         """Fill this runtime's unset fields from *other*.
 
         Upstream treats every field except ``previous`` with ``or`` semantics,
@@ -80,7 +83,7 @@ class Runtime:
             control=other.control or self.control,
         )
 
-    def override(self, **overrides: Any) -> Runtime:
+    def override(self, **overrides: Any) -> Runtime[ContextT]:
         """Return a copy with *overrides* applied."""
         return replace(self, **overrides)
 
@@ -96,7 +99,7 @@ class Runtime:
 _current_config: ContextVar[dict[str, Any] | None] = ContextVar(
     "reactivegraph_child_config", default=None
 )
-_current_runtime: ContextVar[Runtime | None] = ContextVar(
+_current_runtime: ContextVar[Runtime[Any] | None] = ContextVar(
     "reactivegraph_runtime", default=None
 )
 
@@ -128,7 +131,7 @@ def _langchain_config_var() -> ContextVar[Any] | None:
 
 def _langgraph_bridged_config(
     config: dict[str, Any] | None,
-    runtime: Runtime | None,
+    runtime: Runtime[Any] | None,
 ) -> dict[str, Any]:
     """Return the RunnableConfig shape upstream helpers expect.
 
@@ -150,7 +153,7 @@ def _langgraph_bridged_config(
 def runtime_context(
     *,
     config: dict[str, Any] | None = None,
-    runtime: Runtime | None = None,
+    runtime: Runtime[Any] | None = None,
 ) -> Iterator[None]:
     """Publish *config* / *runtime* for the duration of the block.
 
@@ -227,7 +230,7 @@ def get_config() -> dict[str, Any]:
     return host_get_config()
 
 
-def get_runtime(context_schema: type | None = None) -> Runtime:
+def get_runtime(context_schema: type | None = None) -> Runtime[Any]:
     """Return the active :class:`Runtime`, or raise outside a run.
 
     *context_schema* is accepted for call-site type inference only; the

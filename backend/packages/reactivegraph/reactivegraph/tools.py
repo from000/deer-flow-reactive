@@ -259,7 +259,7 @@ def _create_subset_model(
             field_info.metadata = field.metadata
         fields[field_name] = (field.annotation, field_info)
 
-    rtn = create_model(  # type: ignore[call-overload]
+    rtn = create_model(
         name,
         __config__=ConfigDict(arbitrary_types_allowed=True),
         **fields,
@@ -674,7 +674,9 @@ HostBaseTool = _host_base_tool()
 _ToolBase = HostBaseTool or BaseModel
 
 
-class BaseTool(_ToolBase):
+class BaseTool(
+    _ToolBase,  # type: ignore[misc, valid-type]
+):
     """Base class for all tools."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -719,10 +721,11 @@ class ChildTool(BaseTool):
     @property
     def args(self) -> dict[str, Any]:
         """The tool's input-argument schema properties."""
-        if isinstance(self.args_schema, dict):
-            json_schema = self.args_schema
+        schema = self.tool_call_schema
+        if isinstance(schema, dict):
+            json_schema = schema
         else:
-            json_schema = self.tool_call_schema.model_json_schema()
+            json_schema = schema.model_json_schema()
         return cast("dict[str, Any]", json_schema["properties"])
 
     @property
@@ -848,7 +851,7 @@ class ChildTool(BaseTool):
         msg = f"Invalid tool input type: {type(tool_input)}"
         raise TypeError(msg)
 
-    def _handle_error(self, error: Exception) -> Any:
+    def _handle_error(self, error: ToolException) -> Any:
         flag = self.handle_tool_error
         if flag is True:
             return str(error)

@@ -33,7 +33,7 @@ import copy
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from reactivegraph.channels import channel_reducer, resolve_channels
 from reactivegraph.errors import (
@@ -220,9 +220,10 @@ def _run_exhausted(state: Any) -> bool:
     return count + 1 > limit
 
 
-def _graph_recursion_error(limit: Any) -> GraphRecursionError:
+def _graph_recursion_error(limit: Any) -> Exception:
     """Upstream's exact exhaustion message, troubleshooting link included."""
-    return GraphRecursionError(
+    error_type = cast("type[Exception]", GraphRecursionError)
+    return error_type(
         create_error_message(
             message=(
                 f"Recursion limit of {limit} reached without hitting a stop "
@@ -794,7 +795,7 @@ class AgentGraph:
                     else None
                 ),
                 tools=list(tools.values()),
-                state=state,
+                state=cast("AgentState[Any]", state),
                 runtime=get_runtime(),
             )
             for mw in middleware:
@@ -959,19 +960,27 @@ class AgentGraph:
         hook_by_node = {
             **{
                 node: mw
-                for node, mw in zip(before_agent_nodes, before_agent_chain)
+                for node, mw in zip(
+                    before_agent_nodes, before_agent_chain, strict=True
+                )
             },
             **{
                 node: mw
-                for node, mw in zip(before_model_nodes, before_model_chain)
+                for node, mw in zip(
+                    before_model_nodes, before_model_chain, strict=True
+                )
             },
             **{
                 node: mw
-                for node, mw in zip(after_model_nodes, after_model_chain)
+                for node, mw in zip(
+                    after_model_nodes, after_model_chain, strict=True
+                )
             },
             **{
                 node: mw
-                for node, mw in zip(after_agent_nodes, after_agent_chain)
+                for node, mw in zip(
+                    after_agent_nodes, after_agent_chain, strict=True
+                )
             },
         }
 
@@ -1119,13 +1128,25 @@ class AgentGraph:
                 *after_model_nodes,
                 *after_agent_nodes,
             ]
+            def _hook_task_factory(
+                node_id: str,
+                name: str,
+            ) -> Callable[[dict], TaskOutcome]:
+                def run_hook_task(state: dict) -> TaskOutcome:
+                    return _run_hook(
+                        node_id,
+                        name,
+                        state,
+                        budget=_StepBudget(state, default_limit),
+                    )
+
+                return run_hook_task
+
             for node_id in all_hook_nodes:
                 hook, _, name = node_id.rpartition(".")
                 b.task(
                     node_id,
-                    fn=lambda state, _node=node_id, _name=name: _run_hook(
-                        _node, _name, state, budget=_StepBudget(state, default_limit)
-                    ),
+                    fn=_hook_task_factory(node_id, name),
                     on=(
                         ("run", _enter(node_id))
                         if node_id == entry

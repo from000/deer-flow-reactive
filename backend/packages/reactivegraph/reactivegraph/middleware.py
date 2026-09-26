@@ -40,6 +40,7 @@ from reactivegraph.messages import (
     AnyMessage,
     BaseMessage,
     SystemMessage,
+    ToolCall,
     ToolMessage,
 )
 from reactivegraph.runtime import Runtime, StreamWriter
@@ -357,12 +358,12 @@ def _drop_shadowed_host_hooks() -> None:
     supplies it without copying function objects.
     """
     for hook in _HOOK_NAMES:
-        if hook in AgentMiddleware.__dict__:
+        if hook in AgentMiddleware.__dict__ and hasattr(_HostAgentMiddleware, hook):
             delattr(AgentMiddleware, hook)
 
 
 class AgentMiddleware(
-    *((_HostAgentMiddleware,) if _HostAgentMiddleware is not None else ()),
+    *((_HostAgentMiddleware,) if _HostAgentMiddleware is not None else ()),  # type: ignore[misc]
     Generic[StateT, ContextT, ResponseT],
     metaclass=_MiddlewareMeta,
 ):
@@ -493,7 +494,7 @@ if _HostAgentMiddleware is not None:
 
 
 class _ToolCallRequestOverrides(TypedDict, total=False):
-    tool_call: dict[str, Any]
+    tool_call: ToolCall
     tool: Any
     state: Any
 
@@ -521,12 +522,12 @@ HostDirectlyInjectedToolArg = _host_directly_injected_tool_arg()
 
 
 class _DirectlyInjectedToolArg(
-    *(
+    *(  # type: ignore[misc]
         (HostDirectlyInjectedToolArg,)
         if HostDirectlyInjectedToolArg is not None
         else (object,)
     )
-):
+):  # type: ignore[misc, unused-ignore]
     """Base marker for tool arguments injected directly by type annotation."""
 
 
@@ -582,7 +583,7 @@ class _ToolRuntimeMeta(type):
 class ToolCallRequest:
     """A tool call plus the state/runtime needed to execute it."""
 
-    tool_call: dict[str, Any]
+    tool_call: ToolCall
     tool: Any | None
     state: Any
     runtime: ToolRuntime
@@ -601,7 +602,7 @@ class ToolCallRequest:
 
     def override(self, **overrides: Unpack[_ToolCallRequestOverrides]) -> ToolCallRequest:
         """Return a replacement request with *overrides* applied."""
-        return replace(self, **overrides)
+        return replace(self, **cast("dict[str, Any]", overrides))
 
 
 ToolCallWrapper = Callable[
@@ -611,7 +612,11 @@ ToolCallWrapper = Callable[
 
 
 @dataclass
-class ToolRuntime(_ToolRuntimeBase, Generic[ContextT, StateT], metaclass=_ToolRuntimeMeta):
+class ToolRuntime(
+    _ToolRuntimeBase,  # type: ignore[misc, valid-type]
+    Generic[ContextT, StateT],
+    metaclass=_ToolRuntimeMeta,
+):
     """Runtime context injected into a tool call.
 
     When LangGraph is installed this class really inherits the host's
@@ -851,10 +856,14 @@ def dynamic_prompt(
                 request: ModelRequest[Any],
                 handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
             ) -> ModelResponse[Any] | AIMessage:
-                prompt = await inner(request)
+                async_inner = cast(
+                    "Callable[[ModelRequest[Any]], Awaitable[str | SystemMessage]]",
+                    inner,
+                )
+                prompt = await async_inner(request)
                 return await handler(apply_prompt(request, prompt))
 
-            wrapped = async_wrapped
+            wrapped: Callable[..., Any] = async_wrapped
             method_name = "awrap_model_call"
         else:
 
@@ -917,7 +926,7 @@ def wrap_model_call(
             ) -> ModelCallResult[Any]:
                 return await inner(request, handler)
 
-            attrs = {
+            attrs: dict[str, Any] = {
                 "state_schema": state_schema or AgentState,
                 "tools": tools or [],
                 "awrap_model_call": async_wrapped,

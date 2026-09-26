@@ -19,10 +19,10 @@ from __future__ import annotations
 import json
 import uuid
 import warnings
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Literal, TypedDict, cast
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing_extensions import NotRequired
 
 try:  # pragma: no cover - exercised by the optional-integration tests
@@ -206,7 +206,10 @@ def _coerce_id(value: Any) -> Any:
     return value
 
 
-class BaseMessage(*_upstream("BaseMessage")):
+_MESSAGE_BASE = _upstream("BaseMessage") or (BaseModel,)
+
+
+class BaseMessage(*_MESSAGE_BASE):  # type: ignore[misc, unused-ignore]
     """Base class for chat messages.
 
     Field order matches upstream so ``model_dump()`` produces the same key
@@ -737,7 +740,7 @@ def add_ai_message_chunks(
         left.response_metadata, *(other.response_metadata for other in others)
     )
 
-    raw_chunks: list[dict[str, Any]] = []
+    raw_chunks: list[ToolCallChunk] = []
     for chunk in (left, *others):
         raw_chunks.extend(chunk.tool_call_chunks)
     tool_call_chunks = _merge_tool_call_chunks(raw_chunks)
@@ -764,7 +767,9 @@ def add_ai_message_chunks(
     )
 
 
-def _merge_tool_call_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _merge_tool_call_chunks(
+    chunks: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     for chunk in chunks:
         index = chunk.get("index")
@@ -783,10 +788,10 @@ def _merge_tool_call_chunks(chunks: list[dict[str, Any]]) -> list[dict[str, Any]
     return merged
 
 
-class BaseMessageChunk(BaseMessage, *_upstream("BaseMessageChunk")):
+class BaseMessageChunk(BaseMessage, *_upstream("BaseMessageChunk")):  # type: ignore[misc, unused-ignore]
     """Message chunk that can be concatenated with other chunks."""
 
-    def __add__(self, other: Any) -> BaseMessageChunk:  # type: ignore[override]
+    def __add__(self, other: Any) -> BaseMessageChunk:
         if isinstance(other, BaseMessageChunk):
             return self.__class__(
                 id=self.id,
@@ -816,42 +821,42 @@ class BaseMessageChunk(BaseMessage, *_upstream("BaseMessageChunk")):
         raise TypeError(msg)
 
 
-class HumanMessage(BaseMessage, *_upstream("HumanMessage")):
+class HumanMessage(BaseMessage, *_upstream("HumanMessage")):  # type: ignore[misc, unused-ignore]
     """Message from the user."""
 
     type: Literal["human"] = "human"
 
 
-class HumanMessageChunk(
-    HumanMessage, BaseMessageChunk, *_upstream("HumanMessageChunk")
+class HumanMessageChunk(  # type: ignore[misc, unused-ignore]
+    HumanMessage, BaseMessageChunk, *_upstream("HumanMessageChunk")  # type: ignore[misc]
 ):
     """Streaming chunk of a human message."""
 
     type: Literal["HumanMessageChunk"] = "HumanMessageChunk"  # type: ignore[assignment]
 
 
-class SystemMessage(BaseMessage, *_upstream("SystemMessage")):
+class SystemMessage(BaseMessage, *_upstream("SystemMessage")):  # type: ignore[misc, unused-ignore]
     """System instruction message."""
 
     type: Literal["system"] = "system"
 
 
-class SystemMessageChunk(
-    SystemMessage, BaseMessageChunk, *_upstream("SystemMessageChunk")
+class SystemMessageChunk(  # type: ignore[misc, unused-ignore]
+    SystemMessage, BaseMessageChunk, *_upstream("SystemMessageChunk")  # type: ignore[misc]
 ):
     """Streaming chunk of a system message."""
 
     type: Literal["SystemMessageChunk"] = "SystemMessageChunk"  # type: ignore[assignment]
 
 
-class ChatMessage(BaseMessage, *_upstream("ChatMessage")):
+class ChatMessage(BaseMessage, *_upstream("ChatMessage")):  # type: ignore[misc, unused-ignore]
     """Message with an arbitrary speaker role."""
 
     role: str
     type: Literal["chat"] = "chat"
 
 
-class AIMessage(BaseMessage, *_upstream("AIMessage")):
+class AIMessage(BaseMessage, *_upstream("AIMessage")):  # type: ignore[misc, unused-ignore]
     """Message from the model, including tool calls and usage metadata."""
 
     type: Literal["ai"] = "ai"
@@ -879,10 +884,11 @@ class AIMessage(BaseMessage, *_upstream("AIMessage")):
                     "name": call["name"],
                     "args": call["args"],
                 }
-                if "index" in call:
-                    block["index"] = call["index"]
-                if "extras" in call:
-                    block["extras"] = call["extras"]
+                call_mapping = cast("Mapping[str, Any]", call)
+                if "index" in call_mapping:
+                    block["index"] = call_mapping["index"]
+                if "extras" in call_mapping:
+                    block["extras"] = call_mapping["extras"]
                 blocks.append(block)
         return blocks
 
@@ -939,7 +945,9 @@ class AIMessage(BaseMessage, *_upstream("AIMessage")):
         return values
 
 
-class AIMessageChunk(AIMessage, BaseMessageChunk, *_upstream("AIMessageChunk")):
+class AIMessageChunk(  # type: ignore[misc, unused-ignore]
+    AIMessage, BaseMessageChunk, *_upstream("AIMessageChunk")  # type: ignore[misc]
+):
     """Streaming chunk of an AI message."""
 
     type: Literal["AIMessageChunk"] = "AIMessageChunk"  # type: ignore[assignment]
@@ -1035,7 +1043,7 @@ HostToolOutputMixin = _host_tool_output_mixin()
 
 
 class ToolOutputMixin(
-    *((HostToolOutputMixin,) if HostToolOutputMixin is not None else ())
+    *((HostToolOutputMixin,) if HostToolOutputMixin is not None else ())  # type: ignore[misc]
 ):
     """Marker for objects a tool may return directly.
 
@@ -1065,7 +1073,9 @@ def is_tool_output(value: object) -> bool:
     return HostToolOutputMixin is not None and isinstance(value, HostToolOutputMixin)
 
 
-class ToolMessage(BaseMessage, ToolOutputMixin, *_upstream("ToolMessage")):
+class ToolMessage(  # type: ignore[misc, unused-ignore]
+    BaseMessage, ToolOutputMixin, *_upstream("ToolMessage")  # type: ignore[misc]
+):
     """Result of a tool call."""
 
     type: Literal["tool"] = "tool"
@@ -1105,7 +1115,9 @@ class ToolMessage(BaseMessage, ToolOutputMixin, *_upstream("ToolMessage")):
             values["tool_call_id"] = str(tool_call_id)
         return values
 
-class ToolMessageChunk(ToolMessage, BaseMessageChunk, *_upstream("ToolMessageChunk")):
+class ToolMessageChunk(  # type: ignore[misc, unused-ignore]
+    ToolMessage, BaseMessageChunk, *_upstream("ToolMessageChunk")  # type: ignore[misc]
+):
     """Streaming chunk of a tool message."""
 
     type: Literal["ToolMessageChunk"] = "ToolMessageChunk"  # type: ignore[assignment]
@@ -1134,7 +1146,7 @@ class ToolMessageChunk(ToolMessage, BaseMessageChunk, *_upstream("ToolMessageChu
         return super().__add__(other)
 
 
-class RemoveMessage(BaseMessage, *_upstream("RemoveMessage")):
+class RemoveMessage(BaseMessage, *_upstream("RemoveMessage")):  # type: ignore[misc, unused-ignore]
     """Instruction to delete another message from history."""
 
     type: Literal["remove"] = "remove"
@@ -1295,7 +1307,7 @@ def _convert_to_message(message: MessageLikeRepresentation) -> BaseMessage:
         return HumanMessage(content=message)
     if isinstance(message, Sequence):
         try:
-            message_type, template = message
+            message_type, template = cast(Sequence[Any], message)[:2]
         except ValueError as error:
             msg = "Message as a sequence must be (role string, template)"
             raise NotImplementedError(msg) from error
@@ -1431,34 +1443,21 @@ def get_buffer_string(
     message_separator: str = "\n",
     format: Literal["prefix", "xml"] = "prefix",  # noqa: A002
 ) -> str:
-    """Render messages as a single buffer string.
+    """Render messages as a prefix or escaped XML transcript.
 
-    Only the ``prefix`` format is implemented today; the ``xml`` format is
-    rejected rather than approximated so a host cannot silently persist a
-    different transcript than upstream would.
+    The implementation lives in :mod:`reactivegraph.message_utils`; the local
+    import avoids a module cycle while keeping this public helper available
+    from :mod:`reactivegraph.messages`.
     """
-    if format != "prefix":
-        msg = f"get_buffer_string(format={format!r}) is not implemented"
-        raise NotImplementedError(msg)
+    from reactivegraph.message_utils import get_buffer_string as _get_buffer_string
 
-    lines: list[str] = []
-    for message in messages:
-        if isinstance(message, HumanMessage):
-            role = human_prefix
-        elif isinstance(message, AIMessage):
-            role = ai_prefix
-        elif isinstance(message, SystemMessage):
-            role = system_prefix
-        elif isinstance(message, ToolMessage):
-            role = tool_prefix
-        elif isinstance(message, ChatMessage):
-            role = message.role
-        else:
-            msg = f"Got unsupported message type: {message}"
-            raise ValueError(msg)
-
-        line = f"{role}: {message.text}"
-        if isinstance(message, AIMessage) and message.tool_calls:
-            line += str(message.tool_calls)
-        lines.append(line)
-    return message_separator.join(lines)
+    return _get_buffer_string(
+        messages,
+        human_prefix,
+        ai_prefix,
+        system_prefix=system_prefix,
+        function_prefix=function_prefix,
+        tool_prefix=tool_prefix,
+        message_separator=message_separator,
+        format=format,
+    )

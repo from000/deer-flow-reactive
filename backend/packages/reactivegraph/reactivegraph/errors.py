@@ -77,20 +77,20 @@ def _fallback_bubble_up() -> type[Exception]:
 def _fallback_interrupt() -> type[Exception]:
     """Engine-native ``GraphInterrupt``, used when LangGraph is absent."""
 
-    class _GraphInterrupt(GraphBubbleUp):  # type: ignore[misc]
+    class GraphInterrupt(GraphBubbleUp):  # type: ignore[misc, valid-type]
         """Raised internally when a subgraph interrupts; the root graph converts
         it into the interrupt payload instead of surfacing this exception."""
 
         def __init__(self, interrupts: Sequence[Any] = ()) -> None:
             super().__init__(interrupts)
 
-    return _GraphInterrupt
+    return GraphInterrupt
 
 
 def _fallback_parent_command() -> type[Exception]:
     """Engine-native ``ParentCommand``, used when LangGraph is absent."""
 
-    class _ParentCommand(GraphBubbleUp):  # type: ignore[misc]
+    class _ParentCommand(GraphBubbleUp):  # type: ignore[misc, valid-type]
         """Carries a ``Command(graph=Command.PARENT)`` up to the parent graph."""
 
         args: tuple[Command]
@@ -150,12 +150,12 @@ HostInvalidUpdateError = _host_invalid_update_error()
 
 
 class InvalidUpdateError(
-    *(
+    *(  # type: ignore[misc]
         (HostInvalidUpdateError,)
         if HostInvalidUpdateError is not None
         else (Exception,)
     )
-):
+):  # type: ignore[misc, unused-ignore]
     """A channel received an update it cannot apply."""
 
 
@@ -185,7 +185,7 @@ HostEmptyChannelError = _host_empty_channel_error()
 
 
 class EmptyChannelError(
-    *((HostEmptyChannelError,) if HostEmptyChannelError is not None else (Exception,))
+    *((HostEmptyChannelError,) if HostEmptyChannelError is not None else (Exception,))  # type: ignore[misc]
 ):
     """Raised when reading a channel that has never been written.
 

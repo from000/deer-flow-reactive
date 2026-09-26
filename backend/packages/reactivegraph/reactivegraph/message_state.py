@@ -68,7 +68,9 @@ if _HostEphemeralValue is None:
 
 else:
 
-    class _EphemeralValueBase(_HostEphemeralValue, Generic[Value]):  # type: ignore[misc]
+    class _EphemeralValueBase(  # type: ignore[misc, no-redef, valid-type, unused-ignore]
+        _HostEphemeralValue, Generic[Value]  # type: ignore[misc, valid-type]
+    ):
         __slots__ = ()
 
         def __init__(self, typ: Any, guard: bool = True) -> None:
@@ -127,13 +129,15 @@ def add_messages(
     if not isinstance(right, list):
         right = [right]  # type: ignore[assignment]
 
+    left_items = list(cast("list[MessageLikeRepresentation]", left))
+    right_items = list(cast("list[MessageLikeRepresentation]", right))
     left_messages = [
         message_chunk_to_message(cast(BaseMessageChunk, message))
-        for message in convert_to_messages(left)
+        for message in convert_to_messages(left_items)
     ]
     right_messages = [
         message_chunk_to_message(cast(BaseMessageChunk, message))
-        for message in convert_to_messages(right)
+        for message in convert_to_messages(right_items)
     ]
 
     for message in left_messages:
@@ -146,7 +150,7 @@ def add_messages(
             remove_all_idx = idx
 
     if remove_all_idx is not None:
-        return right_messages[remove_all_idx + 1 :]
+        return cast(Messages, right_messages[remove_all_idx + 1 :])
 
     merged = list(left_messages)
     merged_by_id = {message.id: i for i, message in enumerate(merged)}
@@ -155,6 +159,7 @@ def add_messages(
         existing_idx = merged_by_id.get(message.id)
         if existing_idx is not None:
             if isinstance(message, RemoveMessage):
+                assert message.id is not None
                 ids_to_remove.add(message.id)
             else:
                 ids_to_remove.discard(message.id)
@@ -181,4 +186,4 @@ def add_messages(
     if format:
         msg = f"Unrecognized format={format!r}. Expected one of 'langchain-openai', None."
         raise ValueError(msg)
-    return merged
+    return cast(Messages, merged)

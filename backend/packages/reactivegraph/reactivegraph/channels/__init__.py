@@ -26,7 +26,9 @@ import collections.abc
 import copy
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Generic, Required, TypeVar, get_type_hints
+from typing import Any, Generic, TypeVar, get_type_hints
+
+from typing_extensions import Required
 
 from reactivegraph.errors import (
     EmptyChannelError,
@@ -606,7 +608,7 @@ _bridge_host_channel_identity()
 
 
 @dataclass(frozen=True)
-class NativeLastValue:
+class LastValue:
     """Engine-native stand-in for ``langgraph.channels.LastValue``."""
 
     typ: Any
@@ -614,7 +616,7 @@ class NativeLastValue:
 
 
 @dataclass(frozen=True)
-class NativeBinaryOperatorAggregate:
+class BinaryOperatorAggregateNative:
     """Engine-native stand-in for ``langgraph.channels.BinaryOperatorAggregate``."""
 
     typ: Any
@@ -699,7 +701,7 @@ def _channel_for(name: str, annotation: Any) -> Any:
         if item is _EphemeralValueMarker or isinstance(item, _EphemeralValueMarker):
             if _lg_channels is not None:
                 return _lg_channels.EphemeralValue(typ)
-            return NativeLastValue(typ=typ, key=name)
+            return LastValue(typ=typ, key=name)
     if metadata and _is_two_arg_callable(metadata[-1]):
         # Prefer the host's class when it is importable: the storage layer does
         # ``isinstance(channel, BinaryOperatorAggregate)`` against the classes
@@ -710,7 +712,7 @@ def _channel_for(name: str, annotation: Any) -> Any:
         return BinaryOperatorAggregate(typ, metadata[-1])
     if _lg_channels is not None:
         return _lg_channels.LastValue(typ)
-    return NativeLastValue(typ=typ, key=name)
+    return LastValue(typ=typ, key=name)
 
 
 def resolve_channels(schemas: list[type]) -> dict[str, Any]:
@@ -756,7 +758,7 @@ def channel_reducer(channel: Any) -> Callable[[Any, Any], Any] | None:
         return _delta_fold(channel)
     if isinstance(channel, BinaryOperatorAggregate):
         return channel.operator
-    if isinstance(channel, NativeBinaryOperatorAggregate):
+    if isinstance(channel, BinaryOperatorAggregateNative):
         return channel.operator
     if _is_host_delta(channel):
         return _delta_fold(channel)

@@ -50,7 +50,7 @@ from reactivegraph.messages import (
     _dump_foreign_message,
     convert_to_messages,
 )
-from reactivegraph.middleware import ToolCallRequest, ToolRuntime
+from reactivegraph.middleware import AgentState, ToolCallRequest, ToolRuntime
 from reactivegraph.runtime import Runtime
 from reactivegraph.tools import (
     TOOL_MESSAGE_BLOCK_TYPES,
@@ -104,7 +104,7 @@ TOOL_INVOCATION_ERROR_TEMPLATE = (
 class _ToolCallRequestOverrides(TypedDict, total=False):
     """Possible overrides for :meth:`ToolCallRequest.override`."""
 
-    tool_call: dict[str, Any]
+    tool_call: ToolCall
     tool: Any
     state: Any
 
@@ -125,6 +125,7 @@ AsyncToolCallWrapper = Callable[
     [ToolCallRequest, Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]]],
     Awaitable[ToolMessage | Command],
 ]
+_ToolResult = ToolMessage | Command | list[ToolMessage | Command]
 
 
 def msg_content_output(output: Any) -> str | list[dict]:
@@ -327,7 +328,7 @@ class ToolNode:
         self._wrap_tool_call = wrap_tool_call
         self._awrap_tool_call = awrap_tool_call
         for item in tools:
-            tool_ = item if _is_tool_like(item) else create_tool(item)
+            tool_ = cast("BaseTool", item if _is_tool_like(item) else create_tool(item))
             self._tools_by_name[tool_.name] = tool_
             self._injected_args[tool_.name] = _get_all_injected_args(tool_)
 
@@ -370,7 +371,7 @@ class ToolNode:
             state = self._extract_state(input, cfg)
             tool_runtimes.append(
                 ToolRuntime(
-                    state=state,
+                    state=cast("AgentState[Any]", state),
                     tool_call_id=call.get("id"),
                     config=cfg,
                     context=getattr(runtime, "context", None),
@@ -406,7 +407,7 @@ class ToolNode:
             state = self._extract_state(input, cfg)
             tool_runtimes.append(
                 ToolRuntime(
-                    state=state,
+                    state=cast("AgentState[Any]", state),
                     tool_call_id=call.get("id"),
                     config=cfg,
                     context=getattr(runtime, "context", None),
@@ -429,7 +430,7 @@ class ToolNode:
         self,
         outputs: list[ToolMessage | Command | list[ToolMessage | Command]],
         input_type: Literal["list", "dict", "tool_calls"],
-    ) -> list[Command | list[ToolMessage] | dict[str, list[ToolMessage]]]:
+    ) -> list[ToolMessage | Command | list[ToolMessage] | dict[str, list[ToolMessage]]]:
         flat_outputs: list[ToolMessage | Command]
         if any(isinstance(output, list) for output in outputs):
             flat_outputs = []
@@ -442,14 +443,22 @@ class ToolNode:
             flat_outputs = cast("list[ToolMessage | Command]", outputs)
 
         if not any(isinstance(output, Command) for output in flat_outputs):
-            return (
-                flat_outputs
-                if input_type == "list"
-                else {self._messages_key: flat_outputs}
+            # Preserve the LangGraph contract: list input returns a list update,
+            # while dict/model/tool_calls input returns a state mapping.
+            if input_type == "list":
+                return cast(
+                    "list[ToolMessage | Command | list[ToolMessage] | "
+                    "dict[str, list[ToolMessage]]]",
+                    flat_outputs,
+                )
+            return cast(
+                "list[ToolMessage | Command | list[ToolMessage] | "
+                "dict[str, list[ToolMessage]]]",
+                {self._messages_key: flat_outputs},
             )
 
         combined_outputs: list[
-            Command | list[ToolMessage] | dict[str, list[ToolMessage]]
+            ToolMessage | Command | list[ToolMessage] | dict[str, list[ToolMessage]]
         ] = []
         parent_command: Command | None = None
         for output in flat_outputs:
@@ -482,7 +491,7 @@ class ToolNode:
         request: ToolCallRequest,
         input_type: Literal["list", "dict", "tool_calls"],
         config: dict[str, Any],
-    ) -> ToolMessage | Command | list[Command | ToolMessage]:
+    ) -> _ToolResult:
         call = request.tool_call
         tool = request.tool
 
@@ -539,7 +548,7 @@ class ToolNode:
         request: ToolCallRequest,
         input_type: Literal["list", "dict", "tool_calls"],
         config: dict[str, Any],
-    ) -> ToolMessage | Command | list[Command | ToolMessage]:
+    ) -> _ToolResult:
         call = request.tool_call
         tool = request.tool
 
@@ -596,7 +605,7 @@ class ToolNode:
         call: ToolCall,
         input_type: Literal["list", "dict", "tool_calls"],
         tool_runtime: ToolRuntime,
-    ) -> ToolMessage | Command | list[Command | ToolMessage]:
+    ) -> _ToolResult:
         tool = self.tools_by_name.get(call["name"])
         tool_request = ToolCallRequest(
             tool_call=call,
@@ -610,7 +619,10 @@ class ToolNode:
             return self._execute_tool_sync(tool_request, input_type, config)
 
         def execute(req: ToolCallRequest) -> ToolMessage | Command:
-            return self._execute_tool_sync(req, input_type, config)
+            return cast(
+                "ToolMessage | Command",
+                self._execute_tool_sync(req, input_type, config),
+            )
 
         try:
             return self._wrap_tool_call(tool_request, execute)
@@ -630,7 +642,7 @@ class ToolNode:
         call: ToolCall,
         input_type: Literal["list", "dict", "tool_calls"],
         tool_runtime: ToolRuntime,
-    ) -> ToolMessage | Command | list[Command | ToolMessage]:
+    ) -> _ToolResult:
         tool = self.tools_by_name.get(call["name"])
         tool_request = ToolCallRequest(
             tool_call=call,
@@ -644,10 +656,16 @@ class ToolNode:
             return await self._execute_tool_async(tool_request, input_type, config)
 
         async def execute(req: ToolCallRequest) -> ToolMessage | Command:
-            return await self._execute_tool_async(req, input_type, config)
+            return cast(
+                "ToolMessage | Command",
+                await self._execute_tool_async(req, input_type, config),
+            )
 
         def _sync_execute(req: ToolCallRequest) -> ToolMessage | Command:
-            return self._execute_tool_sync(req, input_type, config)
+            return cast(
+                "ToolMessage | Command",
+                self._execute_tool_sync(req, input_type, config),
+            )
 
         try:
             if self._awrap_tool_call is not None:
@@ -769,7 +787,7 @@ class ToolNode:
                     if not state_field:
                         injected_args[tool_arg] = state
                     elif state_field in state:
-                        injected_args[tool_arg] = state[state_field]
+                        injected_args[tool_arg] = cast("dict[str, Any]", state)[state_field]
                     elif tool_arg not in injected._optional_state_args:
                         raise KeyError(state_field)
             else:
