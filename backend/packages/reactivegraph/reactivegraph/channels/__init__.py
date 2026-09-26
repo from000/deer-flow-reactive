@@ -398,6 +398,21 @@ class _DeltaSnapshot:
     value: Any
 
 
+def _host_delta_snapshot(value: Any) -> Any:
+    """Build the host's private snapshot blob when LangGraph is installed.
+
+    Host savers serialise blobs through their own serde, and host
+    ``DeltaChannel.from_checkpoint`` recognises only its own namedtuple.
+    Falling back to the local dataclass keeps the engine usable without the
+    optional host dependency.
+    """
+    try:
+        from langgraph.checkpoint.serde.types import _DeltaSnapshot as HostDeltaSnapshot
+    except ImportError:
+        return _DeltaSnapshot(value)
+    return HostDeltaSnapshot(value)
+
+
 def _is_host_delta_snapshot(value: Any) -> bool:
     """Whether *value* is LangGraph's private ``_DeltaSnapshot`` blob.
 

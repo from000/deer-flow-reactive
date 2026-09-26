@@ -107,6 +107,18 @@ def _wire_config(config: dict | None) -> dict:
     return {**config, "configurable": trimmed}
 
 
+def _is_public_state_key(key: Any) -> bool:
+    """Whether a state key is observable in LangGraph's ``values`` stream.
+
+    ``jump_to`` is an ephemeral routing directive and the ``__reactivegraph_*``
+    namespace carries engine bookkeeping. Both may change on an otherwise
+    no-op super-step, but neither is public channel state.
+    """
+    return key != "jump_to" and not (
+        isinstance(key, str) and key.startswith("__reactivegraph_")
+    )
+
+
 def _fallback_fingerprint(state: dict) -> str | None:
     """in-process fallback 的 pure 任务输入指纹（JSON 序列化）。
 
@@ -610,8 +622,15 @@ class ReactiveGraph:
                             )
                             raise
                         self._trace.append({"event": f"task:{tid}", "task": tid})
-                        if on_event is not None:
-                            # 每任务一帧（含跳过/空写），对齐 Driver emitValues
+                        has_public_write = isinstance(update, dict) and any(
+                            _is_public_state_key(key) for key in update
+                        )
+                        if on_event is not None and has_public_write:
+                            # LangGraph emits at most one values frame per
+                            # super-step that committed public channel state.
+                            # Empty/private-only updates remain observable as
+                            # task_start/task_end but must not masquerade as a
+                            # public state transition.
                             on_event(
                                 {
                                     "eventType": "values",

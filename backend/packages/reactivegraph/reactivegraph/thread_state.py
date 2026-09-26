@@ -31,13 +31,14 @@ looks like a working graph.
 from __future__ import annotations
 
 import copy
+import uuid
 from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, NamedTuple
 
 from reactivegraph.channels import _MISSING as _CHANNEL_EMPTY
-from reactivegraph.channels import DeltaChannel, channel_reducer
+from reactivegraph.channels import DeltaChannel, _host_delta_snapshot, channel_reducer
 
 __all__ = (
     "NO_CHECKPOINTER_MESSAGE",
@@ -58,6 +59,7 @@ THREAD_ID_REQUIRED_MESSAGE = (
 """Upstream's exact wording when a threaded call arrives without a thread id."""
 
 LATEST_CHECKPOINT_VERSION = 2
+DELTA_MAX_SUPERSTEPS_SINCE_SNAPSHOT = 5000
 
 
 class CheckpointStateError(ValueError):
@@ -488,8 +490,15 @@ class ThreadCheckpointer:
             if channel in seen:
                 continue
             if channel not in stored:
-                touched.append(channel)
-                seen.add(channel)
+                # A DeltaChannel is deliberately absent from a non-snapshot
+                # checkpoint; ``values`` may still contain its replayed value.
+                # That is reconstructed state, not a write in this superstep.
+                # Upstream likewise derives ``updated_channels`` from task
+                # writes, so counting the replay as a change would spuriously
+                # bump its version and cadence on every read-modify-commit.
+                if not isinstance(self._channels.get(channel), DeltaChannel):
+                    touched.append(channel)
+                    seen.add(channel)
                 continue
             previous = stored[channel]
             if previous is value:
@@ -521,6 +530,8 @@ class ThreadCheckpointer:
         values: Mapping[str, Any],
         written: Sequence[str],
         versions: Mapping[str, Any],
+        *,
+        channels_to_snapshot: set[str] | None = None,
     ) -> dict[str, Any]:
         """Build the snapshot to store.
 
@@ -539,7 +550,21 @@ class ThreadCheckpointer:
         checkpoint["id"] = new_checkpoint_id()
         checkpoint["ts"] = datetime.now(timezone.utc).isoformat()
         checkpoint["v"] = checkpoint.get("v") or LATEST_CHECKPOINT_VERSION
-        checkpoint["channel_values"] = copy.deepcopy(dict(values))
+        channel_values = copy.deepcopy(dict(values))
+        if channels_to_snapshot is not None:
+            for name, channel in self._channels.items():
+                if not isinstance(channel, DeltaChannel):
+                    continue
+                if name in channels_to_snapshot:
+                    # Host savers serialise through their own serde, and host
+                    # DeltaChannel.from_checkpoint recognises only its own
+                    # namedtuple blob.
+                    channel_values[name] = _host_delta_snapshot(values[name])
+                    continue
+                # Non-snapshot delta writes live on the parent checkpoint's
+                # pending writes; the ancestor walk reconstructs the value.
+                channel_values.pop(name, None)
+        checkpoint["channel_values"] = channel_values
         channel_versions = dict(checkpoint.get("channel_versions") or {})
         channel_versions.update(versions)
         checkpoint["channel_versions"] = channel_versions
@@ -547,6 +572,82 @@ class ThreadCheckpointer:
         checkpoint.setdefault("versions_seen", {})
         checkpoint.setdefault("pending_sends", [])
         return checkpoint
+
+    def _delta_plan(
+        self,
+        head: _Head | None,
+        values: Mapping[str, Any],
+        written: Sequence[str],
+        delta_writes: Mapping[str, Any] | None,
+    ) -> tuple[set[str], dict[str, Any], dict[str, Any]]:
+        """Plan DeltaChannel snapshot/counter state for one state mutation.
+
+        Returns ``(channels_to_snapshot, metadata_extra, parent_writes)``.
+        Only callers that provide the *raw* writes can use the non-snapshot
+        path: a folded full value cannot be replayed through a reducer without
+        duplicating it.
+        """
+        if delta_writes is None:
+            # ``None`` means the caller has only a folded value and therefore
+            # cannot use ancestor replay; it must keep full snapshot semantics.
+            # An empty mapping is still a plan: the caller performed a mutation
+            # that touched no delta channel, so omission is safe.
+            return set(), {}, {}, False
+        delta_channels = {
+            name: channel
+            for name, channel in self._channels.items()
+            if isinstance(channel, DeltaChannel)
+        }
+        if not delta_channels:
+            return set(), {}, {}, True
+        touched = set(written)
+        raw = {
+            name: delta_writes[name]
+            for name in touched
+            if name in delta_channels and name in delta_writes
+        }
+        if head is None:
+            snapshots = {
+                name for name in delta_channels if name in values or name in raw
+            }
+            # A fresh thread has no parent to carry pending writes; upstream
+            # therefore snapshots the folded value into this first checkpoint.
+            return snapshots, {}, {}, True
+        counters: dict[str, Any] = {}
+        previous = dict(head.metadata.get("counters_since_delta_snapshot") or {})
+        snapshots: set[str] = set()
+        for name, channel in delta_channels.items():
+            current = previous.get(name, (0, 0))
+            updates, supersteps = int(current[0]), int(current[1])
+            supersteps += 1
+            if name in touched:
+                updates += 1
+            due = (
+                updates >= channel.snapshot_frequency
+                or supersteps >= DELTA_MAX_SUPERSTEPS_SINCE_SNAPSHOT
+            )
+            # Upstream advances counters for every delta channel but snapshots
+            # only channels whose current value is available. A never-written
+            # channel can reach its cadence while still absent from ``values``;
+            # adding it here would make the checkpoint builder index a missing
+            # value. Keep its counters so a later real write snapshots promptly.
+            if due and name in values:
+                snapshots.add(name)
+                counters[name] = (0, 0)
+            else:
+                counters[name] = (updates, supersteps)
+        counters = {name: value for name, value in counters.items() if value != (0, 0)}
+        metadata = (
+            {"counters_since_delta_snapshot": counters} if counters else {}
+        )
+        return snapshots, metadata, raw, True
+
+    @staticmethod
+    def _delta_write_task_id(checkpoint_id: str) -> str:
+        try:
+            return str(uuid.uuid5(uuid.UUID(checkpoint_id), "update_state"))
+        except (ValueError, AttributeError):
+            return f"update_state:{checkpoint_id}"
 
     def commit(
         self,
@@ -557,6 +658,7 @@ class ThreadCheckpointer:
         written: Sequence[str],
         metadata: Mapping[str, Any],
         task_id: str | None = None,
+        delta_writes: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Persist *values* as a new checkpoint and return the new config."""
         thread_id = self.require_thread_id(config)
@@ -565,17 +667,39 @@ class ThreadCheckpointer:
         parent_id = _configurable(parent_config).get("checkpoint_id") if parent_config else None
         written = self._changed_channels(head, values, written)
         versions = self._next_versions(head, written)
-        checkpoint = self._checkpoint_for(head, values, written, versions)
+        channels_to_snapshot, delta_metadata, parent_writes, plan_delta = self._delta_plan(
+            head, values, written, delta_writes
+        )
+        checkpoint = self._checkpoint_for(
+            head,
+            values,
+            written,
+            versions,
+            channels_to_snapshot=channels_to_snapshot if plan_delta else None,
+        )
         write_config = self._with_configurable(
             config,
             thread_id=thread_id,
             checkpoint_ns=checkpoint_ns,
             checkpoint_id=parent_id,
         )
+        if parent_writes:
+            put_writes = getattr(self._saver, "put_writes", None)
+            if not callable(put_writes):
+                raise CheckpointStateError(
+                    f"checkpointer {type(self._saver).__name__!r} cannot record "
+                    "pending delta writes, so a non-snapshot update cannot be "
+                    "reconstructed. Refusing to commit state that would be lost."
+                )
+            put_writes(
+                write_config,
+                list(parent_writes.items()),
+                task_id or self._delta_write_task_id(checkpoint["id"]),
+            )
         stored = self._saver.put(
             write_config,
             checkpoint,
-            _merge_config_metadata(config, metadata),
+            _merge_config_metadata(config, {**metadata, **delta_metadata}),
             versions,
         )
         stored_config = dict(stored) if isinstance(stored, Mapping) else write_config
@@ -614,10 +738,17 @@ class ThreadCheckpointer:
         written: Sequence[str],
         metadata: Mapping[str, Any],
         task_id: str | None = None,
+        delta_writes: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not self._supports_async():
             return self.commit(
-                config, head, values, written=written, metadata=metadata, task_id=task_id
+                config,
+                head,
+                values,
+                written=written,
+                metadata=metadata,
+                task_id=task_id,
+                delta_writes=delta_writes,
             )
         thread_id = self.require_thread_id(config)
         checkpoint_ns = str(_configurable(config).get("checkpoint_ns") or "")
@@ -625,17 +756,39 @@ class ThreadCheckpointer:
         parent_id = _configurable(parent_config).get("checkpoint_id") if parent_config else None
         written = self._changed_channels(head, values, written)
         versions = self._next_versions(head, written)
-        checkpoint = self._checkpoint_for(head, values, written, versions)
+        channels_to_snapshot, delta_metadata, parent_writes, plan_delta = self._delta_plan(
+            head, values, written, delta_writes
+        )
+        checkpoint = self._checkpoint_for(
+            head,
+            values,
+            written,
+            versions,
+            channels_to_snapshot=channels_to_snapshot if plan_delta else None,
+        )
         write_config = self._with_configurable(
             config,
             thread_id=thread_id,
             checkpoint_ns=checkpoint_ns,
             checkpoint_id=parent_id,
         )
+        if parent_writes:
+            aput_writes = getattr(self._saver, "aput_writes", None)
+            if not callable(aput_writes):
+                raise CheckpointStateError(
+                    f"checkpointer {type(self._saver).__name__!r} cannot record "
+                    "pending delta writes, so a non-snapshot update cannot be "
+                    "reconstructed. Refusing to commit state that would be lost."
+                )
+            await aput_writes(
+                write_config,
+                list(parent_writes.items()),
+                task_id or self._delta_write_task_id(checkpoint["id"]),
+            )
         stored = await self._saver.aput(
             write_config,
             checkpoint,
-            _merge_config_metadata(config, metadata),
+            _merge_config_metadata(config, {**metadata, **delta_metadata}),
             versions,
         )
         stored_config = dict(stored) if isinstance(stored, Mapping) else write_config
@@ -697,20 +850,25 @@ class ThreadCheckpointer:
     ) -> dict[str, Any]:
         """Rebuild delta channels whose stored value needs an ancestor replay.
 
-        Mirrors upstream ``_needs_replay``: only a channel whose spec is a
-        ``DeltaChannel`` *and* whose ``channel_values`` entry is absent needs
-        the walk. A snapshot blob or a legacy plain value restores directly.
+        Mirrors upstream ``_needs_replay``: a ``DeltaChannel`` whose
+        ``channel_values`` entry is absent needs the ancestor walk. A stored
+        snapshot blob is decoded through the channel contract, while a legacy
+        plain value restores directly.
         """
-        pending = [
-            name
-            for name, spec in self._channels.items()
-            if isinstance(spec, DeltaChannel)
-            and stored.get(name, _CHANNEL_EMPTY) is _CHANNEL_EMPTY
-        ]
-        if not pending:
-            return {}
-        histories = self._delta_histories(head, pending)
         replayed: dict[str, Any] = {}
+        pending: list[str] = []
+        for name, spec in self._channels.items():
+            if not isinstance(spec, DeltaChannel):
+                continue
+            if name not in stored:
+                pending.append(name)
+                continue
+            channel = spec.from_checkpoint(stored[name])
+            if channel.is_available():
+                replayed[name] = channel.get()
+        if not pending:
+            return replayed
+        histories = self._delta_histories(head, pending)
         for name in pending:
             history = histories.get(name)
             if not isinstance(history, Mapping):
@@ -726,16 +884,20 @@ class ThreadCheckpointer:
     async def _areplay_delta_values(
         self, head: _Head, stored: Mapping[str, Any]
     ) -> dict[str, Any]:
-        pending = [
-            name
-            for name, spec in self._channels.items()
-            if isinstance(spec, DeltaChannel)
-            and stored.get(name, _CHANNEL_EMPTY) is _CHANNEL_EMPTY
-        ]
-        if not pending:
-            return {}
-        histories = await self._adelta_histories(head, pending)
         replayed: dict[str, Any] = {}
+        pending: list[str] = []
+        for name, spec in self._channels.items():
+            if not isinstance(spec, DeltaChannel):
+                continue
+            if name not in stored:
+                pending.append(name)
+                continue
+            channel = spec.from_checkpoint(stored[name])
+            if channel.is_available():
+                replayed[name] = channel.get()
+        if not pending:
+            return replayed
+        histories = await self._adelta_histories(head, pending)
         for name in pending:
             history = histories.get(name)
             if not isinstance(history, Mapping):

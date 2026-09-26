@@ -116,8 +116,9 @@ class CompiledStateGraph:
     ) -> dict[str, Any]:
         threads = self._bind_checkpointer()
         head = threads.get_head(config)
+        update = _adopt_messages(dict(values or {}))
         folded, written = threads.fold_input(
-            threads.load_values(head), _adopt_messages(dict(values or {}))
+            threads.load_values(head), update
         )
         return threads.commit(
             config,
@@ -126,6 +127,7 @@ class CompiledStateGraph:
             written=written,
             metadata=_update_metadata(as_node),
             task_id=task_id,
+            delta_writes=update,
         )
 
     async def aupdate_state(
@@ -137,8 +139,9 @@ class CompiledStateGraph:
     ) -> dict[str, Any]:
         threads = self._bind_checkpointer()
         head = await threads.aget_head(config)
+        update = _adopt_messages(dict(values or {}))
         folded, written = threads.fold_input(
-            await threads.aload_values(head), _adopt_messages(dict(values or {}))
+            await threads.aload_values(head), update
         )
         return await threads.acommit(
             config,
@@ -147,6 +150,7 @@ class CompiledStateGraph:
             written=written,
             metadata=_update_metadata(as_node),
             task_id=task_id,
+            delta_writes=update,
         )
 
     # -- reads -------------------------------------------------------------

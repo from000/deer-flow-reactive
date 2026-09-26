@@ -29,6 +29,7 @@ not implement raise instead of silently degrading.
 
 from __future__ import annotations
 
+import copy
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
@@ -45,6 +46,7 @@ from reactivegraph.messages import (
     AIMessage,
     AnyMessage,
     SystemMessage,
+    ToolMessage,
     convert_to_messages,
     message_to_foreign_dict,
 )
@@ -95,6 +97,10 @@ _EXHAUSTED_KEY = "__reactivegraph_recursion_exhausted__"
 _RUN_PRIVATE_KEYS = frozenset(
     {_AGENT_STARTED, _RECURSION_LIMIT_KEY, _STEP_COUNT_KEY, _EXHAUSTED_KEY}
 )
+# ``jump_to`` is an ``EphemeralValue + PrivateStateAttr`` upstream: a hook can
+# use it to choose the next node, but it must not be visible to later nodes or
+# to the caller. The engine's compatibility layer owns that consumption.
+_PRIVATE_STATE_KEYS = _RUN_PRIVATE_KEYS | {"jump_to"}
 
 # Hook name -> the sync/async pair LangChain compiles into one node. The
 # ordering here is the order the nodes run in, which is also the order the
@@ -405,6 +411,45 @@ def _resolve_jump(jump: Any) -> str | None:
     return None
 
 
+def _get_can_jump_to(middleware: Any, hook_name: str) -> list[str]:
+    """Read ``hook_config(can_jump_to=...)`` from either side of the pair.
+
+    Upstream's ``_get_can_jump_to`` checks the sync hook first, then the async
+    hook, and only trusts metadata on a method that actually overrides the
+    framework base. The identity check matters for host middleware: a bare
+    subclass must not inherit a declaration from the base stub.
+    """
+    middleware_type = type(middleware)
+    for hook in (hook_name, f"a{hook_name}"):
+        if not _overrides_hook(middleware_type, hook):
+            continue
+        resolved = getattr(middleware_type, hook, None)
+        declared = getattr(resolved, "__can_jump_to__", None)
+        if declared:
+            return list(declared)
+    return []
+
+
+def _fetch_last_ai_and_tool_messages(
+    messages: Sequence[Any],
+) -> tuple[AIMessage | None, list[Any]]:
+    """Return the last AI message and any ToolMessages following it.
+
+    This is the routing read upstream performs after the whole ``after_model``
+    chain: a middleware may replace or remove the model reply, and tool calls
+    answered by artificial tool messages must not be dispatched twice.
+    """
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if isinstance(message, AIMessage):
+            return message, [
+                candidate
+                for candidate in messages[index + 1 :]
+                if isinstance(candidate, ToolMessage)
+            ]
+    return None, []
+
+
 @dataclass
 class _SchemaView:
     """``.builder.schemas`` — dict keyed by the resolved state schema classes."""
@@ -428,6 +473,22 @@ class _GraphEdge:
     conditional: bool = False
 
 
+@dataclass(frozen=True)
+class _GraphTopology:
+    """The compiled node/edge shape shared by ``get_graph()`` and the tasks.
+
+    ``get_graph()`` is not decorative for the hosts we target: DeerFlow and
+    LangChain-compatibility tests inspect it to reason about routing and
+    recursion.  Building it independently from the task graph had already let
+    the two drift once (middleware hooks existed at runtime but not in the
+    view).  Keeping one immutable value as the source for both prevents that
+    class of bug.
+    """
+
+    nodes: tuple[str, ...]
+    edges: tuple[_GraphEdge, ...]
+
+
 class _GraphView:
     """``get_graph()`` — the node/edge surface DeerFlow and its tests read.
 
@@ -437,26 +498,16 @@ class _GraphView:
     assertions hold, without pretending to be a LangGraph object.
     """
 
-    def __init__(self, graph: ReactiveGraph, tools: dict[str, Any]) -> None:
-        self._graph = graph
-        self._tools = tools
+    def __init__(self, topology: _GraphTopology) -> None:
+        self._topology = topology
 
     @property
     def nodes(self) -> dict[str, _GraphNode]:
-        names = ["__start__", "model"]
-        if self._tools:
-            names.append("tools")
-        names.append("__end__")
-        return {name: _GraphNode(name=name) for name in names}
+        return {name: _GraphNode(name=name) for name in self._topology.nodes}
 
     @property
     def edges(self) -> list[_GraphEdge]:
-        edges = [_GraphEdge("__start__", "model")]
-        if self._tools:
-            edges.append(_GraphEdge("model", "tools", conditional=True))
-            edges.append(_GraphEdge("tools", "model", conditional=True))
-        edges.append(_GraphEdge("model", "__end__", conditional=True))
-        return edges
+        return list(self._topology.edges)
 
 
 class _GraphBuilderView:
@@ -550,7 +601,7 @@ class AgentGraph:
             if self.checkpointer is not None and not self._checkpointer_is_inherit
             else None
         )
-        self._graph = self._compile()
+        self._graph, self._topology = self._compile()
 
     def _apply_channel_writes(self, state: dict, writes: dict[str, Any]) -> dict[str, Any]:
         """Return *state* with *writes* folded through the channel table.
@@ -562,7 +613,7 @@ class AgentGraph:
         """
         updated = _plain_state(state)
         for key, write in writes.items():
-            if key in _RUN_PRIVATE_KEYS:
+            if key in _PRIVATE_STATE_KEYS:
                 updated[key] = write
                 continue
             channel = self.channels.get(key)
@@ -578,72 +629,154 @@ class AgentGraph:
 
     # -- graph construction -------------------------------------------------
 
-    def _compile(self) -> ReactiveGraph:
+    def _compile(self) -> tuple[ReactiveGraph, _GraphTopology]:
         tools = self._tools
         tool_node = self._tool_node
         model = self._model
         default_limit = self.config["recursion_limit"]
         system_prompt = self._system_prompt
         middleware = self._middleware
-        # LangGraph compiles one node per middleware hook *pair*, so the budget
-        # is spent per node, not per turn. ``_run_hook`` charges each
-        # participating middleware as it reaches it, which is what makes a
-        # refusal land between two middleware nodes rather than before the
-        # whole chain.
+
+        # LangChain's factory compiles one node per middleware *hook pair*, so
+        # every hook is a real super-step and therefore produces its own values
+        # frame.  Precompute the four chains once and derive both the graph and
+        # get_graph() from the same topology.
+        before_agent_chain = [
+            mw
+            for mw in middleware
+            if _implements_hook_pair(mw, _HOOK_PAIRS["before_agent"])
+        ]
+        before_model_chain = [
+            mw
+            for mw in middleware
+            if _implements_hook_pair(mw, _HOOK_PAIRS["before_model"])
+        ]
+        after_model_chain = [
+            mw
+            for mw in middleware
+            if _implements_hook_pair(mw, _HOOK_PAIRS["after_model"])
+        ]
+        after_agent_chain = [
+            mw
+            for mw in middleware
+            if _implements_hook_pair(mw, _HOOK_PAIRS["after_agent"])
+        ]
+
+        def _node_name(hook: str, mw: Any) -> str:
+            return f"{getattr(mw, 'name', None) or type(mw).__name__}.{hook}"
+
+        before_agent_nodes = [
+            _node_name("before_agent", mw) for mw in before_agent_chain
+        ]
+        before_model_nodes = [
+            _node_name("before_model", mw) for mw in before_model_chain
+        ]
+        after_model_nodes = [
+            _node_name("after_model", mw) for mw in after_model_chain
+        ]
+        after_agent_nodes = [
+            _node_name("after_agent", mw) for mw in after_agent_chain
+        ]
+
+        entry = before_agent_nodes[0] if before_agent_nodes else (
+            before_model_nodes[0] if before_model_nodes else "model"
+        )
+        loop_entry = before_model_nodes[0] if before_model_nodes else "model"
+        # Upstream's ``exit_node`` is the *last* registered after_agent node;
+        # the chain itself then walks backwards to the first one.
+        exit_node = after_agent_nodes[-1] if after_agent_nodes else "__end__"
+
+        def _enter(node_id: str) -> str:
+            return f"enter:{node_id}"
+
+        def _stop(exc: _RecursionBudgetExceeded, state: dict, budget: _StepBudget,
+                  committed: dict[str, Any]) -> TaskOutcome:
+            """Turn a refusal into a normal, non-emitting task outcome."""
+            update = {key: state[key] for key in committed if key in state}
+            update.update(exc.partial)
+            update.update(budget.exhausted_update())
+            return TaskOutcome(update=update, emits=())
 
         def _run_hook(
-            name: str, state: dict, reverse: bool = False, *, budget: _StepBudget
-        ) -> tuple[dict[str, Any], dict[str, Any]]:
-            """Run one hook across the middleware chain.
+            node_id: str, name: str, state: dict, *, budget: _StepBudget
+        ) -> TaskOutcome:
+            """Run exactly one middleware node."""
+            try:
+                budget.charge(node_id)
+            except _RecursionBudgetExceeded as exc:
+                return _stop(exc, _public_state(state), budget, {})
+            mw = hook_by_node[node_id]
+            # ``jump_to`` is ephemeral: clear the previous step's directive
+            # before this node observes state.  A hook may write a new one.
+            current = self._apply_channel_writes(state, {"jump_to": None})
+            committed: dict[str, Any] = {}
+            hook = getattr(mw, name, None)
+            if hook is not None:
+                result = hook(dict(current), get_runtime())
+                if isinstance(result, dict):
+                    adopted = _adopt_messages(result)
+                    current = self._apply_channel_writes(current, adopted)
+                    committed.update(adopted)
+            # Only the destinations the hook explicitly declared may be
+            # selected by ``jump_to``; anything else falls back to the default.
+            declared = _get_can_jump_to(mw, name)
+            jump = _resolve_jump(current.get("jump_to"))
+            if jump not in declared:
+                jump = None
+            if jump == "model":
+                target = loop_entry
+            elif jump == "tools":
+                target = "tools" if tools else default_destination(node_id)
+            elif jump == "end":
+                target = exit_node
+            else:
+                target = default_destination(node_id)
+            if (
+                jump is None
+                and node_id in after_model_nodes
+                and node_id == after_model_nodes[0]
+            ):
+                # The last executed after_model node is upstream's loop-exit
+                # conditional edge: it decides tools/loop/end from the full
+                # post-middleware state. Without a tools node that edge is a
+                # plain edge to ``exit_node``; it must not try to route a tool
+                # call that can never execute.
+                target = _route_after_loop_exit(current) if tools else exit_node
+            # The directive is consumed by this node even when it was ignored.
+            current = self._apply_channel_writes(current, {"jump_to": None})
+            updates = {
+                key: current[key]
+                for key in committed
+                if key in current and key not in _PRIVATE_STATE_KEYS
+            }
+            updates.update(budget.spent_update())
+            emits = () if target == "__end__" else (_enter(target),)
+            return TaskOutcome(update=updates, emits=emits)
 
-            Upstream compiles a *node per middleware*, so each hook observes the
-            state its predecessors already produced. Collapsing the chain into
-            one function that hands every hook the same pre-chain snapshot
-            breaks any middleware that reads what an earlier one wrote
-            (DeerFlow's ``SubagentLimitMiddleware`` counts the ledger
-            ``DurableContextMiddleware`` writes).
-
-            Returns ``(folded_state, merged_updates)``. ``folded_state`` is the
-            state with channel reducers applied, which is what the next hook
-            and the loop's routing decision must see; ``merged_updates`` is the
-            last-write-per-key patch the graph task reports.
-            """
-            current = _plain_state(state)
-            written: set[str] = set()
-            runtime = get_runtime()
-            items = list(reversed(middleware)) if reverse else list(middleware)
-            hook_pair = _HOOK_PAIRS[name]
-            for mw in items:
-                # Upstream's factory gives every middleware that overrides
-                # either side of the pair its own node, so the step is charged
-                # whether or not this particular instance implements the hook.
-                if _implements_hook_pair(mw, hook_pair):
-                    try:
-                        budget.charge(name)
-                    except _RecursionBudgetExceeded as exc:
-                        # The middleware chain is one *logical* node per
-                        # instance upstream, so the writes of the instances
-                        # that already ran are committed state by the time the
-                        # next one is refused. Hand them to the caller.
-                        exc.partial = {
-                            key: current[key] for key in written if key in current
-                        }
-                        raise
-                hook = getattr(mw, name, None)
-                if hook is None:
-                    continue
-                result = hook(dict(current), runtime)
-                if not isinstance(result, dict):
-                    continue
-                adopted = _adopt_messages(result)
-                written.update(adopted)
-                current = self._apply_channel_writes(current, adopted)
-            # The patch the graph commits is a full ``set``, not a reducer
-            # write: ReactiveGraph's fallback and Driver both apply
-            # ``state[k] = value``. Emit the *folded* value so reducer channels
-            # accumulate across hook/model turns instead of being clobbered by
-            # the last raw write.
-            return current, {key: current[key] for key in written if key in current}
+        def _default_destination(node_id: str) -> str:
+            if node_id in before_agent_nodes:
+                index = before_agent_nodes.index(node_id)
+                if index + 1 < len(before_agent_nodes):
+                    return before_agent_nodes[index + 1]
+                return loop_entry
+            if node_id in before_model_nodes:
+                index = before_model_nodes.index(node_id)
+                if index + 1 < len(before_model_nodes):
+                    return before_model_nodes[index + 1]
+                return "model"
+            if node_id in after_model_nodes:
+                # Registered order is the *reverse* execution order.
+                index = after_model_nodes.index(node_id)
+                if index > 0:
+                    return after_model_nodes[index - 1]
+                return "tools" if tools else exit_node
+            if node_id in after_agent_nodes:
+                # Registered order is the *reverse* execution order.
+                index = after_agent_nodes.index(node_id)
+                if index > 0:
+                    return after_agent_nodes[index - 1]
+                return "__end__"
+            raise AssertionError(node_id)
 
         def _request(state: dict) -> ModelRequest:
             # Upstream keeps the static system prompt in the separate
@@ -675,60 +808,12 @@ class AgentGraph:
 
         def _model(state: dict) -> TaskOutcome:
             budget = _StepBudget(state, default_limit)
-            # Hook return values are state updates and must reach the caller.
-            # Upstream merges every before_*/after_* dict into graph state;
-            # DeerFlow's ThreadDataMiddleware returns {"thread_data": ...}
-            # here and the CLI reads it back off the final state.
-            hook_updates: dict[str, Any] = {}
-            # Every write this task makes, in commit order. When the budget runs
-            # out part-way through, the writes already folded into ``state``
-            # must still reach the caller (upstream commits each super-step),
-            # while the node that would have run next must not.
-            committed: dict[str, Any] = {}
-
-            def _stop(exc: _RecursionBudgetExceeded) -> TaskOutcome:
-                """Turn a refusal into a normal, non-emitting task outcome.
-
-                The refusal must not be raised out of the task: the fallback
-                engine would abort the run without committing this task's
-                writes, and the Driver would fail the run instead of stopping
-                it. Returning ``emits=()`` ends the branch, and the
-                compatibility layer raises ``GraphRecursionError`` once the
-                graph has drained.
-                """
-                update = {key: state[key] for key in committed if key in state}
-                update.update(exc.partial)
-                update.update(budget.exhausted_update())
-                return TaskOutcome(update=update, emits=())
-
             try:
-                if not state.get(_AGENT_STARTED):
-                    # ``before_agent`` fires exactly once per run, before the
-                    # first model call (probe-verified upstream ordering). The
-                    # marker is written back so a model re-entry after the tool
-                    # node does not replay it.
-                    hook_updates[_AGENT_STARTED] = True
-                    committed[_AGENT_STARTED] = True
-                    state = self._apply_channel_writes(state, {_AGENT_STARTED: True})
-                    state, before_agent_updates = _run_hook(
-                        "before_agent", state, budget=budget
-                    )
-                    hook_updates.update(before_agent_updates)
-                    committed.update(before_agent_updates)
-                # Probe-verified upstream node order: every ``before_model``
-                # middleware is its own super-step and the ``model`` node is
-                # prepared in the tick *after* them, so the hooks are charged
-                # first and the model is refused when the budget runs out
-                # between the two.
-                state, before_model_updates = _run_hook(
-                    "before_model", state, budget=budget
-                )
-                hook_updates.update(before_model_updates)
-                committed.update(before_model_updates)
                 budget.charge("model")
             except _RecursionBudgetExceeded as exc:
-                return _stop(exc)
-            request = _request(state)
+                return _stop(exc, state, budget, {})
+            current = self._apply_channel_writes(state, {"jump_to": None})
+            request = _request(current)
 
             def _handler(req: ModelRequest) -> ModelResponse:
                 # Mirror upstream's ``_execute_model_sync``: the system message
@@ -742,17 +827,7 @@ class AgentGraph:
 
             handler: Callable[[ModelRequest], Any] = _handler
             # Upstream composes a middleware into the chain when *either* its
-            # sync or async ``wrap_model_call`` is overridden:
-            #
-            #     m.__class__.wrap_model_call is not AgentMiddleware.wrap_model_call
-            #     or m.__class__.awrap_model_call is not AgentMiddleware.awrap_model_call
-            #
-            # The ``or`` matters: an async-only middleware still joins the sync
-            # chain, so its inherited sync stub raises instead of the
-            # middleware being silently dropped. Host middleware subclasses a
-            # *different* base class, so identity cannot cross the boundary and
-            # the stub is recognised structurally. Reverse order makes the
-            # first middleware outermost.
+            # sync or async ``wrap_model_call`` is overridden.
             for mw in reversed(middleware):
                 sync_wrap = _middleware_method(mw, "wrap_model_call")
                 async_wrap = _middleware_method(mw, "awrap_model_call")
@@ -766,7 +841,6 @@ class AgentGraph:
                 def handler(req: Any, _w: Any = bound, _i: Any = inner) -> Any:
                     return _w(req, _i)
 
-
             response = handler(request)
             command_update: dict[str, Any] = {}
             if isinstance(response, ExtendedModelResponse):
@@ -779,83 +853,59 @@ class AgentGraph:
                 new_messages = [response]
                 structured = None
 
-            # The model's reply joins the running state through the channel
-            # reducers before any hook sees it: ``after_model`` middleware
-            # inspects (and rewrites) the message it just produced.
             produced: dict[str, Any] = {"messages": list(new_messages)}
             if command_update:
                 produced.update(command_update)
             if structured is not None:
                 produced["structured_response"] = structured
-            state = self._apply_channel_writes(state, produced)
-            committed.update(produced)
-            updates: dict[str, Any] = {**hook_updates, **produced}
-
-            try:
-                state, after_model_updates = _run_hook(
-                    "after_model", state, reverse=True, budget=budget
-                )
-            except _RecursionBudgetExceeded as exc:
-                return _stop(exc)
-            updates.update(after_model_updates)
-            committed.update(after_model_updates)
-
-            # Routing reads the *post-hook* state: a middleware that strips
-            # ``tool_calls`` (DeerFlow's token-budget cap) must stop the tool
-            # node from running, exactly as upstream's after_model node does.
-            last = state["messages"][-1] if state.get("messages") else None
-            tool_calls = list(getattr(last, "tool_calls", None) or [])
-            pending = [c for c in tool_calls if _call_name(c) in tools]
-            # Convergence: no runnable tool call → stop the loop by emitting
-            # nothing (this is the conditional-edge "go to end" decision).
-            if pending:
-                updates = {key: state[key] for key in updates if key in state}
-                updates.update(budget.spent_update())
-                return TaskOutcome(update=updates, emits=("model:written",))
-            # Loop converged: ``after_agent`` fires once, in reverse order, and
-            # its updates join this final model write. LangGraph routes to it
-            # in the *same* super-step that produced the final answer, so the
-            # step is charged before the answer's own step is recorded.
-            try:
-                state, after_agent_updates = _run_hook(
-                    "after_agent", state, reverse=True, budget=budget
-                )
-            except _RecursionBudgetExceeded as exc:
-                return _stop(exc)
-            updates.update(after_agent_updates)
-            committed.update(after_agent_updates)
-            # Every write above was folded into ``state``; emit full committed
-            # values so the graph's raw patch commit is equivalent to the
-            # channel semantics the compatibility layer promises.
-            updates = {key: state[key] for key in updates if key in state}
+            current = self._apply_channel_writes(current, produced)
+            updates = {
+                key: current[key]
+                for key in produced
+                if key in current and key not in _PRIVATE_STATE_KEYS
+            }
             updates.update(budget.spent_update())
-            return TaskOutcome(update=updates, emits=())
+
+            if after_model_nodes:
+                target = after_model_nodes[-1]
+            else:
+                target = _route_after_loop_exit(current)
+            emits = () if target == "__end__" else (_enter(target),)
+            return TaskOutcome(update=updates, emits=emits)
+
+        def _route_after_loop_exit(state: dict) -> str:
+            last, tool_messages = _fetch_last_ai_and_tool_messages(
+                list(state.get("messages", []))
+            )
+            if last is None:
+                return exit_node
+            calls = list(getattr(last, "tool_calls", None) or [])
+            answered = {
+                _call_get(tool_message, "tool_call_id", None)
+                for tool_message in tool_messages
+            }
+            pending = [
+                call
+                for call in calls
+                if _call_id(call) not in answered and _call_name(call) in tools
+            ]
+            if pending:
+                return "tools"
+            if calls and not pending and "structured_response" not in state:
+                # Artificial tool messages / already answered calls: upstream
+                # re-enters the model instead of executing tools again.
+                return loop_entry
+            return exit_node
 
         def _tools(state: dict) -> TaskOutcome:
             budget = _StepBudget(state, default_limit)
             try:
                 budget.charge("tools")
-            except _RecursionBudgetExceeded:
-                return TaskOutcome(
-                    update=budget.exhausted_update(),
-                    emits=(),
-                )
-            # Execution is delegated to ``ToolNode``, which already carries the
-            # ported upstream semantics: argument validation becomes an error
-            # ``ToolMessage``, every other tool exception propagates, tools may
-            # return ``Command`` (DeerFlow ships 27 such tools), and
-            # ``wrap_tool_call`` middleware participates.
+            except _RecursionBudgetExceeded as exc:
+                return _stop(exc, state, budget, {})
             messages = list(state.get("messages", []))
-            # The full state is forwarded: ``ToolNode`` injects it into
-            # ``ToolRuntime.state`` and DeerFlow tools read graph keys such as
-            # ``thread_data`` from there. Narrowing to ``{"messages": ...}``
-            # makes those tools raise "runtime state is not available".
             result = tool_node.invoke({**state, "messages": messages})
 
-            # ``ToolNode`` returns either ``{"messages": [...]}`` or, when a
-            # tool returned ``Command``, a list mixing commands and message
-            # dicts. Command updates must reach the graph scheduler, so they
-            # are lifted into the task's own update instead of being dropped.
             updates: dict[str, Any] = {}
             produced: list[Any] = []
             command_goto: list[Any] = []
@@ -880,11 +930,180 @@ class AgentGraph:
             updates["messages"] = [*messages, *produced]
             updates.update(budget.spent_update())
 
-            # A tool result always hands control back to the model unless a
-            # tool explicitly routed to END (DeerFlow's sandbox approval does).
             if any(_resolve_jump(jump) == "end" for jump in command_goto):
-                return TaskOutcome(update=updates, emits=())
-            return TaskOutcome(update=updates, emits=("tools:written",))
+                target = "__end__"
+            else:
+                target = _route_after_tools(
+                    {**state, "messages": updates["messages"]}
+                )
+            emits = () if target == "__end__" else (_enter(target),)
+            return TaskOutcome(update=updates, emits=emits)
+
+        def _route_after_tools(state: dict) -> str:
+            last, _ = _fetch_last_ai_and_tool_messages(
+                list(state.get("messages", []))
+            )
+            if last is None:
+                return loop_entry
+            calls = list(getattr(last, "tool_calls", None) or [])
+            client_calls = [call for call in calls if _call_name(call) in tools]
+            if client_calls and all(
+                bool(getattr(tools[_call_name(call)], "return_direct", False))
+                for call in client_calls
+            ):
+                return exit_node
+            return loop_entry
+
+        # Node id -> middleware.  Hook task ids are the exact names upstream
+        # exposes in get_graph() and in updates frames.
+        hook_by_node = {
+            **{
+                node: mw
+                for node, mw in zip(before_agent_nodes, before_agent_chain)
+            },
+            **{
+                node: mw
+                for node, mw in zip(before_model_nodes, before_model_chain)
+            },
+            **{
+                node: mw
+                for node, mw in zip(after_model_nodes, after_model_chain)
+            },
+            **{
+                node: mw
+                for node, mw in zip(after_agent_nodes, after_agent_chain)
+            },
+        }
+
+        def default_destination(node_id: str) -> str:
+            return _default_destination(node_id)
+
+        # Build the public graph topology from the same chains that drive the
+        # runtime tasks.  Keep this close to upstream's factory ordering: the
+        # loop edge first, then middleware chains.  ``_GraphView`` is read by
+        # hosts and compatibility tests, so a cosmetic approximation is not
+        # enough -- notably ``after_model`` chains are registered in reverse
+        # and ``after_agent`` routes to its *last* registered node first.
+        nodes: list[str] = ["__start__", "model"]
+        if tools:
+            nodes.append("tools")
+        for mw in middleware:
+            for hook, chain in (
+                ("before_agent", before_agent_chain),
+                ("before_model", before_model_chain),
+                ("after_model", after_model_chain),
+                ("after_agent", after_agent_chain),
+            ):
+                if any(candidate is mw for candidate in chain):
+                    nodes.append(_node_name(hook, mw))
+        nodes.append("__end__")
+
+        edges: list[_GraphEdge] = []
+
+        def _append_edge(source: str, target: str, *, conditional: bool = False) -> None:
+            edge = _GraphEdge(source=source, target=target, conditional=conditional)
+            if edge not in edges:
+                edges.append(edge)
+
+        def _add_middleware_edge(
+            source: str,
+            *,
+            default: str,
+            can_jump_to: Sequence[str],
+        ) -> None:
+            """Mirror upstream ``_add_middleware_edge`` in the public view."""
+            if not can_jump_to:
+                _append_edge(source, default)
+                return
+            targets = [default]
+            if "end" in can_jump_to:
+                targets.append(exit_node)
+            if "tools" in can_jump_to:
+                targets.append("tools")
+            if "model" in can_jump_to and source != loop_entry:
+                targets.append(loop_entry)
+            for target in targets:
+                _append_edge(source, target, conditional=True)
+
+        _append_edge("__start__", entry)
+        if tools:
+            tools_to_model_destinations = [loop_entry]
+            if any(
+                bool(getattr(tool, "return_direct", False))
+                for tool in tools.values()
+            ):
+                tools_to_model_destinations.append(exit_node)
+            for target in tools_to_model_destinations:
+                _append_edge("tools", target, conditional=True)
+
+            model_to_tools_destinations = ["tools", exit_node]
+            if after_model_nodes:
+                model_to_tools_destinations.append(loop_entry)
+            loop_exit = after_model_nodes[0] if after_model_nodes else "model"
+            for target in model_to_tools_destinations:
+                _append_edge(loop_exit, target, conditional=True)
+        elif after_model_nodes:
+            _add_middleware_edge(
+                after_model_nodes[0],
+                default=exit_node,
+                can_jump_to=_get_can_jump_to(
+                    hook_by_node[after_model_nodes[0]], "after_model"
+                ),
+            )
+        else:
+            # No tools and no after_model: upstream adds a plain edge here.
+            _append_edge("model", exit_node)
+
+        for index, node_id in enumerate(before_agent_nodes):
+            default = (
+                before_agent_nodes[index + 1]
+                if index + 1 < len(before_agent_nodes)
+                else loop_entry
+            )
+            _add_middleware_edge(
+                node_id,
+                default=default,
+                can_jump_to=_get_can_jump_to(hook_by_node[node_id], "before_agent"),
+            )
+
+        for index, node_id in enumerate(before_model_nodes):
+            default = (
+                before_model_nodes[index + 1]
+                if index + 1 < len(before_model_nodes)
+                else "model"
+            )
+            _add_middleware_edge(
+                node_id,
+                default=default,
+                can_jump_to=_get_can_jump_to(hook_by_node[node_id], "before_model"),
+            )
+
+        if after_model_nodes:
+            _append_edge("model", after_model_nodes[-1])
+            for index in range(len(after_model_nodes) - 1, 0, -1):
+                node_id = after_model_nodes[index]
+                _add_middleware_edge(
+                    node_id,
+                    default=after_model_nodes[index - 1],
+                    can_jump_to=_get_can_jump_to(
+                        hook_by_node[node_id], "after_model"
+                    ),
+                )
+
+        for index in range(len(after_agent_nodes) - 1, 0, -1):
+            node_id = after_agent_nodes[index]
+            _add_middleware_edge(
+                node_id,
+                default=after_agent_nodes[index - 1],
+                can_jump_to=_get_can_jump_to(hook_by_node[node_id], "after_agent"),
+            )
+        if after_agent_nodes:
+            node_id = after_agent_nodes[0]
+            _add_middleware_edge(
+                node_id,
+                default="__end__",
+                can_jump_to=_get_can_jump_to(hook_by_node[node_id], "after_agent"),
+            )
 
         def build(b: GraphBuilder) -> None:
             # ``max_runs`` is the engine's own re-entry budget, distinct from
@@ -894,23 +1113,51 @@ class AgentGraph:
             # above the compiled ceiling is rejected in ``_seed_budget`` rather
             # than silently truncated here.
             compiled_budget = _MAX_RECURSION_LIMIT + 2
+            all_hook_nodes = [
+                *before_agent_nodes,
+                *before_model_nodes,
+                *after_model_nodes,
+                *after_agent_nodes,
+            ]
+            for node_id in all_hook_nodes:
+                hook, _, name = node_id.rpartition(".")
+                b.task(
+                    node_id,
+                    fn=lambda state, _node=node_id, _name=name: _run_hook(
+                        _node, _name, state, budget=_StepBudget(state, default_limit)
+                    ),
+                    on=(
+                        ("run", _enter(node_id))
+                        if node_id == entry
+                        else (_enter(node_id),)
+                    ),
+                    writes=("messages",),
+                    max_runs=compiled_budget,
+                )
             b.task(
                 "model",
                 fn=_model,
-                on=("run", "tools:written"),
+                on=(
+                    ("run", _enter(entry))
+                    if entry == "model"
+                    else (_enter("model"),)
+                ),
                 writes=("messages", "structured_response"),
                 max_runs=compiled_budget,
             )
-            b.task(
-                "tools",
-                fn=_tools,
-                on=("model:written",),
-                writes=("messages",),
-                max_runs=compiled_budget,
-            )
+            if tools:
+                b.task(
+                    "tools",
+                    fn=_tools,
+                    on=(_enter("tools"),),
+                    writes=("messages",),
+                    max_runs=compiled_budget,
+                )
 
-        return ReactiveGraph.build(build, graph_id=self.name or "create_agent")
-
+        return (
+            ReactiveGraph.build(build, graph_id=self.name or "create_agent"),
+            _GraphTopology(nodes=tuple(nodes), edges=tuple(edges)),
+        )
     # -- thread state -------------------------------------------------------
 
     def _reject_inherited_checkpointer(self) -> None:
@@ -938,6 +1185,31 @@ class AgentGraph:
         if threads is None:
             raise ValueError(NO_CHECKPOINTER_MESSAGE)
         return threads
+
+    def _seed_channel_defaults(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Add constructible channel defaults before the first task runs.
+
+        LangGraph initializes reducer channels in the compiled channel table,
+        so the first ``values`` snapshot includes an empty list/dict even when
+        no task has written it yet. Mirror that without mutating the compiled
+        channel objects or overwriting caller input.
+        """
+        defaults: dict[str, Any] = {}
+        for key, channel in self.channels.items():
+            is_available = getattr(channel, "is_available", None)
+            get_value = getattr(channel, "get", None)
+            if not callable(is_available) or not callable(get_value):
+                continue
+            try:
+                if not is_available():
+                    continue
+                defaults[key] = copy.deepcopy(get_value())
+            except Exception:
+                # Non-instantiable reducer annotations start empty; the first
+                # real write seeds them, matching BinaryOperatorAggregate.
+                continue
+        defaults.update(_plain_state(payload))
+        return defaults
 
     def _seed_budget(self, payload: dict[str, Any], config: dict | None) -> dict[str, Any]:
         """Install this run's budget as graph state before the first task runs.
@@ -1049,7 +1321,7 @@ class AgentGraph:
         if threads is not None:
             head = threads.get_head(config)
             payload, written = self._seed_payload(payload, head)
-        payload = self._seed_budget(payload, config)
+        payload = self._seed_budget(self._seed_channel_defaults(payload), config)
         with runtime_context(runtime=_resolve_runtime(config, kwargs.get("context"))):
             state = self._graph.invoke("run", payload, config=config)
         if threads is not None:
@@ -1072,7 +1344,7 @@ class AgentGraph:
         if threads is not None:
             head = await threads.aget_head(config)
             payload, written = await self._aseed_payload(payload, head)
-        payload = self._seed_budget(payload, config)
+        payload = self._seed_budget(self._seed_channel_defaults(payload), config)
         with runtime_context(
             config=config, runtime=_resolve_runtime(config, kwargs.get("context"))
         ):
@@ -1141,8 +1413,9 @@ class AgentGraph:
         """
         threads = self._threads_or_raise()
         head = threads.get_head(config)
+        update = _adopt_messages(dict(values or {}))
         folded, written = threads.fold_input(
-            threads.load_values(head), _adopt_messages(dict(values or {}))
+            threads.load_values(head), update
         )
         return threads.commit(
             config,
@@ -1151,6 +1424,7 @@ class AgentGraph:
             written=written,
             metadata=_update_metadata(as_node),
             task_id=task_id,
+            delta_writes=update,
         )
 
     async def aupdate_state(
@@ -1162,8 +1436,9 @@ class AgentGraph:
     ) -> dict[str, Any]:
         threads = self._threads_or_raise()
         head = await threads.aget_head(config)
+        update = _adopt_messages(dict(values or {}))
         folded, written = threads.fold_input(
-            await threads.aload_values(head), _adopt_messages(dict(values or {}))
+            await threads.aload_values(head), update
         )
         return await threads.acommit(
             config,
@@ -1172,6 +1447,7 @@ class AgentGraph:
             written=written,
             metadata=_update_metadata(as_node),
             task_id=task_id,
+            delta_writes=update,
         )
 
     def stream(
@@ -1199,7 +1475,7 @@ class AgentGraph:
         """
         self._reject_inherited_checkpointer()
         modes, as_list = _normalize_stream_modes(stream_mode)
-        payload = self._seed_budget(_normalize_input(input), config)
+        payload = self._seed_budget(self._seed_channel_defaults(_normalize_input(input)), config)
         runtime = _resolve_runtime(config, kwargs.get("context"))
         return self._stream_modes(payload, config, modes, runtime, as_list=as_list)
 
@@ -1219,14 +1495,14 @@ class AgentGraph:
         """
         self._reject_inherited_checkpointer()
         modes, as_list = _normalize_stream_modes(stream_mode)
-        payload = self._seed_budget(_normalize_input(input), config)
+        payload = self._seed_budget(self._seed_channel_defaults(_normalize_input(input)), config)
         async for item in self._astream_modes(
             payload, config, modes, context, as_list=as_list
         ):
             yield item
 
     def get_graph(self) -> Any:
-        return _GraphView(self._graph, self._tools)
+        return _GraphView(self._topology)
 
     # -- stream machinery ---------------------------------------------------
 
@@ -1351,7 +1627,7 @@ def _public_state(state: Any) -> dict[str, Any]:
     """Strip run-private bookkeeping keys from a returned state."""
     if not isinstance(state, dict):
         return state
-    return {k: v for k, v in state.items() if k not in _RUN_PRIVATE_KEYS}
+    return {k: v for k, v in state.items() if k not in _PRIVATE_STATE_KEYS}
 
 
 def _messages_delta(previous: Any, current: Any) -> list[Any]:
@@ -1371,7 +1647,7 @@ def _node_update(node: str, new_messages: list[Any], state: dict[str, Any]) -> d
     if new_messages:
         update["messages"] = new_messages
     for key, value in state.items():
-        if key == "messages" or key in _RUN_PRIVATE_KEYS:
+        if key == "messages" or key in _PRIVATE_STATE_KEYS:
             continue
         update[key] = value
     return {node: update}
