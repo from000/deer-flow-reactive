@@ -9,7 +9,7 @@ function subscribe(callback: () => void) {
   return () => mql.removeEventListener("change", callback);
 }
 
-function getSnapshot() {
+export function isMobileViewport() {
   return window.matchMedia(MOBILE_QUERY).matches;
 }
 
@@ -18,5 +18,9 @@ function getServerSnapshot() {
 }
 
 export function useIsMobile() {
-  return React.useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  return React.useSyncExternalStore(
+    subscribe,
+    isMobileViewport,
+    getServerSnapshot,
+  );
 }

@@ -5,7 +5,7 @@ import { Slot } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
 import { PanelLeftCloseIcon, PanelLeftOpenIcon } from "lucide-react";
 
-import { useIsMobile } from "@/hooks/use-mobile";
+import { isMobileViewport, useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -88,10 +88,12 @@ function SidebarProvider({
     [setOpenProp, open],
   );
 
-  // Helper to toggle the sidebar.
+  // Helper to toggle the sidebar. Read matchMedia at interaction time because
+  // useIsMobile can still hold the server snapshot during hydration.
   const toggleSidebar = React.useCallback(() => {
-    return isMobile ? setOpenMobile((open) => !open) : setOpen((open) => !open);
-  }, [isMobile, setOpen, setOpenMobile]);
+    const mobile = isMobileViewport();
+    return mobile ? setOpenMobile((open) => !open) : setOpen((open) => !open);
+  }, [setOpen, setOpenMobile]);
 
   // Adds a keyboard shortcut to toggle the sidebar.
   React.useEffect(() => {
@@ -255,10 +257,18 @@ function Sidebar({
 
 function SidebarTrigger({
   className,
+  disabled,
   onClick,
   ...props
 }: React.ComponentProps<typeof Button>) {
   const { open, toggleSidebar } = useSidebar();
+  const [hydrated, setHydrated] = React.useState(false);
+
+  // The server renders desktop controls that have no React event handlers yet.
+  // Keep them disabled until hydration so a first mobile tap cannot be lost.
+  React.useEffect(() => {
+    setHydrated(true);
+  }, []);
 
   return (
     <Button
@@ -266,6 +276,7 @@ function SidebarTrigger({
       data-slot="sidebar-trigger"
       variant="ghost"
       size="icon"
+      disabled={!hydrated || disabled}
       className={cn("size-7 opacity-50 hover:opacity-100", className)}
       onClick={(event) => {
         onClick?.(event);
