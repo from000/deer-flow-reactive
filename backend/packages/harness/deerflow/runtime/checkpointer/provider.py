@@ -6,8 +6,9 @@ compilation and CLI tools.
 The ``memory`` backend is served by :class:`ReactiveGraphSaver`, which keeps the
 storage semantics in ``reactivegraph.checkpoint`` while presenting LangGraph's
 ``BaseCheckpointSaver`` interface (Pregel rejects anything else by isinstance).
-``sqlite`` and ``postgres`` still use LangGraph's own savers and are not yet
-ported.
+``sqlite`` and ``postgres`` are served by their native
+:class:`~reactivegraph.checkpoint.CheckpointStore` implementations through
+the same adapter.
 
 Supported backends: memory, sqlite, postgres.
 
@@ -34,7 +35,6 @@ from reactivegraph import Checkpointer
 
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.config.checkpointer_config import CheckpointerConfig, ensure_config_loaded, get_checkpointer_config
-from deerflow.persistence.postgres_schema import dsn_with_search_path, ensure_postgres_schema
 from deerflow.runtime.checkpoint_mode import frozen_checkpoint_channel_mode
 from deerflow.runtime.store._sqlite_utils import ensure_sqlite_parent_dir, resolve_sqlite_conn_str
 
@@ -50,10 +50,6 @@ POSTGRES_INSTALL = (
 )
 POSTGRES_CONN_REQUIRED = "checkpointer.connection_string is required for the postgres backend"
 
-
-def _ensure_postgres_schema(conn_string: str, schema: str) -> None:
-    """Create the configured schema before LangGraph creates its tables."""
-    ensure_postgres_schema(conn_string, schema, install_hint=POSTGRES_INSTALL)
 
 
 # ---------------------------------------------------------------------------
@@ -122,34 +118,40 @@ def _sync_checkpointer_cm(config: CheckpointerConfig) -> Iterator[Checkpointer]:
         return
 
     if config.type == "sqlite":
-        try:
-            from langgraph.checkpoint.sqlite import SqliteSaver
-        except ImportError as exc:
-            raise ImportError(SQLITE_INSTALL) from exc
+        from reactivegraph.checkpoint import SqliteCheckpointSaver
+
+        from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
 
         conn_str = resolve_sqlite_conn_str(config.connection_string or "store.db")
         ensure_sqlite_parent_dir(conn_str)
-        with SqliteSaver.from_conn_string(conn_str) as saver:
+        store = SqliteCheckpointSaver(conn_str)
+        saver = ReactiveGraphSaver(store=store)
+        try:
             saver.setup()
-            logger.info("Checkpointer: using SqliteSaver (%s)", conn_str)
+            logger.info("Checkpointer: using ReactiveGraph SqliteCheckpointSaver (%s)", conn_str)
             yield saver
+        finally:
+            saver.close()
         return
 
     if config.type == "postgres":
-        try:
-            from langgraph.checkpoint.postgres import PostgresSaver
-        except ImportError as exc:
-            raise ImportError(POSTGRES_INSTALL) from exc
+        from reactivegraph.checkpoint import PostgresCheckpointSaver
+
+        from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
 
         if not config.connection_string:
             raise ValueError(POSTGRES_CONN_REQUIRED)
 
-        _ensure_postgres_schema(config.connection_string, config.postgres_schema)
-        conn_string = dsn_with_search_path(config.connection_string, config.postgres_schema)
-        with PostgresSaver.from_conn_string(conn_string) as saver:
+        store = PostgresCheckpointSaver(
+            config.connection_string, schema=config.postgres_schema or "public"
+        )
+        saver = ReactiveGraphSaver(store=store)
+        try:
             saver.setup()
-            logger.info("Checkpointer: using PostgresSaver")
+            logger.info("Checkpointer: using ReactiveGraph PostgresCheckpointSaver")
             yield saver
+        finally:
+            saver.close()
         return
 
     raise ValueError(f"Unknown checkpointer type: {config.type!r}")

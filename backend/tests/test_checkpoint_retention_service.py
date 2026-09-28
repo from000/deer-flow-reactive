@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import inspect
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -22,8 +23,6 @@ from uuid import uuid4
 
 import pytest
 from langchain_core.messages import AnyMessage, HumanMessage
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
@@ -34,6 +33,7 @@ from app.gateway.checkpoint_retention import (
     _row_field,
     enforce_thread_retention,
 )
+from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
 from deerflow.runtime.runs.worker import _new_checkpoint_marker, persist_run_durations
 
 
@@ -77,7 +77,9 @@ class _SaverEnv:
         self.saver = await self._cm.__aenter__()
         setup = getattr(self.saver, "setup", None)
         if setup is not None:
-            await setup()
+            result = setup()
+            if inspect.isawaitable(result):
+                await result
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
@@ -89,9 +91,15 @@ class _SaverEnv:
 
 @asynccontextmanager
 async def _open_sqlite(db_path: Any) -> AsyncIterator[Any]:
-    async with AsyncSqliteSaver.from_conn_string(str(db_path)) as saver:
-        await saver.setup()
+    from reactivegraph.checkpoint import SqliteCheckpointSaver
+
+    store = SqliteCheckpointSaver(str(db_path))
+    saver = ReactiveGraphSaver(store=store)
+    try:
+        await saver.asetup()
         yield saver
+    finally:
+        await saver.aclose()
 
 
 @asynccontextmanager
@@ -106,7 +114,7 @@ async def _open_postgres(uri: str) -> AsyncIterator[Any]:
 async def saver_env(request: pytest.FixtureRequest, tmp_path: Any) -> AsyncIterator[_SaverEnv]:
     kind = request.param
     if kind == "memory":
-        saver = InMemorySaver()
+        saver = ReactiveGraphSaver()
 
         @asynccontextmanager
         async def open_memory() -> AsyncIterator[Any]:
@@ -182,15 +190,9 @@ async def _listed_checkpoint_ids(env: _SaverEnv, thread_id: str) -> set[str]:
 
 
 async def _write_count(env: _SaverEnv, thread_id: str, checkpoint_id: str) -> int:
-    if env.kind == "memory":
-        return len(env.saver.writes.get((thread_id, "", checkpoint_id), {}))
-    if env.kind == "sqlite":
-        async with env.saver.conn.execute(
-            "SELECT COUNT(*) FROM writes WHERE thread_id = ? AND checkpoint_id = ?",
-            (thread_id, checkpoint_id),
-        ) as cursor:
-            row = await cursor.fetchone()
-        return int(_row_field(row, "COUNT(*)", 0))
+    if env.kind != "postgres":
+        guarded = await env.saver.acheckpoint_ids_with_writes(thread_id)
+        return int(("", checkpoint_id) in guarded)
     async with env.saver._cursor() as cursor:
         await cursor.execute(
             "SELECT COUNT(*) AS write_count FROM checkpoint_writes WHERE thread_id = %s AND checkpoint_id = %s",
@@ -479,7 +481,7 @@ async def test_chain_walk_tolerates_missing_ancestor_row() -> None:
     """A head whose ancestor row is missing (partial damage from an earlier
     policy revision or manual cleanup) ends the chain walk instead of
     crashing the whole pass; the surviving protections still hold."""
-    saver = InMemorySaver()
+    saver = ReactiveGraphSaver()
     graph = _build_graph(FullState, saver)
     thread_id = _thread_id()
     checkpoint_ids: list[str] = []
@@ -490,9 +492,8 @@ async def test_chain_walk_tolerates_missing_ancestor_row() -> None:
         checkpoint_ids.append(snapshot.config["configurable"]["checkpoint_id"])
 
     # Simulate a partially pruned thread: the middle resumable row is gone.
-    namespace = saver.storage[thread_id][""]
-    assert checkpoint_ids[1] in namespace
-    namespace.pop(checkpoint_ids[1], None)
+    assert ("", checkpoint_ids[1]) in await saver.acheckpoint_ids_with_writes(thread_id) or await saver.aget_tuple(_config_thread(thread_id, checkpoint_ids[1])) is not None
+    await saver.adelete_checkpoint(thread_id, ("", checkpoint_ids[1]))
 
     report = await enforce_thread_retention(saver, thread_id)
 

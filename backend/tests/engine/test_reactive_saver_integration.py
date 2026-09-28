@@ -11,18 +11,29 @@ contract is genuinely honoured, not merely type-compatible.
 from __future__ import annotations
 
 import itertools
-from typing import TypedDict
+from typing import Annotated, Any, TypedDict
 
 import pytest
+from langchain_core.messages import AnyMessage
+from langgraph.channels import DeltaChannel
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from reactivegraph.checkpoint import SqliteCheckpointSaver
 
+from deerflow.agents.thread_state import merge_message_writes
 from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
 
 
 class State(TypedDict):
     n: int
     log: list[str]
+
+
+class DeltaState(TypedDict):
+    messages: Annotated[
+        list[AnyMessage],
+        DeltaChannel(merge_message_writes, snapshot_frequency=1),
+    ]
 
 
 def _counter_graph(checkpointer):
@@ -276,3 +287,212 @@ class TestPutWritesParity:
                 mismatches.append((sequence, expected, actual))
 
         assert not mismatches, f"{len(mismatches)} mismatching sequences, first: {mismatches[0]}"
+
+
+    def test_writes_may_precede_checkpoint_like_upstream(self):
+        """Pregel writes a task's ``__no_writes__`` marker before committing
+        the checkpoint. Upstream savers accept that ordering; rejecting it
+        breaks every real graph invocation after the first node."""
+        cfg = self._cfg("preceding-writes")
+        upstream = InMemorySaver()
+        ours = ReactiveGraphSaver()
+
+        checkpoint = {
+            "id": "cp-1",
+            "channel_values": {},
+            "channel_versions": {},
+            "versions_seen": {},
+        }
+        upstream.put_writes(cfg, [("__no_writes__", None)], "task")
+        ours.put_writes(cfg, [("__no_writes__", None)], "task")
+
+        assert ours.get_tuple(cfg) is None
+        upstream.put(cfg, checkpoint, {}, {})
+        ours.put(cfg, checkpoint, {}, {})
+
+        assert (
+            list(ours.get_tuple(cfg).pending_writes)
+            == list(upstream.get_tuple(cfg).pending_writes)
+        )
+
+
+    def test_delta_snapshot_is_translated_to_host_type(self):
+        """LangGraph's DeltaChannel only recognises its own namedtuple; the
+        adapter must translate the storage-layer snapshot at the boundary."""
+        from langchain_core.messages import HumanMessage
+        from langgraph.checkpoint.serde.types import _DeltaSnapshot as HostDeltaSnapshot
+
+        store = SqliteCheckpointSaver(":memory:")
+        try:
+            saver = ReactiveGraphSaver(store=store)
+            graph = _counter_graph(saver)
+            # Build a graph that snapshots on every delta update.
+            builder = StateGraph(DeltaState)
+            builder.add_node("keep", lambda state: {})
+            builder.add_edge(START, "keep")
+            builder.add_edge("keep", END)
+            delta_graph = builder.compile(checkpointer=saver)
+            cfg = _cfg("delta-host")
+            delta_graph.invoke(
+                {"messages": [HumanMessage(content="m1", id="m1")]}, cfg
+            )
+            value = delta_graph.get_state(cfg).values["messages"]
+            assert [message.id for message in value] == ["m1"]
+
+            # Snapshot cadence is channel-owned: the head checkpoint may omit
+            # the channel and replay ancestor writes. Find the checkpoint that
+            # actually carries the snapshot, then verify both layers preserve
+            # LangGraph's private marker identity across SQLite serialization.
+            snapshots = [
+                tuple_.checkpoint["channel_values"]["messages"]
+                for tuple_ in saver.store.list(cfg, limit=None)
+                if "messages" in tuple_.checkpoint["channel_values"]
+            ]
+            assert snapshots, "delta snapshot cadence must produce a stored snapshot"
+            stored = snapshots[-1]
+            assert isinstance(stored, HostDeltaSnapshot)
+            assert stored.value[0].id == "m1"
+        finally:
+            store.close()
+
+
+class TestReactiveGraphCapabilities:
+    """Adapter must expose the host lifecycle and storage capabilities exactly."""
+
+    def test_serde_is_the_store_serde(self):
+        from reactivegraph.serde import ReactiveSerializer
+
+        store = SqliteCheckpointSaver(":memory:")
+        try:
+            saver = ReactiveGraphSaver(store=store)
+            assert saver.serde is store.serde
+            assert isinstance(saver.serde, ReactiveSerializer)
+        finally:
+            store.close()
+
+    def test_setup_and_close_delegate_to_store(self):
+        calls = []
+
+        class Store:
+            serde = object()
+
+            def setup(self):
+                calls.append("setup")
+
+            def close(self):
+                calls.append("close")
+
+        saver = ReactiveGraphSaver(store=Store())
+        saver.setup()
+        saver.close()
+        assert calls == ["setup", "close"]
+
+    @pytest.mark.anyio
+    async def test_async_setup_and_close_delegate_to_store(self):
+        calls = []
+
+        class Store:
+            serde = object()
+
+            async def asetup(self):
+                calls.append("asetup")
+
+            async def aclose(self):
+                calls.append("aclose")
+
+        saver = ReactiveGraphSaver(store=Store())
+        await saver.asetup()
+        await saver.aclose()
+        assert calls == ["asetup", "aclose"]
+
+    def test_maintenance_capabilities_delegate(self):
+        calls = []
+
+        class Store:
+            serde = object()
+
+            def storage_stats(self, thread_id):
+                calls.append(("storage_stats", thread_id))
+                return {"checkpoint_rows": 3}
+
+            def checkpoint_ids_with_writes(self, thread_id):
+                calls.append(("checkpoint_ids_with_writes", thread_id))
+                return {("", "cp-1")}
+
+            def delete_checkpoint(self, thread_id, key):
+                calls.append(("delete_checkpoint", thread_id, key))
+
+            def delete_unreachable_blobs(self, thread_id, survivor_versions):
+                calls.append(("delete_unreachable_blobs", thread_id, survivor_versions))
+
+        saver = ReactiveGraphSaver(store=Store())
+        assert saver.storage_stats("t") == {"checkpoint_rows": 3}
+        assert saver.checkpoint_ids_with_writes("t") == {("", "cp-1")}
+        saver.delete_checkpoint("t", ("", "cp-1"))
+        saver.delete_unreachable_blobs("t", {"v1"})
+        assert calls == [
+            ("storage_stats", "t"),
+            ("checkpoint_ids_with_writes", "t"),
+            ("delete_checkpoint", "t", ("", "cp-1")),
+            ("delete_unreachable_blobs", "t", {"v1"}),
+        ]
+
+    @pytest.mark.anyio
+    async def test_async_maintenance_capabilities_delegate(self):
+        calls = []
+
+        class Store:
+            serde = object()
+
+            async def astorage_stats(self, thread_id):
+                calls.append(("astorage_stats", thread_id))
+                return {"checkpoint_rows": 3}
+
+            async def acheckpoint_ids_with_writes(self, thread_id):
+                calls.append(("acheckpoint_ids_with_writes", thread_id))
+                return {("", "cp-1")}
+
+            async def adelete_checkpoint(self, thread_id, key):
+                calls.append(("adelete_checkpoint", thread_id, key))
+
+            async def adelete_unreachable_blobs(self, thread_id, survivor_versions):
+                calls.append(("adelete_unreachable_blobs", thread_id, survivor_versions))
+
+        saver = ReactiveGraphSaver(store=Store())
+        assert await saver.astorage_stats("t") == {"checkpoint_rows": 3}
+        assert await saver.acheckpoint_ids_with_writes("t") == {("", "cp-1")}
+        await saver.adelete_checkpoint("t", ("", "cp-1"))
+        await saver.adelete_unreachable_blobs("t", {"v1"})
+        assert calls == [
+            ("astorage_stats", "t"),
+            ("acheckpoint_ids_with_writes", "t"),
+            ("adelete_checkpoint", "t", ("", "cp-1")),
+            ("adelete_unreachable_blobs", "t", {"v1"}),
+        ]
+
+    def test_sqlite_reopen_keeps_serde_and_maintenance(self, tmp_path):
+        from reactivegraph.serde import ReactiveSerializer
+
+        db = tmp_path / "reopen.sqlite"
+        first = SqliteCheckpointSaver(db)
+        saver = ReactiveGraphSaver(store=first)
+        cfg = _cfg("reopen")
+        saver.put(cfg, {"id": "cp-1", "channel_values": {"n": 7}}, {}, {})
+        saver.put_writes(cfg | {"configurable": cfg["configurable"] | {"checkpoint_id": "cp-1"}}, [("n", 7)], "task")
+        assert saver.storage_stats("reopen")["checkpoint_rows"] == 1
+        assert saver.checkpoint_ids_with_writes("reopen") == {("", "cp-1")}
+        saver.close()
+
+        second = SqliteCheckpointSaver(db)
+        reopened = ReactiveGraphSaver(store=second)
+        try:
+            assert isinstance(reopened.serde, ReactiveSerializer)
+            tup = reopened.get_tuple(cfg)
+            assert tup is not None
+            assert tup.checkpoint["channel_values"]["n"] == 7
+            assert list(tup.pending_writes) == [("task", "n", 7)]
+            reopened.delete_checkpoint("reopen", ("", "cp-1"))
+            assert reopened.get_tuple(cfg) is None
+            assert reopened.storage_stats("reopen")["checkpoint_rows"] == 0
+        finally:
+            reopened.close()

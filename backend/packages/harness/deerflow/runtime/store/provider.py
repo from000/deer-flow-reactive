@@ -30,7 +30,6 @@ from reactivegraph import BaseStore
 
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.config.checkpointer_config import CheckpointerConfig, ensure_config_loaded, get_checkpointer_config
-from deerflow.persistence.postgres_schema import dsn_with_search_path, ensure_postgres_schema
 from deerflow.runtime.store._sqlite_utils import ensure_sqlite_parent_dir, resolve_sqlite_conn_str
 
 logger = logging.getLogger(__name__)
@@ -45,10 +44,6 @@ POSTGRES_STORE_INSTALL = (
 )
 POSTGRES_CONN_REQUIRED = "checkpointer.connection_string is required for the postgres backend"
 
-
-def _ensure_postgres_schema(conn_string: str, schema: str) -> None:
-    """Create the configured schema before LangGraph creates its store tables."""
-    ensure_postgres_schema(conn_string, schema, install_hint=POSTGRES_STORE_INSTALL)
 
 
 def _resolve_store_config(app_config: AppConfig) -> CheckpointerConfig:
@@ -111,35 +106,34 @@ def _sync_store_cm(config) -> Iterator[BaseStore]:
         return
 
     if config.type == "sqlite":
-        try:
-            from langgraph.store.sqlite import SqliteStore
-        except ImportError as exc:
-            raise ImportError(SQLITE_STORE_INSTALL) from exc
+        from reactivegraph.store import SqliteStore
 
         conn_str = resolve_sqlite_conn_str(config.connection_string or "store.db")
         ensure_sqlite_parent_dir(conn_str)
-
-        with SqliteStore.from_conn_string(conn_str) as store:
+        store = SqliteStore(conn_str)
+        try:
             store.setup()
-            logger.info("Store: using SqliteStore (%s)", conn_str)
+            logger.info("Store: using ReactiveGraph SqliteStore (%s)", conn_str)
             yield store
+        finally:
+            store.close()
         return
 
     if config.type == "postgres":
-        try:
-            from langgraph.store.postgres import PostgresStore  # type: ignore[import]
-        except ImportError as exc:
-            raise ImportError(POSTGRES_STORE_INSTALL) from exc
+        from reactivegraph.store import PostgresStore
 
         if not config.connection_string:
             raise ValueError(POSTGRES_CONN_REQUIRED)
 
-        _ensure_postgres_schema(config.connection_string, config.postgres_schema)
-        conn_string = dsn_with_search_path(config.connection_string, config.postgres_schema)
-        with PostgresStore.from_conn_string(conn_string) as store:
+        store = PostgresStore(
+            config.connection_string, schema=config.postgres_schema or "public"
+        )
+        try:
             store.setup()
-            logger.info("Store: using PostgresStore")
+            logger.info("Store: using ReactiveGraph PostgresStore")
             yield store
+        finally:
+            store.close()
         return
 
     raise ValueError(f"Unknown store backend type: {config.type!r}")

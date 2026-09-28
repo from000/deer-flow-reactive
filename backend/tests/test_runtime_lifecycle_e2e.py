@@ -299,12 +299,12 @@ def isolated_app(isolated_deer_flow_home: Path, monkeypatch: pytest.MonkeyPatch)
 
 
 def test_lifespan_uses_sqlite_store_from_database_config(isolated_app):
-    """Gateway startup must bind LangGraph Store to the unified database backend."""
-    from langgraph.store.sqlite.aio import AsyncSqliteStore
+    """Gateway startup must bind ReactiveGraph's unified SQLite store."""
+    from reactivegraph.store import SqliteStore
     from starlette.testclient import TestClient
 
     with TestClient(isolated_app):
-        assert isinstance(isolated_app.state.store, AsyncSqliteStore)
+        assert isinstance(isolated_app.state.store, SqliteStore)
 
 
 @pytest.fixture

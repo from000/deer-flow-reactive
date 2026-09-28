@@ -10,18 +10,21 @@ and blocked startup.
 
 This test invokes the production `_async_checkpointer()` path under the
 strict Blockbuster context. The target path's parent does not yet exist, so
-the underlying path resolution and `os.mkdir` both execute. If either step is
-regressed to run directly on the event loop, Blockbuster raises
-`BlockingError` and this test fails.
+the underlying path resolution and `os.mkdir` both execute. ReactiveGraph's
+SQLite saver creates its schema during construction as well, so the whole
+construction must stay off the event loop. If any step regresses to run
+directly on the loop, Blockbuster raises `BlockingError` and this test fails.
 """
 
 from __future__ import annotations
 
-import sys
+import threading
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
+
+from reactivegraph.checkpoint import SqliteCheckpointSaver
 
 pytestmark = pytest.mark.asyncio
 
@@ -31,22 +34,35 @@ async def test_async_checkpointer_sqlite_setup_does_not_block_event_loop(tmp_pat
     from deerflow.runtime.checkpointer.async_provider import _async_checkpointer
 
     db_file = tmp_path / "subdir" / "store.db"
+    loop_thread_id = threading.get_ident()
+    construction_thread_ids: list[int] = []
+    setup_calls = 0
+    close_calls = 0
 
-    mock_saver = AsyncMock()
-    mock_context_manager = AsyncMock()
-    mock_context_manager.__aenter__.return_value = mock_saver
-    mock_context_manager.__aexit__.return_value = False
+    class TrackingSqliteCheckpointSaver(SqliteCheckpointSaver):
+        def __init__(self, conn_string: str) -> None:
+            construction_thread_ids.append(threading.get_ident())
+            super().__init__(conn_string)
 
-    mock_saver_cls = MagicMock()
-    mock_saver_cls.from_conn_string.return_value = mock_context_manager
+        def setup(self) -> None:
+            nonlocal setup_calls
+            setup_calls += 1
+            super().setup()
 
-    mock_module = MagicMock()
-    mock_module.AsyncSqliteSaver = mock_saver_cls
+        def close(self) -> None:
+            nonlocal close_calls
+            close_calls += 1
+            super().close()
 
-    with patch.dict(sys.modules, {"langgraph.checkpoint.sqlite.aio": mock_module}):
+    with patch("reactivegraph.checkpoint.SqliteCheckpointSaver", TrackingSqliteCheckpointSaver):
         async with _async_checkpointer(CheckpointerConfig(type="sqlite", connection_string=str(db_file))) as saver:
-            assert saver is mock_saver
+            assert isinstance(saver.store, TrackingSqliteCheckpointSaver)
 
     assert db_file.parent.exists()
-    mock_saver_cls.from_conn_string.assert_called_once_with(str(db_file.resolve()))
-    mock_saver.setup.assert_awaited_once()
+    assert db_file.exists()
+    assert len(construction_thread_ids) == 1
+    assert construction_thread_ids[0] != loop_thread_id
+    # Construction performs the first schema setup; ``asetup()`` is deliberately
+    # idempotent because hosts may call it again after opening the saver.
+    assert setup_calls == 2
+    assert close_calls == 1

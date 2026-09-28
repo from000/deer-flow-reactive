@@ -266,19 +266,46 @@ class TestGetCheckpointer:
         cp2 = get_checkpointer()
         assert cp1 is not cp2
 
-    def test_sqlite_raises_when_package_missing(self):
+    def test_sqlite_uses_native_saver(self):
         load_checkpointer_config_from_dict({"type": "sqlite", "connection_string": "/tmp/test.db"})
-        with patch.dict(sys.modules, {"langgraph.checkpoint.sqlite": None}):
-            reset_checkpointer()
-            with pytest.raises(ImportError, match="langgraph-checkpoint-sqlite"):
-                get_checkpointer()
 
-    def test_postgres_raises_when_package_missing(self):
-        load_checkpointer_config_from_dict({"type": "postgres", "connection_string": "postgresql://localhost/db"})
-        with patch.dict(sys.modules, {"langgraph.checkpoint.postgres": None}):
+        with patch("deerflow.runtime.checkpointer.provider.ensure_sqlite_parent_dir"):
             reset_checkpointer()
-            with pytest.raises(ImportError, match="langgraph-checkpoint-postgres"):
-                get_checkpointer()
+            cp = get_checkpointer()
+
+        from reactivegraph.checkpoint import SqliteCheckpointSaver
+        from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
+
+        assert isinstance(cp, ReactiveGraphSaver)
+        assert isinstance(cp.store, SqliteCheckpointSaver)
+
+    def test_postgres_uses_native_saver(self):
+        load_checkpointer_config_from_dict(
+            {"type": "postgres", "connection_string": "postgresql://localhost/db"}
+        )
+        mock_store = MagicMock()
+        mock_saver = MagicMock()
+        mock_saver_cls = MagicMock(return_value=mock_saver)
+
+        with (
+            patch(
+                "reactivegraph.checkpoint.PostgresCheckpointSaver",
+                mock_store,
+            ),
+            patch(
+                "deerflow.runtime.checkpointer.reactive_saver.ReactiveGraphSaver",
+                mock_saver_cls,
+            ),
+        ):
+            reset_checkpointer()
+            cp = get_checkpointer()
+
+        assert cp is mock_saver
+        mock_store.assert_called_once_with(
+            "postgresql://localhost/db", schema="public"
+        )
+        mock_saver_cls.assert_called_once_with(store=mock_store.return_value)
+        mock_saver.setup.assert_called_once_with()
 
     def test_postgres_raises_when_connection_string_missing(self):
         load_checkpointer_config_from_dict({"type": "postgres"})
@@ -291,27 +318,27 @@ class TestGetCheckpointer:
                 get_checkpointer()
 
     def test_sqlite_creates_saver(self):
-        """SQLite checkpointer is created when package is available."""
+        """SQLite checkpointer is created with the resolved native backend."""
         load_checkpointer_config_from_dict({"type": "sqlite", "connection_string": "/tmp/test.db"})
 
-        mock_saver_instance = MagicMock()
-        mock_cm = MagicMock()
-        mock_cm.__enter__ = MagicMock(return_value=mock_saver_instance)
-        mock_cm.__exit__ = MagicMock(return_value=False)
+        mock_store = MagicMock()
+        mock_saver = MagicMock()
+        mock_saver_cls = MagicMock(return_value=mock_saver)
 
-        mock_saver_cls = MagicMock()
-        mock_saver_cls.from_conn_string = MagicMock(return_value=mock_cm)
-
-        mock_module = MagicMock()
-        mock_module.SqliteSaver = mock_saver_cls
-
-        with patch.dict(sys.modules, {"langgraph.checkpoint.sqlite": mock_module}):
+        with (
+            patch("reactivegraph.checkpoint.SqliteCheckpointSaver", mock_store),
+            patch(
+                "deerflow.runtime.checkpointer.reactive_saver.ReactiveGraphSaver",
+                mock_saver_cls,
+            ),
+        ):
             reset_checkpointer()
             cp = get_checkpointer()
 
-        assert cp is mock_saver_instance
-        mock_saver_cls.from_conn_string.assert_called_once()
-        mock_saver_instance.setup.assert_called_once()
+        assert cp is mock_saver
+        mock_store.assert_called_once_with(str(Path("/tmp/test.db").resolve()))
+        mock_saver_cls.assert_called_once_with(store=mock_store.return_value)
+        mock_saver.setup.assert_called_once_with()
 
     def test_sqlite_creates_parent_dir(self):
         """Sync SQLite checkpointer should call ensure_sqlite_parent_dir before connecting.
@@ -324,19 +351,16 @@ class TestGetCheckpointer:
         """
         load_checkpointer_config_from_dict({"type": "sqlite", "connection_string": "relative/test.db"})
 
-        mock_saver_instance = MagicMock()
-        mock_cm = MagicMock()
-        mock_cm.__enter__ = MagicMock(return_value=mock_saver_instance)
-        mock_cm.__exit__ = MagicMock(return_value=False)
-
-        mock_saver_cls = MagicMock()
-        mock_saver_cls.from_conn_string = MagicMock(return_value=mock_cm)
-
-        mock_module = MagicMock()
-        mock_module.SqliteSaver = mock_saver_cls
+        mock_store = MagicMock()
+        mock_saver = MagicMock()
+        mock_saver_cls = MagicMock(return_value=mock_saver)
 
         with (
-            patch.dict(sys.modules, {"langgraph.checkpoint.sqlite": mock_module}),
+            patch("reactivegraph.checkpoint.SqliteCheckpointSaver", mock_store),
+            patch(
+                "deerflow.runtime.checkpointer.reactive_saver.ReactiveGraphSaver",
+                mock_saver_cls,
+            ),
             patch("deerflow.runtime.checkpointer.provider.ensure_sqlite_parent_dir") as mock_ensure,
             patch(
                 "deerflow.runtime.checkpointer.provider.resolve_sqlite_conn_str",
@@ -346,9 +370,9 @@ class TestGetCheckpointer:
             reset_checkpointer()
             cp = get_checkpointer()
 
-        assert cp is mock_saver_instance
+        assert cp is mock_saver
         mock_ensure.assert_called_once_with("/tmp/resolved/relative/test.db")
-        mock_saver_cls.from_conn_string.assert_called_once_with("/tmp/resolved/relative/test.db")
+        mock_store.assert_called_once_with("/tmp/resolved/relative/test.db")
 
     def test_sqlite_ensure_parent_dir_before_connect(self):
         """ensure_sqlite_parent_dir must be called before from_conn_string."""
@@ -356,22 +380,18 @@ class TestGetCheckpointer:
 
         call_order = []
 
-        mock_saver_instance = MagicMock()
-        mock_cm = MagicMock()
-        mock_cm.__enter__ = MagicMock(return_value=mock_saver_instance)
-        mock_cm.__exit__ = MagicMock(return_value=False)
-
-        mock_saver_cls = MagicMock()
-        mock_saver_cls.from_conn_string = MagicMock(side_effect=lambda *a, **kw: (call_order.append("connect"), mock_cm)[1])
-
-        mock_module = MagicMock()
-        mock_module.SqliteSaver = mock_saver_cls
+        def record_connect(*args, **kwargs):
+            call_order.append("connect")
+            return MagicMock()
 
         def record_ensure(*a, **kw):
             call_order.append("ensure")
 
         with (
-            patch.dict(sys.modules, {"langgraph.checkpoint.sqlite": mock_module}),
+            patch(
+                "reactivegraph.checkpoint.SqliteCheckpointSaver",
+                side_effect=record_connect,
+            ),
             patch(
                 "deerflow.runtime.checkpointer.provider.ensure_sqlite_parent_dir",
                 side_effect=record_ensure,
@@ -387,97 +407,76 @@ class TestGetCheckpointer:
         assert call_order == ["ensure", "connect"]
 
     def test_postgres_creates_saver(self):
-        """Postgres checkpointer is created when packages are available."""
+        """Postgres checkpointer is created with the native backend."""
         load_checkpointer_config_from_dict({"type": "postgres", "connection_string": "postgresql://localhost/db"})
 
-        mock_saver_instance = MagicMock()
-        mock_cm = MagicMock()
-        mock_cm.__enter__ = MagicMock(return_value=mock_saver_instance)
-        mock_cm.__exit__ = MagicMock(return_value=False)
+        mock_store = MagicMock()
+        mock_saver = MagicMock()
+        mock_saver_cls = MagicMock(return_value=mock_saver)
 
-        mock_saver_cls = MagicMock()
-        mock_saver_cls.from_conn_string = MagicMock(return_value=mock_cm)
-
-        mock_pg_module = MagicMock()
-        mock_pg_module.PostgresSaver = mock_saver_cls
-
-        with patch.dict(sys.modules, {"langgraph.checkpoint.postgres": mock_pg_module}):
+        with (
+            patch(
+                "reactivegraph.checkpoint.PostgresCheckpointSaver",
+                mock_store,
+            ),
+            patch(
+                "deerflow.runtime.checkpointer.reactive_saver.ReactiveGraphSaver",
+                mock_saver_cls,
+            ),
+        ):
             reset_checkpointer()
             cp = get_checkpointer()
 
-        assert cp is mock_saver_instance
-        mock_saver_cls.from_conn_string.assert_called_once_with("postgresql://localhost/db")
-        mock_saver_instance.setup.assert_called_once()
+        assert cp is mock_saver
+        mock_store.assert_called_once_with(
+            "postgresql://localhost/db", schema="public"
+        )
+        mock_saver_cls.assert_called_once_with(store=mock_store.return_value)
+        mock_saver.setup.assert_called_once_with()
 
     def test_postgres_schema_creates_schema_and_sets_search_path(self):
         """Sync Postgres checkpointer should create schema before setup."""
         load_checkpointer_config_from_dict({"type": "postgres", "connection_string": "postgresql://localhost/db", "postgres_schema": "deerflow"})
 
-        mock_saver_instance = MagicMock()
-        mock_cm = MagicMock()
-        mock_cm.__enter__ = MagicMock(return_value=mock_saver_instance)
-        mock_cm.__exit__ = MagicMock(return_value=False)
-
-        mock_saver_cls = MagicMock()
-        mock_saver_cls.from_conn_string = MagicMock(return_value=mock_cm)
-
-        mock_pg_module = MagicMock()
-        mock_pg_module.PostgresSaver = mock_saver_cls
-
-        mock_conn = MagicMock()
-        mock_psycopg = MagicMock()
-        mock_psycopg.connect.return_value = mock_conn
+        mock_store = MagicMock()
+        mock_saver = MagicMock()
+        mock_saver_cls = MagicMock(return_value=mock_saver)
 
         with (
-            patch.dict(sys.modules, {"langgraph.checkpoint.postgres": mock_pg_module}),
-            patch.dict(sys.modules, {"psycopg": mock_psycopg}),
+            patch(
+                "reactivegraph.checkpoint.PostgresCheckpointSaver",
+                mock_store,
+            ),
+            patch(
+                "deerflow.runtime.checkpointer.reactive_saver.ReactiveGraphSaver",
+                mock_saver_cls,
+            ),
         ):
             reset_checkpointer()
             cp = get_checkpointer()
 
-        assert cp is mock_saver_instance
-        mock_psycopg.connect.assert_called_once_with("postgresql://localhost/db", autocommit=True)
-        mock_conn.execute.assert_called_once_with('CREATE SCHEMA IF NOT EXISTS "deerflow"')
-        # psycopg 3 __exit__ does not close(); the sync path must close explicitly.
-        mock_conn.close.assert_called_once_with()
-        called_dsn = mock_saver_cls.from_conn_string.call_args.args[0]
-        assert "options=-c%20search_path%3Ddeerflow" in called_dsn
-        mock_saver_instance.setup.assert_called_once()
+        assert cp is mock_saver
+        mock_store.assert_called_once_with(
+            "postgresql://localhost/db", schema="deerflow"
+        )
+        mock_saver.setup.assert_called_once_with()
 
     def test_store_postgres_schema_creates_schema_and_sets_search_path(self):
         """Sync Postgres store should use the legacy checkpointer schema."""
         load_checkpointer_config_from_dict({"type": "postgres", "connection_string": "postgresql://localhost/db", "postgres_schema": "deerflow"})
 
-        mock_store_instance = MagicMock()
-        mock_cm = MagicMock()
-        mock_cm.__enter__ = MagicMock(return_value=mock_store_instance)
-        mock_cm.__exit__ = MagicMock(return_value=False)
-
         mock_store_cls = MagicMock()
-        mock_store_cls.from_conn_string = MagicMock(return_value=mock_cm)
+        mock_store = mock_store_cls.return_value
 
-        mock_pg_module = MagicMock()
-        mock_pg_module.PostgresStore = mock_store_cls
-
-        mock_conn = MagicMock()
-        mock_psycopg = MagicMock()
-        mock_psycopg.connect.return_value = mock_conn
-
-        with (
-            patch.dict(sys.modules, {"langgraph.store.postgres": mock_pg_module}),
-            patch.dict(sys.modules, {"psycopg": mock_psycopg}),
-        ):
+        with patch("reactivegraph.store.PostgresStore", mock_store_cls):
             reset_store()
             store = get_store()
 
-        assert store is mock_store_instance
-        mock_psycopg.connect.assert_called_once_with("postgresql://localhost/db", autocommit=True)
-        mock_conn.execute.assert_called_once_with('CREATE SCHEMA IF NOT EXISTS "deerflow"')
-        # psycopg 3 __exit__ does not close(); the sync path must close explicitly.
-        mock_conn.close.assert_called_once_with()
-        called_dsn = mock_store_cls.from_conn_string.call_args.args[0]
-        assert "options=-c%20search_path%3Ddeerflow" in called_dsn
-        mock_store_instance.setup.assert_called_once()
+        assert store is mock_store
+        mock_store_cls.assert_called_once_with(
+            "postgresql://localhost/db", schema="deerflow"
+        )
+        mock_store.setup.assert_called_once_with()
 
 
 class TestSyncSingletonThreadSafety:
@@ -626,95 +625,81 @@ class TestAsyncCheckpointer:
         mock_config = MagicMock()
         mock_config.checkpointer = CheckpointerConfig(type="sqlite", connection_string="relative/test.db")
 
-        mock_saver = AsyncMock()
-        mock_cm = AsyncMock()
-        mock_cm.__aenter__.return_value = mock_saver
-        mock_cm.__aexit__.return_value = False
-
-        mock_saver_cls = MagicMock()
-        mock_saver_cls.from_conn_string.return_value = mock_cm
-
-        mock_module = MagicMock()
-        mock_module.AsyncSqliteSaver = mock_saver_cls
+        mock_store = MagicMock()
+        mock_saver = MagicMock()
+        mock_saver.asetup = AsyncMock()
+        mock_saver.aclose = AsyncMock()
+        mock_saver_cls = MagicMock(return_value=mock_saver)
 
         with (
             patch("deerflow.runtime.checkpointer.async_provider.get_app_config", return_value=mock_config),
-            patch.dict(sys.modules, {"langgraph.checkpoint.sqlite.aio": mock_module}),
+            patch("reactivegraph.checkpoint.SqliteCheckpointSaver", mock_store),
+            patch(
+                "deerflow.runtime.checkpointer.reactive_saver.ReactiveGraphSaver",
+                mock_saver_cls,
+            ),
             patch(
                 "deerflow.runtime.checkpointer.async_provider.asyncio.to_thread",
                 new_callable=AsyncMock,
-                return_value="/tmp/resolved/test.db",
+                side_effect=["/tmp/resolved/test.db", mock_store.return_value],
             ) as mock_to_thread,
         ):
             async with make_checkpointer() as saver:
                 assert saver is mock_saver
 
-        mock_to_thread.assert_awaited_once()
-        called_fn, called_path = mock_to_thread.await_args.args
-        assert called_fn is _prepare_sqlite_checkpointer_path
-        assert called_path == "relative/test.db"
-        mock_saver_cls.from_conn_string.assert_called_once_with("/tmp/resolved/test.db")
-        mock_saver.setup.assert_awaited_once()
+        assert mock_to_thread.await_count == 2
+        first_fn, first_path = mock_to_thread.await_args_list[0].args
+        second_fn, second_path = mock_to_thread.await_args_list[1].args
+        assert first_fn is _prepare_sqlite_checkpointer_path
+        assert first_path == "relative/test.db"
+        assert second_fn is mock_store
+        assert second_path == "/tmp/resolved/test.db"
+        mock_saver_cls.assert_called_once_with(store=mock_store.return_value)
+        mock_saver.asetup.assert_awaited_once()
+        mock_saver.aclose.assert_awaited_once()
 
     @pytest.mark.anyio
-    async def test_postgres_uses_connection_pool(self):
-        """Async postgres checkpointer should use AsyncConnectionPool, not a single connection."""
+    async def test_postgres_uses_native_connection(self):
+        """Async postgres checkpointer should use the native saver."""
         from deerflow.runtime.checkpointer.async_provider import make_checkpointer
 
         mock_config = MagicMock()
         mock_config.checkpointer = CheckpointerConfig(type="postgres", connection_string="postgresql://localhost/db", postgres_schema="deerflow")
 
-        mock_saver = AsyncMock()
-
+        mock_store = MagicMock()
+        mock_saver = MagicMock()
+        mock_saver.asetup = AsyncMock()
+        mock_saver.aclose = AsyncMock()
         mock_saver_cls = MagicMock(return_value=mock_saver)
-
-        mock_pool_instance = AsyncMock()
-        mock_pool_instance.__aenter__.return_value = mock_pool_instance
-        mock_pool_instance.__aexit__.return_value = False
-        mock_conn = AsyncMock()
-        mock_conn_cm = AsyncMock()
-        mock_conn_cm.__aenter__.return_value = mock_conn
-        mock_conn_cm.__aexit__.return_value = False
-        mock_pool_instance.connection = MagicMock(return_value=mock_conn_cm)
-
-        mock_pool_cls = MagicMock(return_value=mock_pool_instance)
-        mock_pool_cls.check_connection = AsyncMock()
-        mock_dict_row = MagicMock()
-
-        mock_pg_module = MagicMock()
-        mock_pg_module.AsyncPostgresSaver = mock_saver_cls
-
-        mock_psycopg_rows = MagicMock()
-        mock_psycopg_rows.dict_row = mock_dict_row
 
         with (
             patch("deerflow.runtime.checkpointer.async_provider.get_app_config", return_value=mock_config),
-            patch.dict(sys.modules, {"langgraph.checkpoint.postgres.aio": mock_pg_module}),
-            patch.dict(sys.modules, {"psycopg.rows": mock_psycopg_rows}),
-            patch.dict(sys.modules, {"psycopg_pool": MagicMock(AsyncConnectionPool=mock_pool_cls)}),
+            patch("reactivegraph.checkpoint.PostgresCheckpointSaver", mock_store),
+            patch(
+                "deerflow.runtime.checkpointer.reactive_saver.ReactiveGraphSaver",
+                mock_saver_cls,
+            ),
+            patch(
+                "deerflow.runtime.checkpointer.async_provider.asyncio.to_thread",
+                new_callable=AsyncMock,
+                return_value=mock_store.return_value,
+            ) as mock_to_thread,
         ):
-            # AsyncConnectionPool() is a callable that returns mock_pool_instance
-            # We need the constructor to be an async context manager
             async with make_checkpointer() as saver:
                 assert saver is mock_saver
 
-        # Verify the pool was constructed with check Connection
-        mock_pool_cls.assert_called_once()
-        call_kwargs = mock_pool_cls.call_args
-        # search_path is injected into the DSN (merged with any existing libpq
-        # options), not via kwargs["options"] which would clobber DSN options.
-        assert "options=-c%20search_path%3Ddeerflow" in call_kwargs[0][0]
-        assert call_kwargs[1]["check"] is mock_pool_cls.check_connection
-        assert "options" not in call_kwargs[1]["kwargs"]
-        mock_conn.execute.assert_awaited_once_with('CREATE SCHEMA IF NOT EXISTS "deerflow"')
-
-        # Verify saver was constructed with the pool (not via from_conn_string)
-        mock_saver_cls.assert_called_once_with(conn=mock_pool_instance)
-        mock_saver.setup.assert_awaited_once()
+        mock_to_thread.assert_awaited_once_with(
+            mock_store,
+            "postgresql://localhost/db",
+            schema="deerflow",
+        )
+        mock_saver_cls.assert_called_once_with(store=mock_store.return_value)
+        mock_saver.asetup.assert_awaited_once()
+        mock_saver.aclose.assert_awaited_once()
 
     @pytest.mark.anyio
-    async def test_database_postgres_uses_connection_pool(self):
-        """Unified database postgres path should use AsyncConnectionPool with keepalive."""
+    async def test_database_postgres_uses_native_connection(self):
+        """Unified database postgres path should use the native saver."""
         from deerflow.config.database_config import DatabaseConfig
         from deerflow.runtime.checkpointer.async_provider import make_checkpointer
 
@@ -723,47 +708,36 @@ class TestAsyncCheckpointer:
         mock_config.checkpointer = None
         mock_config.database = db_config
 
-        mock_saver = AsyncMock()
-
+        mock_store = MagicMock()
+        mock_saver = MagicMock()
+        mock_saver.asetup = AsyncMock()
+        mock_saver.aclose = AsyncMock()
         mock_saver_cls = MagicMock(return_value=mock_saver)
-
-        mock_pool_instance = AsyncMock()
-        mock_pool_instance.__aenter__.return_value = mock_pool_instance
-        mock_pool_instance.__aexit__.return_value = False
-        mock_conn = AsyncMock()
-        mock_conn_cm = AsyncMock()
-        mock_conn_cm.__aenter__.return_value = mock_conn
-        mock_conn_cm.__aexit__.return_value = False
-        mock_pool_instance.connection = MagicMock(return_value=mock_conn_cm)
-
-        mock_pool_cls = MagicMock(return_value=mock_pool_instance)
-        mock_pool_cls.check_connection = AsyncMock()
-        mock_dict_row = MagicMock()
-
-        mock_pg_module = MagicMock()
-        mock_pg_module.AsyncPostgresSaver = mock_saver_cls
-
-        mock_psycopg_rows = MagicMock()
-        mock_psycopg_rows.dict_row = mock_dict_row
 
         with (
             patch("deerflow.runtime.checkpointer.async_provider.get_app_config", return_value=mock_config),
-            patch.dict(sys.modules, {"langgraph.checkpoint.postgres.aio": mock_pg_module}),
-            patch.dict(sys.modules, {"psycopg.rows": mock_psycopg_rows}),
-            patch.dict(sys.modules, {"psycopg_pool": MagicMock(AsyncConnectionPool=mock_pool_cls)}),
+            patch("reactivegraph.checkpoint.PostgresCheckpointSaver", mock_store),
+            patch(
+                "deerflow.runtime.checkpointer.reactive_saver.ReactiveGraphSaver",
+                mock_saver_cls,
+            ),
+            patch(
+                "deerflow.runtime.checkpointer.async_provider.asyncio.to_thread",
+                new_callable=AsyncMock,
+                return_value=mock_store.return_value,
+            ) as mock_to_thread,
         ):
             async with make_checkpointer() as saver:
                 assert saver is mock_saver
 
-        mock_pool_cls.assert_called_once()
-        call_kwargs = mock_pool_cls.call_args
-        assert "options=-c%20search_path%3Ddeerflow" in call_kwargs[0][0]
-        assert call_kwargs[1]["check"] is mock_pool_cls.check_connection
-        assert "options" not in call_kwargs[1]["kwargs"]
-        mock_conn.execute.assert_awaited_once_with('CREATE SCHEMA IF NOT EXISTS "deerflow"')
-
-        mock_saver_cls.assert_called_once_with(conn=mock_pool_instance)
-        mock_saver.setup.assert_awaited_once()
+        mock_to_thread.assert_awaited_once_with(
+            mock_store,
+            "postgresql://localhost/db",
+            schema="deerflow",
+        )
+        mock_saver_cls.assert_called_once_with(store=mock_store.return_value)
+        mock_saver.asetup.assert_awaited_once()
+        mock_saver.aclose.assert_awaited_once()
 
     @pytest.mark.anyio
     async def test_database_sqlite_creates_parent_dir_via_to_thread(self):
@@ -776,35 +750,38 @@ class TestAsyncCheckpointer:
         mock_config.checkpointer = None
         mock_config.database = db_config
 
-        mock_saver = AsyncMock()
-        mock_cm = AsyncMock()
-        mock_cm.__aenter__.return_value = mock_saver
-        mock_cm.__aexit__.return_value = False
-
-        mock_saver_cls = MagicMock()
-        mock_saver_cls.from_conn_string.return_value = mock_cm
-
-        mock_module = MagicMock()
-        mock_module.AsyncSqliteSaver = mock_saver_cls
+        mock_store = MagicMock()
+        mock_saver = MagicMock()
+        mock_saver.asetup = AsyncMock()
+        mock_saver.aclose = AsyncMock()
+        mock_saver_cls = MagicMock(return_value=mock_saver)
 
         with (
             patch("deerflow.runtime.checkpointer.async_provider.get_app_config", return_value=mock_config),
-            patch.dict(sys.modules, {"langgraph.checkpoint.sqlite.aio": mock_module}),
+            patch("reactivegraph.checkpoint.SqliteCheckpointSaver", mock_store),
+            patch(
+                "deerflow.runtime.checkpointer.reactive_saver.ReactiveGraphSaver",
+                mock_saver_cls,
+            ),
             patch(
                 "deerflow.runtime.checkpointer.async_provider.asyncio.to_thread",
                 new_callable=AsyncMock,
-                return_value="/tmp/data/deerflow.db",
+                side_effect=["/tmp/data/deerflow.db", mock_store.return_value],
             ) as mock_to_thread,
         ):
             async with make_checkpointer() as saver:
                 assert saver is mock_saver
 
-        mock_to_thread.assert_awaited_once()
-        called_fn, called_db_config = mock_to_thread.await_args.args
-        assert called_fn is _prepare_database_sqlite_checkpointer_path
-        assert called_db_config is db_config
-        mock_saver_cls.from_conn_string.assert_called_once_with("/tmp/data/deerflow.db")
-        mock_saver.setup.assert_awaited_once()
+        assert mock_to_thread.await_count == 2
+        first_fn, first_db_config = mock_to_thread.await_args_list[0].args
+        second_fn, second_path = mock_to_thread.await_args_list[1].args
+        assert first_fn is _prepare_database_sqlite_checkpointer_path
+        assert first_db_config is db_config
+        assert second_fn is mock_store
+        assert second_path == "/tmp/data/deerflow.db"
+        mock_saver_cls.assert_called_once_with(store=mock_store.return_value)
+        mock_saver.asetup.assert_awaited_once()
+        mock_saver.aclose.assert_awaited_once()
 
 
 class TestAsyncStore:
@@ -816,36 +793,29 @@ class TestAsyncStore:
         mock_config = MagicMock()
         mock_config.checkpointer = CheckpointerConfig(type="postgres", connection_string="postgresql://localhost/db", postgres_schema="deerflow")
 
-        mock_store = AsyncMock()
-        mock_cm = AsyncMock()
-        mock_cm.__aenter__.return_value = mock_store
-        mock_cm.__aexit__.return_value = False
-
-        mock_store_cls = MagicMock()
-        mock_store_cls.from_conn_string.return_value = mock_cm
-
-        mock_pg_module = MagicMock()
-        mock_pg_module.AsyncPostgresStore = mock_store_cls
-
-        mock_conn = AsyncMock()
-        mock_async_connection = MagicMock()
-        mock_async_connection.connect = AsyncMock(return_value=mock_conn)
-        mock_psycopg = MagicMock()
-        mock_psycopg.AsyncConnection = mock_async_connection
+        mock_store = MagicMock()
+        mock_store_cls = MagicMock(return_value=mock_store)
 
         with (
-            patch.dict(sys.modules, {"langgraph.store.postgres.aio": mock_pg_module}),
-            patch.dict(sys.modules, {"psycopg": mock_psycopg}),
+            patch("reactivegraph.store.PostgresStore", mock_store_cls),
+            patch(
+                "deerflow.runtime.store.async_provider.asyncio.to_thread",
+                new_callable=AsyncMock,
+                return_value=mock_store,
+            ) as mock_to_thread,
         ):
             async with make_store(mock_config) as store:
                 assert store is mock_store
 
-        mock_async_connection.connect.assert_awaited_once_with("postgresql://localhost/db", autocommit=True)
-        mock_conn.execute.assert_awaited_once_with('CREATE SCHEMA IF NOT EXISTS "deerflow"')
-        mock_conn.close.assert_awaited_once()
-        called_dsn = mock_store_cls.from_conn_string.call_args.args[0]
-        assert "options=-c%20search_path%3Ddeerflow" in called_dsn
-        mock_store.setup.assert_awaited_once()
+        assert mock_to_thread.await_count == 3
+        constructor_call = mock_to_thread.await_args_list[0]
+        assert constructor_call.args == (
+            mock_store_cls,
+            "postgresql://localhost/db",
+        )
+        assert constructor_call.kwargs == {"schema": "deerflow"}
+        assert mock_to_thread.await_args_list[1].args == (mock_store.setup,)
+        assert mock_to_thread.await_args_list[2].args == (mock_store.close,)
 
     @pytest.mark.anyio
     async def test_database_postgres_schema_creates_schema_and_sets_search_path(self):
@@ -857,36 +827,29 @@ class TestAsyncStore:
         mock_config.checkpointer = None
         mock_config.database = DatabaseConfig(backend="postgres", postgres_url="postgresql://localhost/db", postgres_schema="deerflow")
 
-        mock_store = AsyncMock()
-        mock_cm = AsyncMock()
-        mock_cm.__aenter__.return_value = mock_store
-        mock_cm.__aexit__.return_value = False
-
-        mock_store_cls = MagicMock()
-        mock_store_cls.from_conn_string.return_value = mock_cm
-
-        mock_pg_module = MagicMock()
-        mock_pg_module.AsyncPostgresStore = mock_store_cls
-
-        mock_conn = AsyncMock()
-        mock_async_connection = MagicMock()
-        mock_async_connection.connect = AsyncMock(return_value=mock_conn)
-        mock_psycopg = MagicMock()
-        mock_psycopg.AsyncConnection = mock_async_connection
+        mock_store = MagicMock()
+        mock_store_cls = MagicMock(return_value=mock_store)
 
         with (
-            patch.dict(sys.modules, {"langgraph.store.postgres.aio": mock_pg_module}),
-            patch.dict(sys.modules, {"psycopg": mock_psycopg}),
+            patch("reactivegraph.store.PostgresStore", mock_store_cls),
+            patch(
+                "deerflow.runtime.store.async_provider.asyncio.to_thread",
+                new_callable=AsyncMock,
+                return_value=mock_store,
+            ) as mock_to_thread,
         ):
             async with make_store(mock_config) as store:
                 assert store is mock_store
 
-        mock_async_connection.connect.assert_awaited_once_with("postgresql://localhost/db", autocommit=True)
-        mock_conn.execute.assert_awaited_once_with('CREATE SCHEMA IF NOT EXISTS "deerflow"')
-        mock_conn.close.assert_awaited_once()
-        called_dsn = mock_store_cls.from_conn_string.call_args.args[0]
-        assert "options=-c%20search_path%3Ddeerflow" in called_dsn
-        mock_store.setup.assert_awaited_once()
+        assert mock_to_thread.await_count == 3
+        constructor_call = mock_to_thread.await_args_list[0]
+        assert constructor_call.args == (
+            mock_store_cls,
+            "postgresql://localhost/db",
+        )
+        assert constructor_call.kwargs == {"schema": "deerflow"}
+        assert mock_to_thread.await_args_list[1].args == (mock_store.setup,)
+        assert mock_to_thread.await_args_list[2].args == (mock_store.close,)
 
 
 class TestCheckpointerDatabaseConfig:
@@ -1037,20 +1000,29 @@ class TestStoreDatabaseConfig:
             checkpointer=None,
             database=DatabaseConfig(backend="postgres", postgres_url="postgresql://localhost/db"),
         )
-        mock_store = AsyncMock()
-        mock_cm = AsyncMock()
-        mock_cm.__aenter__.return_value = mock_store
-        mock_cm.__aexit__.return_value = False
-        mock_store_cls = MagicMock()
-        mock_store_cls.from_conn_string.return_value = mock_cm
-        mock_module = MagicMock(AsyncPostgresStore=mock_store_cls)
+        mock_store = MagicMock()
+        mock_store_cls = MagicMock(return_value=mock_store)
 
-        with patch.dict(sys.modules, {"langgraph.store.postgres.aio": mock_module}):
+        with (
+            patch("reactivegraph.store.PostgresStore", mock_store_cls),
+            patch(
+                "deerflow.runtime.store.async_provider.asyncio.to_thread",
+                new_callable=AsyncMock,
+                return_value=mock_store,
+            ) as mock_to_thread,
+        ):
             async with make_store(app_config) as store:
                 assert store is mock_store
 
-        mock_store_cls.from_conn_string.assert_called_once_with("postgresql://localhost/db")
-        mock_store.setup.assert_awaited_once()
+        assert mock_to_thread.await_count == 3
+        constructor_call = mock_to_thread.await_args_list[0]
+        assert constructor_call.args == (
+            mock_store_cls,
+            "postgresql://localhost/db",
+        )
+        assert constructor_call.kwargs == {"schema": "public"}
+        assert mock_to_thread.await_args_list[1].args == (mock_store.setup,)
+        assert mock_to_thread.await_args_list[2].args == (mock_store.close,)
         assert "No 'checkpointer' section" not in caplog.text
 
     @pytest.mark.anyio
@@ -1061,30 +1033,30 @@ class TestStoreDatabaseConfig:
 
         db_config = DatabaseConfig(backend="sqlite", sqlite_dir=str(tmp_path))
         app_config = SimpleNamespace(checkpointer=None, database=db_config)
-        mock_store = AsyncMock()
-        mock_cm = AsyncMock()
-        mock_cm.__aenter__.return_value = mock_store
-        mock_cm.__aexit__.return_value = False
-        mock_store_cls = MagicMock()
-        mock_store_cls.from_conn_string.return_value = mock_cm
-        mock_module = MagicMock(AsyncSqliteStore=mock_store_cls)
+        mock_store = MagicMock()
+        mock_store_cls = MagicMock(return_value=mock_store)
 
         with (
-            patch.dict(sys.modules, {"langgraph.store.sqlite.aio": mock_module}),
+            patch("reactivegraph.store.SqliteStore", mock_store_cls),
             patch(
                 "deerflow.runtime.store.async_provider.asyncio.to_thread",
                 new_callable=AsyncMock,
+                return_value=mock_store,
             ) as mock_to_thread,
         ):
             async with make_store(app_config) as store:
                 assert store is mock_store
 
-        mock_to_thread.assert_awaited_once()
-        called_fn, called_path = mock_to_thread.await_args.args
+        assert mock_to_thread.await_count == 4
+        called_fn, called_path = mock_to_thread.await_args_list[0].args
         assert called_fn is ensure_sqlite_parent_dir
         assert called_path == db_config.checkpointer_sqlite_path
-        mock_store_cls.from_conn_string.assert_called_once_with(db_config.checkpointer_sqlite_path)
-        mock_store.setup.assert_awaited_once()
+        assert mock_to_thread.await_args_list[1].args == (
+            mock_store_cls,
+            db_config.checkpointer_sqlite_path,
+        )
+        assert mock_to_thread.await_args_list[2].args == (mock_store.setup,)
+        assert mock_to_thread.await_args_list[3].args == (mock_store.close,)
 
     def test_sync_store_context_uses_database_config(self):
         """The one-shot sync Store factory must follow unified database config."""

@@ -150,20 +150,35 @@ def _mark_duration_leaves_without_the_marker(nodes: dict[tuple[str, str], _Node]
             node.duration_only = True
 
 
+_MAINTENANCE_CAPABILITIES = (
+    "astorage_stats",
+    "acheckpoint_ids_with_writes",
+    "adelete_checkpoint",
+    "adelete_unreachable_blobs",
+)
+
+
+def _has_maintenance_capabilities(saver: Any) -> bool:
+    """Whether *saver* exposes the complete async retention contract."""
+    return all(callable(getattr(saver, name, None)) for name in _MAINTENANCE_CAPABILITIES)
+
+
 def _ensure_supported_saver(saver: BaseCheckpointSaver) -> None:
     """Fail fast before any row is read or written on an untested saver.
 
-    The per-backend helpers below model exactly three storage layouts
-    (memory, SQLite, Postgres) and would otherwise fall through to "assume
-    Postgres" SQL for any other ``BaseCheckpointSaver``. A shallow Postgres
-    saver (no ``checkpoint_blobs``/``checkpoint_writes`` tables) or a
-    third-party saver would then issue DELETEs and die partway — with
-    autocommit on the Postgres connection, after the ``checkpoints`` row is
-    already gone. For a destructive tool, an explicit allowlist that raises
-    ``NotImplementedError`` beats a partial deletion and a confusing
-    traceback.
+    Storage maintenance is capability-first. A saver implementing the complete
+    four-method async contract owns its deletion mechanics and is accepted
+    without any knowledge of its private table layout. This is what lets the
+    production ``ReactiveGraphSaver`` replace LangGraph's built-in savers
+    without retention becoming coupled to either implementation.
+
+    ``AsyncPostgresSaver`` remains an explicit compatibility fallback while the
+    Postgres provider is migrated: it predates the capability contract and its
+    SQL layout is validated by the retention suite. Everything else fails
+    closed before ``alist``, because a destructive pass must never assume an
+    unknown storage layout.
     """
-    if isinstance(saver, (InMemorySaver, AsyncSqliteSaver)):
+    if _has_maintenance_capabilities(saver):
         return
     async_postgres_saver: type | None = None
     try:
@@ -174,11 +189,18 @@ def _ensure_supported_saver(saver: BaseCheckpointSaver) -> None:
         pass
     if async_postgres_saver is not None and isinstance(saver, async_postgres_saver):
         return
-    raise NotImplementedError(f"checkpoint retention supports InMemorySaver, AsyncSqliteSaver and AsyncPostgresSaver, got {type(saver).__module__}.{type(saver).__name__}")
+    raise NotImplementedError(
+        "checkpoint retention requires the async maintenance capabilities "
+        f"{_MAINTENANCE_CAPABILITIES!r} or AsyncPostgresSaver, got "
+        f"{type(saver).__module__}.{type(saver).__name__}"
+    )
 
 
 async def _thread_storage_stats(saver: Any, thread_id: str) -> dict[str, int]:
     """Per-thread rows/bytes, same normalized shape as ``bench_channels``."""
+    capability = getattr(saver, "astorage_stats", None)
+    if callable(capability):
+        return await capability(thread_id)
     if isinstance(saver, InMemorySaver):
         checkpoint_rows = checkpoint_bytes = blob_rows = blob_bytes = write_rows = write_bytes = 0
         for namespace in saver.storage.get(thread_id, {}).values():
@@ -257,6 +279,9 @@ async def _checkpoint_ids_with_writes(saver: Any, thread_id: str) -> set[tuple[s
     threads; a policy that distinguishes in-flight from orphaned writes belongs
     to the contract's next revision, not to a fast path here.
     """
+    capability = getattr(saver, "acheckpoint_ids_with_writes", None)
+    if callable(capability):
+        return await capability(thread_id)
     if isinstance(saver, InMemorySaver):
         return {(ns, cp_id) for (stored_thread, ns, cp_id), writes in saver.writes.items() if stored_thread == thread_id and writes}
     if isinstance(saver, AsyncSqliteSaver):
@@ -284,6 +309,10 @@ async def _delete_checkpoint_rows(saver: Any, thread_id: str, key: tuple[str, st
     shared between a checkpoint and its clones (see the contract doc).
     """
     ns, cp_id = key
+    capability = getattr(saver, "adelete_checkpoint", None)
+    if callable(capability):
+        await capability(thread_id, key)
+        return
     if isinstance(saver, InMemorySaver):
         saver.storage.get(thread_id, {}).get(ns, {}).pop(cp_id, None)
         saver.writes.pop((thread_id, ns, cp_id), None)
@@ -315,6 +344,10 @@ async def _delete_checkpoint_rows(saver: Any, thread_id: str, key: tuple[str, st
 async def _delete_unreachable_blobs(saver: Any, thread_id: str, survivor_versions: set) -> None:
     """Whole-thread blob GC: drop exactly the versions no surviving checkpoint
     references (memory ``saver.blobs`` / Postgres ``checkpoint_blobs``)."""
+    capability = getattr(saver, "adelete_unreachable_blobs", None)
+    if callable(capability):
+        await capability(thread_id, survivor_versions)
+        return
     if isinstance(saver, InMemorySaver):
         for key in [key for key in saver.blobs if key[0] == thread_id and key[3] not in survivor_versions]:
             del saver.blobs[key]

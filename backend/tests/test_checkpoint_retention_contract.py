@@ -21,13 +21,13 @@ Each test pins one side of that boundary:
   branch path) can be deleted without affecting the main line — the one
   proven-safe deletion shape so far.
 
-All contracts run against InMemorySaver, AsyncSqliteSaver, and — when
-``TEST_POSTGRES_URI`` is set — AsyncPostgresSaver, mirroring
-``test_delta_channel_checkpointers.py``.
+All contracts run against the production ``ReactiveGraphSaver`` memory, SQLite
+and — when ``TEST_POSTGRES_URI`` is set — native PostgreSQL backends.
 """
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 from collections.abc import AsyncIterator
@@ -38,8 +38,6 @@ from uuid import uuid4
 import pytest
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.channels import DeltaChannel
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import StateGraph
 from langgraph.graph.message import add_messages
 
@@ -48,6 +46,7 @@ from app.gateway.checkpoint_lineage import (
     find_checkpoint_before_message,
 )
 from deerflow.agents.thread_state import merge_message_writes
+from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
 from deerflow.runtime.runs.worker import persist_run_durations
 
 
@@ -96,7 +95,9 @@ class _SaverEnv:
         self.saver = await self._cm.__aenter__()
         setup = getattr(self.saver, "setup", None)
         if setup is not None:
-            await setup()
+            result = setup()
+            if inspect.isawaitable(result):
+                await result
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
@@ -108,24 +109,40 @@ class _SaverEnv:
 
 @asynccontextmanager
 async def _open_sqlite(db_path: Any) -> AsyncIterator[Any]:
-    async with AsyncSqliteSaver.from_conn_string(str(db_path)) as saver:
-        await saver.setup()
+    from reactivegraph.checkpoint import SqliteCheckpointSaver
+
+    store = SqliteCheckpointSaver(str(db_path))
+    saver = ReactiveGraphSaver(store=store)
+    try:
+        await saver.asetup()
         yield saver
+    finally:
+        await saver.aclose()
 
 
 @asynccontextmanager
 async def _open_postgres(uri: str) -> AsyncIterator[Any]:
-    aio = pytest.importorskip("langgraph.checkpoint.postgres.aio", reason="postgres extra not installed")
-    async with aio.AsyncPostgresSaver.from_conn_string(uri) as saver:
-        await saver.setup()
+    from reactivegraph.checkpoint import PostgresCheckpointSaver
+
+    schema = f"retention_contract_{uuid4().hex[:12]}"
+    store = PostgresCheckpointSaver(uri, schema=schema)
+    saver = ReactiveGraphSaver(store=store)
+    try:
+        await saver.asetup()
         yield saver
+    finally:
+        await saver.aclose()
+        import psycopg
+
+        with psycopg.connect(uri, autocommit=True) as conn:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
 
 
 @pytest.fixture(params=["memory", "sqlite", "postgres"])
 async def saver_env(request: pytest.FixtureRequest, tmp_path: Any) -> AsyncIterator[_SaverEnv]:
     kind = request.param
     if kind == "memory":
-        saver = InMemorySaver()
+        saver = ReactiveGraphSaver()
 
         @asynccontextmanager
         async def open_memory() -> AsyncIterator[Any]:
@@ -167,18 +184,6 @@ class _SaverAccessor:
 # Normalized storage stats (same shape as bench_channels._normalized_storage_stats)
 # ---------------------------------------------------------------------------
 
-_SQLITE_TABLES = (
-    ("checkpoint_rows", "checkpoint_bytes", "SELECT COUNT(*), COALESCE(SUM(LENGTH(checkpoint) + LENGTH(metadata)), 0) FROM checkpoints WHERE thread_id = ?"),
-    ("write_rows", "write_bytes", "SELECT COUNT(*), COALESCE(SUM(LENGTH(value)), 0) FROM writes WHERE thread_id = ?"),
-)
-
-_POSTGRES_TABLES = (
-    ("checkpoint_rows", "checkpoint_bytes", "SELECT COUNT(*) AS rows, COALESCE(SUM(pg_column_size(checkpoint) + pg_column_size(metadata)), 0) AS bytes FROM checkpoints WHERE thread_id = %s"),
-    ("blob_rows", "blob_bytes", "SELECT COUNT(*) AS rows, COALESCE(SUM(octet_length(blob)), 0) AS bytes FROM checkpoint_blobs WHERE thread_id = %s"),
-    ("write_rows", "write_bytes", "SELECT COUNT(*) AS rows, COALESCE(SUM(octet_length(blob)), 0) AS bytes FROM checkpoint_writes WHERE thread_id = %s"),
-)
-
-
 def _normalized(
     *,
     checkpoint_rows: int,
@@ -202,61 +207,8 @@ def _normalized(
 
 
 async def _stats(env: _SaverEnv, thread_id: str) -> dict[str, int]:
-    """Per-thread rows/bytes in the backend-neutral measurement shape.
-
-    The memory branch must count ``saver.blobs``: InMemorySaver keeps the
-    serialized channel values there, so on the delta workload those rows are
-    the main payload and a storage-only baseline would undercount the very
-    growth this contract is supposed to measure.
-    """
-    saver = env.saver
-    if env.kind == "memory":
-        checkpoint_rows = checkpoint_bytes = blob_rows = blob_bytes = write_rows = write_bytes = 0
-        for namespace in saver.storage.get(thread_id, {}).values():
-            for checkpoint, metadata, _parent in namespace.values():
-                checkpoint_rows += 1
-                checkpoint_bytes += len(checkpoint[1]) + len(metadata[1])
-        for (stored_thread, _ns, _channel, _version), (_type_tag, blob) in saver.blobs.items():
-            if stored_thread != thread_id:
-                continue
-            blob_rows += 1
-            blob_bytes += len(blob)
-        for (stored_thread, _ns, _cp_id), writes in saver.writes.items():
-            if stored_thread != thread_id:
-                continue
-            for _task_id, _channel, (_type_tag, blob), _path in writes.values():
-                write_rows += 1
-                write_bytes += len(blob)
-        return _normalized(
-            checkpoint_rows=checkpoint_rows,
-            checkpoint_bytes=checkpoint_bytes,
-            blob_rows=blob_rows,
-            blob_bytes=blob_bytes,
-            write_rows=write_rows,
-            write_bytes=write_bytes,
-        )
-    if env.kind == "sqlite":
-        stats: dict[str, int] = {}
-        for row_key, bytes_key, sql in _SQLITE_TABLES:
-            async with saver.conn.execute(sql, (thread_id,)) as cursor:
-                row = await cursor.fetchone()
-            stats[row_key] = int(row[0])
-            stats[bytes_key] = int(row[1] or 0)
-        stats["blob_rows"] = 0
-        stats["blob_bytes"] = 0
-        stats["logical_checkpoint_bytes"] = stats["checkpoint_bytes"]
-        stats["logical_write_bytes"] = stats["write_bytes"]
-        return stats
-    stats = {}
-    for row_key, bytes_key, sql in _POSTGRES_TABLES:
-        async with saver._cursor() as cursor:
-            await cursor.execute(sql, (thread_id,))
-            row = await cursor.fetchone()
-        stats[row_key] = int(row["rows"])
-        stats[bytes_key] = int(row["bytes"] or 0)
-    stats["logical_checkpoint_bytes"] = stats["checkpoint_bytes"] + stats["blob_bytes"]
-    stats["logical_write_bytes"] = stats["write_bytes"]
-    return stats
+    """Per-thread rows/bytes through the production maintenance capability."""
+    return await env.saver.astorage_stats(thread_id)
 
 
 async def _surviving_channel_versions(saver: Any, thread_id: str, deleted_id: str) -> set[Any]:
@@ -283,73 +235,20 @@ async def _delete_checkpoint(env: _SaverEnv, thread_id: str, checkpoint_id: str)
     so the provably-safe scenarios exercise the same rule they prescribe."""
     saver = env.saver
     survivor_versions = await _surviving_channel_versions(saver, thread_id, checkpoint_id)
-    if env.kind == "memory":
-        for namespace in saver.storage.get(thread_id, {}).values():
-            namespace.pop(checkpoint_id, None)
-        for key in [key for key in saver.writes if key[0] == thread_id and key[2] == checkpoint_id]:
-            saver.writes.pop(key, None)
-        for key in [key for key in saver.blobs if key[0] == thread_id and key[3] not in survivor_versions]:
-            del saver.blobs[key]
-        return
-    if env.kind == "sqlite":
-        await saver.conn.execute(
-            "DELETE FROM checkpoints WHERE thread_id = ? AND checkpoint_id = ?",
-            (thread_id, checkpoint_id),
-        )
-        await saver.conn.execute(
-            "DELETE FROM writes WHERE thread_id = ? AND checkpoint_id = ?",
-            (thread_id, checkpoint_id),
-        )
-        await saver.conn.commit()
-        return
-    async with saver._cursor() as cursor:
-        await cursor.execute("SELECT DISTINCT version FROM checkpoint_blobs WHERE thread_id = %s", (thread_id,))
-        rows = await cursor.fetchall()
-    orphan_versions = [row["version"] for row in rows if row["version"] not in survivor_versions]
-    async with saver._cursor() as cursor:
-        await cursor.execute(
-            "DELETE FROM checkpoints WHERE thread_id = %s AND checkpoint_id = %s",
-            (thread_id, checkpoint_id),
-        )
-        await cursor.execute(
-            "DELETE FROM checkpoint_writes WHERE thread_id = %s AND checkpoint_id = %s",
-            (thread_id, checkpoint_id),
-        )
-        if orphan_versions:
-            await cursor.execute(
-                "DELETE FROM checkpoint_blobs WHERE thread_id = %s AND version = ANY(%s)",
-                (thread_id, orphan_versions),
-            )
+    await saver.adelete_checkpoint(thread_id, ("", checkpoint_id))
+    await saver.adelete_unreachable_blobs(thread_id, survivor_versions)
 
 
 async def _task_write_blobs(env: _SaverEnv, thread_id: str, task_id: str) -> list[Any]:
     """Deserialize every writes row a task owns, so a scenario can prove its
     row exists AND round-trips (a bare row-count can pass on rows that were
     already there)."""
-    saver = env.saver
-    if env.kind == "memory":
-        found: list[Any] = []
-        for (stored_thread, _ns, _cp_id), writes in saver.writes.items():
-            if stored_thread != thread_id:
-                continue
-            for stored_task_id, _channel, typed, _path in writes.values():
-                if stored_task_id == task_id:
-                    found.append(saver.serde.loads_typed(typed))
-        return found
-    if env.kind == "sqlite":
-        async with saver.conn.execute(
-            "SELECT type, value FROM writes WHERE thread_id = ? AND task_id = ?",
-            (thread_id, task_id),
-        ) as cursor:
-            rows = await cursor.fetchall()
-        return [saver.serde.loads_typed((row[0], row[1])) for row in rows]
-    async with saver._cursor() as cursor:
-        await cursor.execute(
-            "SELECT type, blob FROM checkpoint_writes WHERE thread_id = %s AND task_id = %s",
-            (thread_id, task_id),
-        )
-        rows = await cursor.fetchall()
-    return [saver.serde.loads_typed((row["type"], row["blob"])) for row in rows]
+    found: list[Any] = []
+    async for tuple_ in env.saver.alist(_config(thread_id), limit=None):
+        for stored_task_id, _channel, value in tuple_.pending_writes:
+            if stored_task_id == task_id:
+                found.append(value)
+    return found
 
 
 def _report(name: str, data: dict[str, Any], backend: str) -> None:

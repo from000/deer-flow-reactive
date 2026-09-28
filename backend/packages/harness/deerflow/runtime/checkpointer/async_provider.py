@@ -25,12 +25,8 @@ from collections.abc import AsyncIterator
 from reactivegraph import Checkpointer
 
 from deerflow.config.app_config import AppConfig, get_app_config
-from deerflow.persistence.postgres_schema import create_schema_sql, dsn_with_search_path, normalize_libpq_dsn
-from deerflow.runtime.checkpointer.provider import (
-    POSTGRES_CONN_REQUIRED,
-    POSTGRES_INSTALL,
-    SQLITE_INSTALL,
-)
+from deerflow.persistence.postgres_schema import normalize_libpq_dsn
+from deerflow.runtime.checkpointer.provider import POSTGRES_CONN_REQUIRED
 from deerflow.runtime.store._sqlite_utils import ensure_sqlite_parent_dir, resolve_sqlite_conn_str
 
 logger = logging.getLogger(__name__)
@@ -48,58 +44,6 @@ def _prepare_database_sqlite_checkpointer_path(db_config) -> str:
     return conn_str
 
 
-def _build_postgres_pool(conn_string: str, schema: str = ""):
-    """Build an AsyncConnectionPool with TCP keepalive and connection checking."""
-    from psycopg.rows import dict_row
-    from psycopg_pool import AsyncConnectionPool
-
-    kwargs = {
-        "autocommit": True,
-        "prepare_threshold": 0,
-        "row_factory": dict_row,
-        "keepalives": 1,
-        "keepalives_idle": 60,
-        "keepalives_interval": 10,
-        "keepalives_count": 6,
-    }
-    # Inject search_path into the DSN (merging with any libpq options already in
-    # the conn string) rather than via kwargs["options"], which psycopg applies
-    # *on top of* the conninfo and would silently drop a DSN-supplied option
-    # such as statement_timeout. This also strips a SQLAlchemy ``+driver``
-    # suffix so libpq can parse the DSN. Matches the sync/DSN paths.
-    dsn = dsn_with_search_path(normalize_libpq_dsn(conn_string), schema)
-
-    return AsyncConnectionPool(
-        dsn,
-        kwargs=kwargs,
-        check=AsyncConnectionPool.check_connection,
-    )
-
-
-async def _ensure_postgres_schema_with_pool(pool, schema: str) -> None:
-    """Create the configured schema before LangGraph creates its tables."""
-    statement = create_schema_sql(schema)
-    if statement is None:
-        return
-    async with pool.connection() as conn:
-        await conn.execute(statement)
-
-
-def _ensure_postgres_imports():
-    """Import and return (AsyncPostgresSaver, AsyncConnectionPool), raising ImportError on failure."""
-    try:
-        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-    except ImportError as exc:
-        raise ImportError(POSTGRES_INSTALL) from exc
-
-    try:
-        from psycopg_pool import AsyncConnectionPool
-    except ImportError as exc:
-        raise ImportError(POSTGRES_INSTALL) from exc
-
-    return AsyncPostgresSaver, AsyncConnectionPool
-
-
 # ---------------------------------------------------------------------------
 # Async factory
 # ---------------------------------------------------------------------------
@@ -115,28 +59,42 @@ async def _async_checkpointer(config) -> AsyncIterator[Checkpointer]:
         return
 
     if config.type == "sqlite":
-        try:
-            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-        except ImportError as exc:
-            raise ImportError(SQLITE_INSTALL) from exc
+        from reactivegraph.checkpoint import SqliteCheckpointSaver
 
-        conn_str = await asyncio.to_thread(_prepare_sqlite_checkpointer_path, config.connection_string or "store.db")
-        async with AsyncSqliteSaver.from_conn_string(conn_str) as saver:
-            await saver.setup()
+        from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
+
+        conn_str = await asyncio.to_thread(
+            _prepare_sqlite_checkpointer_path,
+            config.connection_string or "store.db",
+        )
+        store = await asyncio.to_thread(SqliteCheckpointSaver, conn_str)
+        saver = ReactiveGraphSaver(store=store)
+        try:
+            await saver.asetup()
             yield saver
+        finally:
+            await saver.aclose()
         return
 
     if config.type == "postgres":
+        from reactivegraph.checkpoint import PostgresCheckpointSaver
+
+        from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
+
         if not config.connection_string:
             raise ValueError(POSTGRES_CONN_REQUIRED)
 
-        AsyncPostgresSaver, _ = _ensure_postgres_imports()
-        pool = _build_postgres_pool(config.connection_string, config.postgres_schema)
-        async with pool:
-            await _ensure_postgres_schema_with_pool(pool, config.postgres_schema)
-            saver = AsyncPostgresSaver(conn=pool)
-            await saver.setup()
+        store = await asyncio.to_thread(
+            PostgresCheckpointSaver,
+            config.connection_string,
+            schema=config.postgres_schema or "public",
+        )
+        saver = ReactiveGraphSaver(store=store)
+        try:
+            await saver.asetup()
             yield saver
+        finally:
+            await saver.aclose()
         return
 
     raise ValueError(f"Unknown checkpointer type: {config.type!r}")
@@ -157,28 +115,41 @@ async def _async_checkpointer_from_database(db_config) -> AsyncIterator[Checkpoi
         return
 
     if db_config.backend == "sqlite":
-        try:
-            from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-        except ImportError as exc:
-            raise ImportError(SQLITE_INSTALL) from exc
+        from reactivegraph.checkpoint import SqliteCheckpointSaver
 
-        conn_str = await asyncio.to_thread(_prepare_database_sqlite_checkpointer_path, db_config)
-        async with AsyncSqliteSaver.from_conn_string(conn_str) as saver:
-            await saver.setup()
+        from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
+
+        conn_str = await asyncio.to_thread(
+            _prepare_database_sqlite_checkpointer_path, db_config
+        )
+        store = await asyncio.to_thread(SqliteCheckpointSaver, conn_str)
+        saver = ReactiveGraphSaver(store=store)
+        try:
+            await saver.asetup()
             yield saver
+        finally:
+            await saver.aclose()
         return
 
     if db_config.backend == "postgres":
         if not db_config.postgres_url:
             raise ValueError("database.postgres_url is required for the postgres backend")
 
-        AsyncPostgresSaver, _ = _ensure_postgres_imports()
-        pool = _build_postgres_pool(db_config.postgres_url, db_config.postgres_schema)
-        async with pool:
-            await _ensure_postgres_schema_with_pool(pool, db_config.postgres_schema)
-            saver = AsyncPostgresSaver(conn=pool)
-            await saver.setup()
+        from reactivegraph.checkpoint import PostgresCheckpointSaver
+
+        from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
+
+        store = await asyncio.to_thread(
+            PostgresCheckpointSaver,
+            normalize_libpq_dsn(db_config.postgres_url),
+            schema=db_config.postgres_schema or "public",
+        )
+        saver = ReactiveGraphSaver(store=store)
+        try:
+            await saver.asetup()
             yield saver
+        finally:
+            await saver.aclose()
         return
 
     raise ValueError(f"Unknown database backend: {db_config.backend!r}")
