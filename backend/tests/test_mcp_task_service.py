@@ -3716,6 +3716,10 @@ async def test_notification_failure_release_hang_does_not_block(monkeypatch):
     )
     try:
         await asyncio.wait_for(service._run_notifications(now=datetime.now(UTC)), timeout=0.2)
+        # The service deliberately returns before a hung release completes;
+        # synchronize on its entry rather than assuming the background task was
+        # scheduled during the outer timeout.
+        await asyncio.wait_for(repo.release_started.wait(), timeout=0.2)
     finally:
         repo.finish_release.set()
         await asyncio.sleep(0)

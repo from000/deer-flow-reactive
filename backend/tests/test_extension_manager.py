@@ -140,6 +140,11 @@ class _QuietFileHandler(http.server.SimpleHTTPRequestHandler):
 
 @contextmanager
 def _serve_directory(directory: Path) -> Iterator[str]:
+    # Keep the loopback repository off any developer/system proxy. uv and git
+    # both inherit this environment when fetching the local Git source.
+    proxy_overrides = {"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
+    previous_proxy_overrides = {name: os.environ.get(name) for name in proxy_overrides}
+    os.environ.update(proxy_overrides)
     handler = functools.partial(_QuietFileHandler, directory=str(directory))
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -148,6 +153,11 @@ def _serve_directory(directory: Path) -> Iterator[str]:
         host, port = server.server_address[:2]
         yield f"http://{host}:{port}"
     finally:
+        for name, value in previous_proxy_overrides.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)

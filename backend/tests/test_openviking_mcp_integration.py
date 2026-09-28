@@ -149,6 +149,8 @@ async def test_openviking_http_mcp_discovers_exposes_and_calls_native_tools(
 ) -> None:
     api_key = "openviking-user-test-secret"
     monkeypatch.setenv("OPENVIKING_API_KEY", api_key)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
 
     async with _openviking_mcp_server() as (url, capture, calls):
         config_path = tmp_path / "extensions_config.json"

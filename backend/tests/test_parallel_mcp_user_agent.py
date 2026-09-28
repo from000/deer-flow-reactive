@@ -16,6 +16,13 @@ from deerflow.mcp.tools import get_mcp_tools
 async def test_parallel_example_user_agent_reaches_tool_requests(tmp_path, monkeypatch, authenticated):
     captured = []
 
+    # The loopback MCP server is test infrastructure, not an external network
+    # destination. Keep a developer/system HTTP proxy from redirecting these
+    # requests (and returning an unrelated 502) through httpx's environment
+    # proxy lookup.
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
