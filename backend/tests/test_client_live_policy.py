@@ -145,6 +145,36 @@ def test_live_marker_is_registered() -> None:
     assert '"live: tests that call real external APIs and require explicit opt-in"' in pyproject
 
 
+def test_client_e2e_llm_tests_are_live_marked() -> None:
+    """Credential-gated E2E calls must obey the same explicit live-test policy."""
+    source = (BACKEND_ROOT / "tests" / "test_client_e2e.py").read_text(encoding="utf-8")
+
+    assert "def requires_llm(func):" in source
+    assert "func = pytest.mark.live(func)" in source
+
+
+def test_create_deerflow_agent_live_tests_are_live_marked() -> None:
+    """Credential-gated factory E2E calls must obey the live-test policy."""
+    source = (BACKEND_ROOT / "tests" / "test_create_deerflow_agent_live.py").read_text(encoding="utf-8")
+
+    assert "def requires_llm(func):" in source
+    assert "func = pytest.mark.live(func)" in source
+
+
+def test_delegation_ledger_live_tests_are_live_marked() -> None:
+    """The real-model ledger E2E must be excluded from offline test runs."""
+    source = (BACKEND_ROOT / "tests" / "test_delegation_ledger_live.py").read_text(encoding="utf-8")
+
+    assert "pytestmark = pytest.mark.live" in source
+
+
+def test_deferred_tool_promotion_real_llm_tests_are_live_marked() -> None:
+    """The one-api promotion E2E must be excluded from offline test runs."""
+    source = (BACKEND_ROOT / "tests" / "test_deferred_tool_promotion_real_llm.py").read_text(encoding="utf-8")
+
+    assert "pytest.mark.live," in source
+
+
 def test_documentation_matches_live_test_commands() -> None:
     contributor_docs = (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
     backend_agent_docs = (BACKEND_ROOT / "AGENTS.md").read_text(encoding="utf-8")

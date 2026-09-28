@@ -38,10 +38,13 @@ from langchain_core.tools import tool as as_tool
 # ---------------------------------------------------------------------------
 
 
-pytestmark = pytest.mark.skipif(
-    os.getenv("ONEAPI_E2E") != "1",
-    reason="Real-LLM e2e: opt in with ONEAPI_E2E=1 (requires OPENAI_API_KEY + OPENAI_API_BASE)",
-)
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.skipif(
+        os.getenv("ONEAPI_E2E") != "1",
+        reason="Real-LLM e2e: opt in with ONEAPI_E2E=1 (requires OPENAI_API_KEY + OPENAI_API_BASE)",
+    ),
+]
 
 
 # ---------------------------------------------------------------------------

@@ -32,10 +32,13 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "../../.env"))
 # Markers
 # ---------------------------------------------------------------------------
 
-requires_llm = pytest.mark.skipif(
-    os.getenv("CI", "").lower() in ("true", "1") or not os.getenv("OPENAI_API_KEY"),
-    reason="Requires LLM API key — skipped in CI or when OPENAI_API_KEY is unset",
-)
+def requires_llm(func):
+    """Mark credential-gated LLM calls as explicit opt-in live tests."""
+    func = pytest.mark.live(func)
+    return pytest.mark.skipif(
+        os.getenv("CI", "").lower() in ("true", "1") or not os.getenv("OPENAI_API_KEY"),
+        reason="Requires LLM API key — skipped in CI or when OPENAI_API_KEY is unset",
+    )(func)
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +84,13 @@ def _make_e2e_config() -> AppConfig:
                 "use": "deerflow.sandbox.local:LocalSandboxProvider",
                 "allow_host_bash": True,
             },
+            "tools": [
+                {
+                    "name": "bash",
+                    "group": "bash",
+                    "use": "deerflow.sandbox.tools:bash_tool",
+                }
+            ],
         }
     )
 

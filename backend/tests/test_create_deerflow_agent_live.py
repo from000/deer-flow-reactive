@@ -12,10 +12,13 @@ import uuid
 import pytest
 from langchain_core.tools import tool
 
-requires_llm = pytest.mark.skipif(
-    os.getenv("CI", "").lower() in ("true", "1") or not os.getenv("OPENAI_API_KEY"),
-    reason="Requires LLM API key — skipped in CI or when OPENAI_API_KEY is unset",
-)
+def requires_llm(func):
+    """Mark credential-gated LLM calls as explicit opt-in live tests."""
+    func = pytest.mark.live(func)
+    return pytest.mark.skipif(
+        os.getenv("CI", "").lower() in ("true", "1") or not os.getenv("OPENAI_API_KEY"),
+        reason="Requires LLM API key — skipped in CI or when OPENAI_API_KEY is unset",
+    )(func)
 
 
 def _make_model():

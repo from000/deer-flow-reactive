@@ -17,6 +17,8 @@ from typing import Any
 
 import pytest
 import yaml
+
+pytestmark = pytest.mark.live
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
