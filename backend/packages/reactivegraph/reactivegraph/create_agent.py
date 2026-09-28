@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import copy
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Generator, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -1537,7 +1537,7 @@ class AgentGraph:
         runtime: Runtime,
         *,
         as_list: bool,
-    ) -> Iterator[Any]:
+    ) -> Generator[Any, Any, Any]:
         """Drive the graph once and adapt its native frames to LG modes."""
         if not modes:
             return

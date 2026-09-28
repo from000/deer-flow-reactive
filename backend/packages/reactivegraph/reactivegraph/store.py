@@ -33,7 +33,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 __all__ = (
     "BaseStore",
@@ -887,7 +887,9 @@ class SqliteStore:
                             row["key"],
                         ),
                     )
-                candidates.append(self._row_to_item(row, search=True))
+                candidates.append(
+                    cast("SearchItem", self._row_to_item(row, search=True))
+                )
 
         if query:
             # No embedding configuration: upstream returns the unranked branch.
@@ -906,11 +908,11 @@ class SqliteStore:
             rows = self.conn.execute(
                 "SELECT DISTINCT prefix, expires_at FROM store"
             ).fetchall()
-        namespaces = {
-            self._decode_namespace(row["prefix"])
-            for row in rows
-            if self._expires_at(row) is None or self._expires_at(row) > now
-        }
+        namespaces: set[tuple[str, ...]] = set()
+        for row in rows:
+            expires_at = self._expires_at(row)
+            if expires_at is None or expires_at > now:
+                namespaces.add(self._decode_namespace(row["prefix"]))
         if conditions:
             namespaces = {
                 namespace
@@ -1124,7 +1126,8 @@ class PostgresStore:
                     "CREATE INDEX IF NOT EXISTS store_prefix_idx ON store (prefix)"
                 )
                 self.conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_store_expires_at ON store (expires_at) WHERE expires_at IS NOT NULL"
+                    "CREATE INDEX IF NOT EXISTS idx_store_expires_at "
+                    "ON store (expires_at) WHERE expires_at IS NOT NULL"
                 )
 
     def close(self) -> None:
@@ -1190,7 +1193,10 @@ class PostgresStore:
                     ttl = self._normalise_ttl(_op_ttl(materialised[index]))
                     self._execute(
                         """
-                        INSERT INTO store (prefix, key, value, created_at, updated_at, expires_at, ttl_minutes)
+                        INSERT INTO store (
+                            prefix, key, value, created_at, updated_at,
+                            expires_at, ttl_minutes
+                        )
                         VALUES (%s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (prefix, key) DO UPDATE SET
                             value = EXCLUDED.value,
@@ -1317,7 +1323,9 @@ class PostgresStore:
                         "UPDATE store SET expires_at = %s WHERE prefix = %s AND key = %s",
                         (now + timedelta(minutes=row[6]), row[0], row[1]),
                     )
-                candidates.append(self._row_to_item(row, search=True))
+                candidates.append(
+                    cast("SearchItem", self._row_to_item(row, search=True))
+                )
         if query:
             del query
         return candidates[offset : offset + limit]
@@ -1348,18 +1356,62 @@ class PostgresStore:
             values = sorted(namespaces)
         return values[offset : offset + limit]
 
-    def get(self, namespace: Sequence[str], key: str, *, refresh_ttl: bool | None = None) -> Item | None:
-        return self._get_item(namespace, key, refresh_ttl=True if refresh_ttl is None else refresh_ttl)
+    def get(
+        self,
+        namespace: Sequence[str],
+        key: str,
+        *,
+        refresh_ttl: bool | None = None,
+    ) -> Item | None:
+        return self._get_item(
+            namespace,
+            key,
+            refresh_ttl=True if refresh_ttl is None else refresh_ttl,
+        )
 
-    async def aget(self, namespace: Sequence[str], key: str, *, refresh_ttl: bool | None = None) -> Item | None:
-        return await asyncio.to_thread(self.get, namespace, key, refresh_ttl=refresh_ttl)
+    async def aget(
+        self,
+        namespace: Sequence[str],
+        key: str,
+        *,
+        refresh_ttl: bool | None = None,
+    ) -> Item | None:
+        return await asyncio.to_thread(
+            self.get,
+            namespace,
+            key,
+            refresh_ttl=refresh_ttl,
+        )
 
-    def put(self, namespace: Sequence[str], key: str, value: dict[str, Any], index: Any = None, *, ttl: Any = None) -> None:
+    def put(
+        self,
+        namespace: Sequence[str],
+        key: str,
+        value: dict[str, Any],
+        index: Any = None,
+        *,
+        ttl: Any = None,
+    ) -> None:
         del index
         self.batch([PutOp(tuple(namespace), str(key), value, ttl=ttl)])
 
-    async def aput(self, namespace: Sequence[str], key: str, value: dict[str, Any], index: Any = None, *, ttl: Any = None) -> None:
-        await asyncio.to_thread(self.put, namespace, key, value, index, ttl=ttl)
+    async def aput(
+        self,
+        namespace: Sequence[str],
+        key: str,
+        value: dict[str, Any],
+        index: Any = None,
+        *,
+        ttl: Any = None,
+    ) -> None:
+        await asyncio.to_thread(
+            self.put,
+            namespace,
+            key,
+            value,
+            index,
+            ttl=ttl,
+        )
 
     def delete(self, namespace: Sequence[str], key: str) -> None:
         self.batch([PutOp(tuple(namespace), str(key), None, ttl=None)])
@@ -1378,9 +1430,18 @@ class PostgresStore:
         offset: int = 0,
         refresh_ttl: bool | None = None,
     ) -> list[SearchItem]:
-        return self.batch([
-            SearchOp(tuple(namespace_prefix), filter, limit, offset, query, True if refresh_ttl is None else refresh_ttl)
-        ])[0]
+        return self.batch(
+            [
+                SearchOp(
+                    tuple(namespace_prefix),
+                    filter,
+                    limit,
+                    offset,
+                    query,
+                    True if refresh_ttl is None else refresh_ttl,
+                )
+            ]
+        )[0]
 
     async def asearch(
         self,
@@ -1393,7 +1454,15 @@ class PostgresStore:
         offset: int = 0,
         refresh_ttl: bool | None = None,
     ) -> list[SearchItem]:
-        return await asyncio.to_thread(self.search, namespace_prefix, query=query, filter=filter, limit=limit, offset=offset, refresh_ttl=refresh_ttl)
+        return await asyncio.to_thread(
+            self.search,
+            namespace_prefix,
+            query=query,
+            filter=filter,
+            limit=limit,
+            offset=offset,
+            refresh_ttl=refresh_ttl,
+        )
 
     def list_namespaces(
         self,
@@ -1420,7 +1489,14 @@ class PostgresStore:
         limit: int = 100,
         offset: int = 0,
     ) -> list[tuple[str, ...]]:
-        return await asyncio.to_thread(self.list_namespaces, prefix=prefix, suffix=suffix, max_depth=max_depth, limit=limit, offset=offset)
+        return await asyncio.to_thread(
+            self.list_namespaces,
+            prefix=prefix,
+            suffix=suffix,
+            max_depth=max_depth,
+            limit=limit,
+            offset=offset,
+        )
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -1569,7 +1645,9 @@ _store: MemoryStore | SqliteStore | PostgresStore | None = None
 _store_lock = threading.Lock()
 
 
-def get_store(config: dict[str, Any] | Any | None = None) -> MemoryStore | SqliteStore | PostgresStore:
+def get_store(
+    config: dict[str, Any] | Any | None = None,
+) -> MemoryStore | SqliteStore | PostgresStore:
     """Return the configured process-wide store.
 
     ``memory``, ``sqlite``, and ``postgres`` are implemented natively. Other

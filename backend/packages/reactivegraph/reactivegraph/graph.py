@@ -20,7 +20,7 @@ import functools
 import json
 import threading
 from collections import deque
-from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Generator, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -784,7 +784,7 @@ class ReactiveGraph:
         duration of the run (upstream sets the child-runnable config for
         ``stream`` just like it does for ``invoke``).
         """
-        def _generate() -> Iterator[dict]:
+        def _generate() -> Generator[dict, Any, Any]:
             with _run_scope(config):
                 yield from self._stream_impl(
                     event,

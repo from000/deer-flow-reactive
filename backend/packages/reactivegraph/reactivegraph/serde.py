@@ -203,7 +203,7 @@ class ReactiveSerializer:
                 (
                     obj.__class__.__module__,
                     obj.__class__.__name__,
-                    obj.__getinitargs__(),
+                    obj.__getinitargs__(),  # type: ignore[attr-defined]
                 ),
             )
         if isinstance(obj, (set, frozenset, deque)):
@@ -288,7 +288,7 @@ class ReactiveSerializer:
                 try:
                     return cls(**dumped)
                 except Exception:
-                    return cls.construct(**dumped)  # type: ignore[attr-defined]
+                    return cls.construct(**dumped)
             return cls.model_validate(dumped)
         if code == EXT_DELTA_SNAPSHOT:
             return _restore_delta_snapshot(value)

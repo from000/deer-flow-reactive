@@ -595,9 +595,9 @@ class CheckpointStore:
                 else:
                     self._order.pop(order_key, None)
             if self._latest.get(order_key) == checkpoint_id:
-                remaining = self._order.get(order_key)
-                if remaining:
-                    self._latest[order_key] = remaining[-1]
+                latest_order = self._order.get(order_key)
+                if latest_order:
+                    self._latest[order_key] = latest_order[-1]
                 else:
                     self._latest.pop(order_key, None)
 
@@ -1303,9 +1303,16 @@ class PostgresCheckpointSaver(CheckpointStore):
                         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         """
                     if slot < 0:
-                        sql += " ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id, task_id, idx) DO UPDATE SET channel = EXCLUDED.channel, type = EXCLUDED.type, value = EXCLUDED.value"
+                        sql += (
+                            " ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id, "
+                            "task_id, idx) DO UPDATE SET channel = EXCLUDED.channel, "
+                            "type = EXCLUDED.type, value = EXCLUDED.value"
+                        )
                     else:
-                        sql += " ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id, task_id, idx) DO NOTHING"
+                        sql += (
+                            " ON CONFLICT (thread_id, checkpoint_ns, checkpoint_id, "
+                            "task_id, idx) DO NOTHING"
+                        )
                     self._execute(
                         sql,
                         (
@@ -1374,7 +1381,10 @@ class PostgresCheckpointSaver(CheckpointStore):
             if before_id is not None:
                 where.append("checkpoint_id < %s")
                 params.append(before_id)
-        sql = "SELECT thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata FROM checkpoints"
+        sql = (
+            "SELECT thread_id, checkpoint_ns, checkpoint_id, "
+            "parent_checkpoint_id, type, checkpoint, metadata FROM checkpoints"
+        )
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY checkpoint_id DESC"
@@ -1402,7 +1412,10 @@ class PostgresCheckpointSaver(CheckpointStore):
         with self._db_lock:
             checkpoint_row = self._execute(
                 """
-                SELECT COUNT(*), COALESCE(SUM(OCTET_LENGTH(COALESCE(checkpoint, ''::bytea)) + OCTET_LENGTH(COALESCE(metadata, ''::bytea))), 0)
+                SELECT COUNT(*), COALESCE(SUM(
+                    OCTET_LENGTH(COALESCE(checkpoint, ''::bytea)) +
+                    OCTET_LENGTH(COALESCE(metadata, ''::bytea))
+                ), 0)
                 FROM checkpoints WHERE thread_id = %s
                 """,
                 (target,),
@@ -1444,11 +1457,13 @@ class PostgresCheckpointSaver(CheckpointStore):
         with self._db_lock:
             with self.conn.transaction():
                 self._execute(
-                    "DELETE FROM checkpoints WHERE thread_id = %s AND checkpoint_ns = %s AND checkpoint_id = %s",
+                    "DELETE FROM checkpoints WHERE thread_id = %s "
+                    "AND checkpoint_ns = %s AND checkpoint_id = %s",
                     (target, namespace, checkpoint_id),
                 )
                 self._execute(
-                    "DELETE FROM writes WHERE thread_id = %s AND checkpoint_ns = %s AND checkpoint_id = %s",
+                    "DELETE FROM writes WHERE thread_id = %s "
+                    "AND checkpoint_ns = %s AND checkpoint_id = %s",
                     (target, namespace, checkpoint_id),
                 )
 
@@ -1511,7 +1526,11 @@ class PostgresCheckpointSaver(CheckpointStore):
         return await asyncio.to_thread(self.get_tuple, config)
 
     async def alist(self, config, *, before=None, limit=None, filter=None):
-        items = await asyncio.to_thread(lambda: list(self.list(config, before=before, limit=limit, filter=filter)))
+        items = await asyncio.to_thread(
+            lambda: list(
+                self.list(config, before=before, limit=limit, filter=filter)
+            )
+        )
         for item in items:
             yield item
 
