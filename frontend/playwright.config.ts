@@ -31,7 +31,7 @@ export default defineConfig({
         command: "pnpm exec next build && pnpm exec next start",
         url: baseURL,
         reuseExistingServer: !process.env.CI,
-        timeout: 120_000,
+        timeout: 420_000,
         env: {
           SKIP_ENV_VALIDATION: "1",
           DEER_FLOW_AUTH_DISABLED: "1",

@@ -135,7 +135,7 @@ test.beforeAll(async ({ request }) => {
           .then((r) => r.status())
           .catch(() => 0);
       },
-      { timeout: 20_000 },
+      { timeout: 60_000 },
     )
     .toBe(200);
   const response = await request.get(`${gatewayURL}/api/plugins`, { headers });

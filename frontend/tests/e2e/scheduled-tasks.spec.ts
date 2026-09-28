@@ -1,8 +1,26 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 
 import { MOCK_THREAD_ID, mockLangGraphAPI } from "./utils/mock-api";
 
 test.describe.configure({ mode: "serial" });
+
+/** The chat header's action row shifts while thread data and models settle.
+ * Wait until the link's box is stable before click(): otherwise Playwright may
+ * click the stale coordinates and land on a header gap. */
+async function clickStable(locator: Locator) {
+  await expect
+    .poll(async () =>
+      locator.evaluate(async (element) => {
+        const firstX = element.getBoundingClientRect().x;
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        );
+        return element.getBoundingClientRect().x === firstX;
+      }),
+    )
+    .toBe(true);
+  await locator.click();
+}
 
 test("scheduled tasks page is reachable from sidebar", async ({ page }) => {
   mockLangGraphAPI(page, {
@@ -69,10 +87,9 @@ test("thread page links to filtered scheduled tasks", async ({ page }) => {
   });
 
   await page.goto(`/workspace/chats/${MOCK_THREAD_ID}`);
-  await page
-    .locator("header")
-    .getByRole("link", { name: /scheduled tasks/i })
-    .click();
+  await clickStable(
+    page.locator("header").getByRole("link", { name: /scheduled tasks/i }),
+  );
   await page.waitForURL(new RegExp(`thread_id=${MOCK_THREAD_ID}`));
 });
 
