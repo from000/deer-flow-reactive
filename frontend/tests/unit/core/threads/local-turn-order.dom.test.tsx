@@ -606,6 +606,142 @@ test("keeps a transiently rescued current-turn step behind its submitted human",
   ]);
 });
 
+test("retracts the optimistic human when compaction re-keys the submitted turn", async () => {
+  // A live compaction during submit. The pre-submit checkpoint still holds a
+  // long multi-turn history, so the post-compaction window's human count is
+  // SMALLER than the pre-submit count and the count fallback can never fire.
+  // The runtime also re-keys the just-submitted human, so the server echo does
+  // not share the client's `local-human-*` identity either. Both confirmations
+  // must fail gracefully — the optimistic copy is still retracted, or the user
+  // sees their own input twice, once stranded below the answer.
+  rs.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const earlierHuman = humanMessage("earlier-human", "An earlier request");
+  const earlierAnswer = aiMessage("earlier-answer", "An earlier answer", {
+    run_id: "run-earlier",
+  });
+  const oldHuman = humanMessage("old-human", "An older request");
+  const oldAnswer = aiMessage("old-answer", "An older answer", {
+    run_id: "run-old",
+  });
+  const recentHuman = humanMessage("recent-human", "The recent request");
+  const recentAnswer = aiMessage("recent-answer", "The recent answer", {
+    run_id: "run-recent",
+  });
+  let rows = [
+    historyRow(1, "run-earlier", earlierHuman),
+    historyRow(2, "run-earlier", earlierAnswer),
+    historyRow(3, "run-old", oldHuman),
+    historyRow(4, "run-old", oldAnswer),
+    historyRow(5, "run-recent", recentHuman),
+    historyRow(6, "run-recent", recentAnswer),
+  ];
+  streamMockState.messages = [
+    earlierHuman,
+    earlierAnswer,
+    oldHuman,
+    oldAnswer,
+    recentHuman,
+    recentAnswer,
+  ];
+  const { rerender, result } = await renderSeededThread({
+    historyRows: () => rows,
+  });
+  expect(
+    streamMockState.messages.filter((m) => m.type === "human"),
+  ).toHaveLength(3);
+
+  const submittedId = await submitVisibleTurn(result, "final-turn question");
+  const removeAll = {
+    id: "__remove_all__",
+    type: "remove",
+    content: "",
+  } as Message;
+  const hiddenSummary = humanMessage(
+    "summary-current",
+    "Conversation summary",
+    {
+      hide_from_ui: true,
+    },
+  );
+  // Compaction drops the two oldest turns: only one pre-submit human survives,
+  // so the post-compaction human count (2) never exceeds the pre-submit count.
+  const retainedTail = [recentHuman, recentAnswer];
+  const serverHuman = {
+    id: "h-turn-32",
+    type: "human",
+    content: "final-turn question",
+  } as Message;
+  const answer = aiMessage("a-turn-32", "final-turn answer");
+  act(() => {
+    streamMockState.onUpdateEvent?.(
+      {
+        "DeerFlowSummarizationMiddleware.before_model": {
+          messages: [removeAll, hiddenSummary, ...retainedTail, serverHuman],
+        },
+      },
+      { mutate: () => undefined },
+    );
+    streamMockState.messages = [
+      hiddenSummary,
+      ...retainedTail,
+      serverHuman,
+      answer,
+    ];
+    streamMockState.isLoading = true;
+    rerender();
+  });
+  await act(async () => {
+    await rs.advanceTimersByTimeAsync(100);
+  });
+
+  // Exactly one visible copy of the submitted text, sitting above the answer.
+  expect(visibleMessageIds(result.current.thread.messages)).toEqual([
+    "earlier-human",
+    "earlier-answer",
+    "old-human",
+    "old-answer",
+    "recent-human",
+    "recent-answer",
+    "h-turn-32",
+    "a-turn-32",
+  ]);
+  expect(
+    result.current.thread.messages.filter(
+      (message) =>
+        message.type === "human" &&
+        String(message.content).includes("final-turn question"),
+    ),
+  ).toHaveLength(1);
+  expect(submittedId).not.toBe("h-turn-32");
+
+  // The finishing refetch observes the extended feed. The new turn keeps its
+  // place: the canonical human and answer stay behind the established history
+  // and are never re-ordered by the compaction rescue.
+  rows = [
+    ...rows,
+    historyRow(7, "run-current", serverHuman),
+    historyRow(8, "run-current", answer),
+  ];
+  await act(async () => {
+    streamMockState.onFinish?.({
+      values: { messages: streamMockState.messages },
+    });
+    streamMockState.isLoading = false;
+  });
+  rerender();
+  await flushFrames();
+  expect(visibleMessageIds(result.current.thread.messages)).toEqual([
+    "earlier-human",
+    "earlier-answer",
+    "old-human",
+    "old-answer",
+    "recent-human",
+    "recent-answer",
+    "h-turn-32",
+    "a-turn-32",
+  ]);
+});
+
 test("does not move a later externally submitted answer ahead of the retained local anchor", async () => {
   rs.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const previousHuman = humanMessage("previous-human", "Previous request");

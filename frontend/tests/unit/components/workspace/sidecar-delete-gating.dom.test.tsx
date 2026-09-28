@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, rs } from "@rstest/core";
+import { afterEach, beforeEach, describe, expect, it, rs } from "@rstest/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { useEffect, type ReactNode } from "react";
@@ -101,8 +101,28 @@ function buildTree(
   );
 }
 
+beforeEach(() => {
+  // The panel mounts the real useThreadStream hook. Return a determinate
+  // history page so this unit test never reaches the application on :3000.
+  rs.stubGlobal("fetch", async (input: unknown) => {
+    const url = String(input);
+    if (url.includes("/history")) {
+      return Response.json([]);
+    }
+    if (url.includes("/uploads/limits")) {
+      return Response.json({
+        max_files: 0,
+        max_file_size: 0,
+        max_total_size: 0,
+      });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  });
+});
+
 afterEach(() => {
   rs.restoreAllMocks();
+  rs.unstubAllGlobals();
   cleanup();
 });
 

@@ -21,6 +21,7 @@ import { getBackendBaseURL } from "../config";
 import { useI18n } from "../i18n/hooks";
 import { getMessageRunId } from "../messages/run-duration";
 import {
+  extractContentFromMessage,
   hasContent,
   hasToolCalls,
   isHiddenFromUIMessage,
@@ -1389,19 +1390,51 @@ export function getVisibleOptimisticMessages(
 export function areOptimisticMessagesConfirmed(
   optimisticMessages: Message[],
   persistedMessages: Message[],
+  preSubmitIdentities: ReadonlySet<string> = EMPTY_MESSAGE_IDENTITIES_SET,
 ): boolean {
   const optimisticIdentities = optimisticMessages
     .map(messageIdentity)
     .filter(isNonEmptyString);
-  if (optimisticIdentities.length === 0) {
-    return false;
-  }
   const persistedIdentities = new Set(
     persistedMessages.map(messageIdentity).filter(isNonEmptyString),
   );
-  return optimisticIdentities.every((identity) =>
-    persistedIdentities.has(identity),
+  const identitiesConfirmed =
+    optimisticIdentities.length > 0 &&
+    optimisticIdentities.every((identity) => persistedIdentities.has(identity));
+  if (identitiesConfirmed) {
+    return true;
+  }
+
+  // Context compaction can re-key the submitted human (and shrink the
+  // checkpoint below the pre-submit human count), so neither identity nor
+  // count growth confirms it. The local turn anchor records every identity
+  // that existed before submit: a *new* visible human with the same normalized
+  // content is the server echo. Restricting the fallback to identities outside
+  // that baseline prevents an older, coincidentally identical turn from
+  // retracting the local input.
+  const optimisticHumans = optimisticMessages.filter(
+    (message) => message.type === "human",
   );
+  if (optimisticHumans.length === 0) {
+    return false;
+  }
+  const persistedHumans = persistedMessages.filter(
+    (message) => message.type === "human" && !isHiddenFromUIMessage(message),
+  );
+  return optimisticHumans.every((optimistic) => {
+    const optimisticContent = extractContentFromMessage(optimistic);
+    if (optimisticContent.length === 0) {
+      return false;
+    }
+    return persistedHumans.some((persisted) => {
+      const identity = messageIdentity(persisted);
+      return (
+        identity !== undefined &&
+        !preSubmitIdentities.has(identity) &&
+        extractContentFromMessage(persisted) === optimisticContent
+      );
+    });
+  });
 }
 
 export function getSummarizationMiddlewareMessages(
@@ -2406,14 +2439,34 @@ export function useThreadStream({
   }, [hasHumanOptimistic, humanMessageCount, optimisticMessageCount]);
 
   useEffect(() => {
-    if (
-      optimisticMessageCount > 0 &&
-      areOptimisticMessagesConfirmed(optimisticMessages, renderMessages)
-    ) {
+    if (optimisticMessageCount === 0) return;
+    const localTurnAnchor =
+      localTurnAnchorRef.current?.threadId === threadId
+        ? localTurnAnchorRef.current
+        : null;
+    const preSubmitIdentities = localTurnAnchor
+      ? new Set([
+          ...localTurnAnchor.baselineIdentities,
+          ...localTurnAnchor.preSubmitHistoryIdentities,
+          ...localTurnAnchor.preSubmitBridgeIdentities,
+        ])
+      : EMPTY_MESSAGE_IDENTITIES_SET;
+    const confirmed = areOptimisticMessagesConfirmed(
+      optimisticMessages,
+      renderMessages,
+      preSubmitIdentities,
+    );
+    if (confirmed) {
       setOptimisticMessages([]);
       setOptimisticThreadId(null);
     }
-  }, [optimisticMessageCount, optimisticMessages, renderMessages]);
+  }, [
+    optimisticMessageCount,
+    optimisticMessages,
+    renderMessages,
+    threadId,
+    humanMessageCount,
+  ]);
 
   const sendMessage = useCallback(
     async (

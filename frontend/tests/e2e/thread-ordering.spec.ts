@@ -281,8 +281,12 @@ test.describe("Thread message ordering", () => {
   }) => {
     const messages = buildFixtureMessages();
     const rows = toFeedRows(messages);
+    // `/history` and the paginated feed are two read paths over the same
+    // server state. Keep them backed by one mutable array so the finishing
+    // history refetch observes the turn persisted by the run stream.
+    const historyMessages = [...messages];
     mockLangGraphAPI(page, {
-      threads: [{ ...THREAD, messages: [...messages] }],
+      threads: [{ ...THREAD, messages: historyMessages }],
     });
     await mockPaginatedFeed(page, rows);
 
@@ -321,6 +325,11 @@ test.describe("Thread message ordering", () => {
           event: "metadata",
           data: { run_id: MOCK_RUN_ID, thread_id: MOCK_THREAD_ID },
         },
+        ...retainedTail.map((message) => ({
+          event: "messages",
+          data: [message, {}],
+        })),
+        { event: "messages", data: [serverHuman, {}] },
         // The summarization middleware update the frontend's compaction
         // rescue keys off: RemoveMessage(ALL) + hidden summary + retained
         // tail, with the just-submitted human still in state.
@@ -356,6 +365,7 @@ test.describe("Thread message ordering", () => {
           created_at: "2026-09-08T01:00:00Z",
         })),
       );
+      historyMessages.push(...newTurn);
       const body = frames
         .map(
           (frame) =>
@@ -384,12 +394,9 @@ test.describe("Thread message ordering", () => {
     await textarea.fill("final-turn question");
     await textarea.press("Enter");
 
-    // The streamed answer lands below the submitted question. Note: the
-    // count-based optimistic clearing does not fire when compaction shrinks
-    // the SDK human count below its pre-submit value (a known limitation
-    // tracked with the turn-ownership work), so a trailing optimistic twin
-    // can remain; the ordering contract asserted here is about the canonical
-    // server copy.
+    // The streamed answer lands below the submitted question. Compaction can
+    // re-key the submitted human, so confirmation deliberately falls back to
+    // content; the canonical server copy still owns the established order.
     await expect(page.getByText("final-turn answer")).toBeVisible({
       timeout: 15_000,
     });
@@ -397,19 +404,16 @@ test.describe("Thread message ordering", () => {
     // scrolling makes two separate boundingBox reads race each other.
     const questionBeforeAnswer = await page.evaluate(() => {
       const list = document.querySelector('[data-testid="main-message-list"]');
-      if (!list) {
-        return null;
-      }
-      const leaf = (text: string) =>
-        [...list.querySelectorAll("div, p")].find(
-          (element) =>
-            element.children.length === 0 && element.textContent === text,
-        );
-      const question = leaf("final-turn question");
-      const answer = leaf("final-turn answer");
-      if (!question || !answer) {
-        return null;
-      }
+      if (!list) return null;
+      // Streamdown wraps streamed prose in inline animation spans, so the
+      // rendered paragraph is the deepest matching block, not a leaf node.
+      const deepestMatch = (text: string) =>
+        [...list.querySelectorAll("div, p")]
+          .filter((element) => element.textContent?.trim() === text)
+          .at(-1);
+      const question = deepestMatch("final-turn question");
+      const answer = deepestMatch("final-turn answer");
+      if (!question || !answer) return null;
       return (
         (question.compareDocumentPosition(answer) &
           Node.DOCUMENT_POSITION_FOLLOWING) !==
