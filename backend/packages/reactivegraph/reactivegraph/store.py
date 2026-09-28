@@ -18,18 +18,21 @@ by differential probing, including its quirks:
 * a ``search`` with no query returns items in insertion order and slices by
   ``offset``/``limit`` *after* filtering.
 
-Scope today is the in-process ``memory`` backend. Durable backends fail closed
-in :func:`get_store` rather than silently degrading to process-local state,
-because that would be data loss presented as durability.
+Native ``memory``, ``sqlite``, and ``postgres`` backends are provided.
+:func:`get_store` rejects unknown backends rather than silently degrading to
+process-local state, because that would be data loss presented as durability.
 """
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import sqlite3
 import threading
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 __all__ = (
@@ -38,6 +41,8 @@ __all__ = (
     "Item",
     "MemoryStore",
     "SearchItem",
+    "SqliteStore",
+    "PostgresStore",
     "get_store",
     "reset_store",
 )
@@ -351,6 +356,7 @@ class MemoryStore:
                 puts[(namespace, key)] = (namespace, key, _op_value(op), index)
             elif kind == "search":
                 searches.append((index, op))
+                results[index] = self._search(op)
             elif kind == "list_namespaces":
                 results[index] = self._list_namespaces(op)
             else:
@@ -559,6 +565,868 @@ class MemoryStore:
         )
 
 
+class SqliteStore:
+    """Durable namespaced key-value store backed by SQLite.
+
+    The table layout is compatible with LangGraph's SQLite store, while values
+    use ReactiveGraph's typed, no-pickle JSON codec. TTL is implemented natively:
+    expired rows are hidden from reads and searches, and may be refreshed when
+    ``refresh_ttl`` is requested.
+    """
+
+    supports_ttl: bool = True
+    ttl_config: dict[str, Any] = {"refresh_on_read": True}
+
+    def __init__(
+        self,
+        conn_string: str | Path = ":memory:",
+        *,
+        index: Any | None = None,
+        serde: Any | None = None,
+    ) -> None:
+        from reactivegraph.serde import ReactiveSerializer
+
+        self.conn_string = str(conn_string)
+        if self.conn_string != ":memory:":
+            Path(self.conn_string).expanduser().resolve().parent.mkdir(
+                parents=True, exist_ok=True
+            )
+        self.index_config = index
+        self.serde = serde if serde is not None else ReactiveSerializer()
+        self.conn = sqlite3.connect(
+            self.conn_string,
+            check_same_thread=False,
+            isolation_level=None,
+        )
+        self.conn.row_factory = sqlite3.Row
+        self._db_lock = threading.RLock()
+        self._closed = False
+        self.setup()
+
+    def setup(self) -> None:
+        """Create or migrate the LangGraph-compatible store schema."""
+        with self._db_lock:
+            self._ensure_open()
+            self.conn.executescript(
+                """
+                PRAGMA journal_mode=WAL;
+                CREATE TABLE IF NOT EXISTS store_migrations (
+                    v INTEGER PRIMARY KEY
+                );
+                CREATE TABLE IF NOT EXISTS store (
+                    prefix TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP,
+                    ttl_minutes REAL,
+                    PRIMARY KEY (prefix, key)
+                );
+                """
+            )
+            # A database created by an older LangGraph version may not have the
+            # TTL columns yet. Migrate before creating an index over the column;
+            # SQLite validates index expressions against the current schema.
+            columns = {
+                row["name"] for row in self.conn.execute("PRAGMA table_info(store)")
+            }
+            if "expires_at" not in columns:
+                self.conn.execute("ALTER TABLE store ADD COLUMN expires_at TIMESTAMP")
+            if "ttl_minutes" not in columns:
+                self.conn.execute("ALTER TABLE store ADD COLUMN ttl_minutes REAL")
+            self.conn.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS store_prefix_idx ON store (prefix);
+                CREATE INDEX IF NOT EXISTS idx_store_expires_at
+                    ON store (expires_at) WHERE expires_at IS NOT NULL;
+                """
+            )
+            # LangGraph records schema versions here. Recording the migrations
+            # we already materialised prevents its setup from replaying ALTERs
+            # against an existing database.
+            self.conn.execute(
+                "INSERT OR IGNORE INTO store_migrations (v) VALUES (0), (1), (2), (3), (4)"
+            )
+
+    def close(self) -> None:
+        with self._db_lock:
+            if not self._closed:
+                self.conn.close()
+                self._closed = True
+
+    def __enter__(self) -> SqliteStore:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        del exc_type, exc, tb
+        self.close()
+
+    # ------------------------------------------------------------------
+    # Batch core
+    # ------------------------------------------------------------------
+
+    def batch(self, ops: Iterable[Any]) -> list[Any]:
+        """Execute store operations, preserving upstream ordering semantics."""
+        return self._run(ops)
+
+    async def abatch(self, ops: Iterable[Any]) -> list[Any]:
+        return await asyncio.to_thread(self._run, list(ops))
+
+    def _run(self, ops: Iterable[Any]) -> list[Any]:
+        materialised = list(ops)
+        results: list[Any] = [None] * len(materialised)
+        puts: dict[tuple[tuple[str, ...], str], tuple[Any, ...]] = {}
+
+        # Reads are resolved before writes, matching MemoryStore and upstream's
+        # grouped batch implementation.
+        for index, op in enumerate(materialised):
+            kind = _op_kind(op)
+            if kind == "get":
+                results[index] = self._get_item(
+                    _op_namespace(op),
+                    _op_key(op),
+                    refresh_ttl=bool(_op_attr(op, "refresh_ttl", True)),
+                )
+            elif kind == "put":
+                namespace, key = _op_namespace(op), _op_key(op)
+                _validate_namespace(namespace)
+                self._normalise_ttl(_op_ttl(op))
+                puts[(namespace, key)] = (namespace, key, _op_value(op), index)
+            elif kind == "search":
+                results[index] = self._search(op)
+            elif kind == "list_namespaces":
+                results[index] = self._list_namespaces(op)
+            else:
+                raise ValueError(f"Unknown operation type: {type(op)}")
+
+        with self._db_lock:
+            self._ensure_open()
+            now = datetime.now(timezone.utc)
+            with self.conn:
+                for namespace, key, value, _index in puts.values():
+                    prefix = self._namespace_to_text(namespace)
+                    if value is None:
+                        self.conn.execute(
+                            "DELETE FROM store WHERE prefix = ? AND key = ?",
+                            (prefix, key),
+                        )
+                        continue
+                    ttl = self._normalise_ttl(_op_ttl(materialised[_index]))
+                    expires_at = self._expiry_text(now, ttl)
+                    self.conn.execute(
+                        """
+                        INSERT OR REPLACE INTO store
+                            (prefix, key, value, created_at, updated_at,
+                             expires_at, ttl_minutes)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            prefix,
+                            key,
+                            self.serde.dumps_json(value),
+                            now.isoformat(),
+                            now.isoformat(),
+                            expires_at,
+                            ttl,
+                        ),
+                    )
+
+        return results
+
+    @staticmethod
+    def _normalise_ttl(ttl: Any) -> float | None:
+        if ttl is None:
+            return None
+        if isinstance(ttl, bool) or not isinstance(ttl, (int, float)):
+            raise TypeError("ttl must be a number of minutes or None")
+        return float(ttl)
+
+    @staticmethod
+    def _namespace_to_text(namespace: Sequence[str]) -> str:
+        return ".".join(namespace)
+
+    @staticmethod
+    def _expiry_text(now: datetime, ttl: Any) -> str | None:
+        if ttl is None:
+            return None
+        # Keep SQLite's textual CURRENT_TIMESTAMP ordering intact. isoformat()
+        # uses a ``T`` separator, which sorts after the space SQLite emits.
+        return str(now + timedelta(minutes=float(ttl)))
+
+    @staticmethod
+    def _decode_namespace(prefix: str) -> tuple[str, ...]:
+        return tuple(prefix.split("."))
+
+    @staticmethod
+    def _parse_datetime(value: Any) -> datetime:
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _expires_at(self, row: sqlite3.Row) -> float | None:
+        value = row["expires_at"]
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return self._parse_datetime(value).timestamp()
+
+    def _row_to_item(
+        self, row: sqlite3.Row, *, search: bool = False
+    ) -> Item | SearchItem:
+        item_type = SearchItem if search else Item
+        kwargs: dict[str, Any] = {
+            "value": self.serde.loads_json(row["value"]),
+            "key": row["key"],
+            "namespace": self._decode_namespace(row["prefix"]),
+            "created_at": self._parse_datetime(row["created_at"]),
+            "updated_at": self._parse_datetime(row["updated_at"]),
+        }
+        if item_type is SearchItem:
+            kwargs["score"] = None
+        return item_type(**kwargs)
+
+    def _get_item(
+        self,
+        namespace: Sequence[str],
+        key: str,
+        *,
+        refresh_ttl: bool = True,
+    ) -> Item | None:
+        _validate_namespace(namespace)
+        prefix = self._namespace_to_text(namespace)
+        with self._db_lock:
+            self._ensure_open()
+            row = self.conn.execute(
+                """
+                SELECT prefix, key, value, created_at, updated_at,
+                       expires_at, ttl_minutes
+                FROM store WHERE prefix = ? AND key = ?
+                """,
+                (prefix, str(key)),
+            ).fetchone()
+            if row is None:
+                return None
+            expires_at = self._expires_at(row)
+            now = datetime.now(timezone.utc).timestamp()
+            if expires_at is not None and expires_at <= now:
+                return None
+            if (
+                refresh_ttl
+                and expires_at is not None
+                and row["ttl_minutes"] is not None
+                and self.ttl_config.get("refresh_on_read", False)
+            ):
+                refreshed = self._expiry_text(
+                    datetime.fromtimestamp(now, tz=timezone.utc),
+                    row["ttl_minutes"],
+                )
+                assert refreshed is not None
+                self.conn.execute(
+                    "UPDATE store SET expires_at = ? WHERE prefix = ? AND key = ?",
+                    (refreshed, prefix, str(key)),
+                )
+            return self._row_to_item(row)
+
+    # ------------------------------------------------------------------
+    # Search / listing
+    # ------------------------------------------------------------------
+
+    def _search(self, op: Any) -> list[SearchItem]:
+        prefix = _op_namespace(op)
+        filter_dict = _op_filter(op)
+        limit = int(_op_attr(op, "limit", 10))
+        offset = int(_op_attr(op, "offset", 0))
+        query = _op_attr(op, "query", None)
+        refresh_ttl = bool(_op_attr(op, "refresh_ttl", True))
+
+        candidates: list[SearchItem] = []
+        with self._db_lock:
+            self._ensure_open()
+            rows = self.conn.execute(
+                """
+                SELECT prefix, key, value, created_at, updated_at,
+                       expires_at, ttl_minutes
+                FROM store ORDER BY updated_at DESC, rowid DESC
+                """
+            ).fetchall()
+            now = datetime.now(timezone.utc).timestamp()
+            for row in rows:
+                namespace = self._decode_namespace(row["prefix"])
+                if not _does_match("prefix", prefix, namespace):
+                    continue
+                expires_at = self._expires_at(row)
+                if expires_at is not None and expires_at <= now:
+                    continue
+                value = self.serde.loads_json(row["value"])
+                if filter_dict and not all(
+                    _compare_values(value.get(key), expected)
+                    for key, expected in filter_dict.items()
+                ):
+                    continue
+                if (
+                    refresh_ttl
+                    and expires_at is not None
+                    and row["ttl_minutes"] is not None
+                    and self.ttl_config.get("refresh_on_read", False)
+                ):
+                    self.conn.execute(
+                        "UPDATE store SET expires_at = ? WHERE prefix = ? AND key = ?",
+                        (
+                            self._expiry_text(
+                                datetime.fromtimestamp(now, tz=timezone.utc),
+                                row["ttl_minutes"],
+                            ),
+                            row["prefix"],
+                            row["key"],
+                        ),
+                    )
+                candidates.append(self._row_to_item(row, search=True))
+
+        if query:
+            # No embedding configuration: upstream returns the unranked branch.
+            del query
+        return candidates[offset : offset + limit]
+
+    def _list_namespaces(self, op: Any) -> list[tuple[str, ...]]:
+        conditions = _op_attr(op, "match_conditions", None) or ()
+        max_depth = _op_attr(op, "max_depth", None)
+        limit = int(_op_attr(op, "limit", 100))
+        offset = int(_op_attr(op, "offset", 0))
+        now = datetime.now(timezone.utc).timestamp()
+
+        with self._db_lock:
+            self._ensure_open()
+            rows = self.conn.execute(
+                "SELECT DISTINCT prefix, expires_at FROM store"
+            ).fetchall()
+        namespaces = {
+            self._decode_namespace(row["prefix"])
+            for row in rows
+            if self._expires_at(row) is None or self._expires_at(row) > now
+        }
+        if conditions:
+            namespaces = {
+                namespace
+                for namespace in namespaces
+                if all(
+                    _does_match(condition.match_type, condition.path, namespace)
+                    for condition in conditions
+                )
+            }
+        if max_depth is not None:
+            values = sorted({namespace[:max_depth] for namespace in namespaces})
+        else:
+            values = sorted(namespaces)
+        return values[offset : offset + limit]
+
+    # ------------------------------------------------------------------
+    # Convenience API
+    # ------------------------------------------------------------------
+
+    def get(
+        self, namespace: Sequence[str], key: str, *, refresh_ttl: bool | None = None
+    ) -> Item | None:
+        return self._get_item(
+            namespace,
+            str(key),
+            refresh_ttl=True if refresh_ttl is None else refresh_ttl,
+        )
+
+    async def aget(
+        self, namespace: Sequence[str], key: str, *, refresh_ttl: bool | None = None
+    ) -> Item | None:
+        return await asyncio.to_thread(self.get, namespace, key, refresh_ttl=refresh_ttl)
+
+    def put(
+        self,
+        namespace: Sequence[str],
+        key: str,
+        value: dict[str, Any],
+        index: Any = None,
+        *,
+        ttl: Any = None,
+    ) -> None:
+        del index
+        self.batch([PutOp(tuple(namespace), str(key), value, ttl=ttl)])
+
+    async def aput(
+        self,
+        namespace: Sequence[str],
+        key: str,
+        value: dict[str, Any],
+        index: Any = None,
+        *,
+        ttl: Any = None,
+    ) -> None:
+        await asyncio.to_thread(self.put, namespace, key, value, index, ttl=ttl)
+
+    def delete(self, namespace: Sequence[str], key: str) -> None:
+        self.batch([PutOp(tuple(namespace), str(key), None, ttl=None)])
+
+    async def adelete(self, namespace: Sequence[str], key: str) -> None:
+        await asyncio.to_thread(self.delete, namespace, key)
+
+    def search(
+        self,
+        namespace_prefix: Sequence[str],
+        /,
+        *,
+        query: str | None = None,
+        filter: dict[str, Any] | None = None,
+        limit: int = 10,
+        offset: int = 0,
+        refresh_ttl: bool | None = None,
+    ) -> list[SearchItem]:
+        return self.batch([
+            SearchOp(
+                tuple(namespace_prefix),
+                filter,
+                limit,
+                offset,
+                query,
+                True if refresh_ttl is None else refresh_ttl,
+            )
+        ])[0]
+
+    async def asearch(
+        self,
+        namespace_prefix: Sequence[str],
+        /,
+        *,
+        query: str | None = None,
+        filter: dict[str, Any] | None = None,
+        limit: int = 10,
+        offset: int = 0,
+        refresh_ttl: bool | None = None,
+    ) -> list[SearchItem]:
+        return await asyncio.to_thread(
+            self.search,
+            namespace_prefix,
+            query=query,
+            filter=filter,
+            limit=limit,
+            offset=offset,
+            refresh_ttl=refresh_ttl,
+        )
+
+    def list_namespaces(
+        self,
+        *,
+        prefix: Sequence[str] | None = None,
+        suffix: Sequence[str] | None = None,
+        max_depth: int | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[tuple[str, ...]]:
+        conditions = []
+        if prefix:
+            conditions.append(MatchCondition("prefix", tuple(prefix)))
+        if suffix:
+            conditions.append(MatchCondition("suffix", tuple(suffix)))
+        return self.batch([
+            ListNamespacesOp(tuple(conditions), max_depth, limit, offset)
+        ])[0]
+
+    async def alist_namespaces(
+        self,
+        *,
+        prefix: Sequence[str] | None = None,
+        suffix: Sequence[str] | None = None,
+        max_depth: int | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[tuple[str, ...]]:
+        return await asyncio.to_thread(
+            self.list_namespaces,
+            prefix=prefix,
+            suffix=suffix,
+            max_depth=max_depth,
+            limit=limit,
+            offset=offset,
+        )
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("SQLite store is closed")
+
+
+
+class PostgresStore:
+    """Durable PostgreSQL namespaced store using ReactiveGraph serialization."""
+
+    supports_ttl: bool = True
+    ttl_config: dict[str, Any] = {"refresh_on_read": True}
+
+    def __init__(
+        self,
+        conn_string: str,
+        *,
+        schema: str = "public",
+        index: Any | None = None,
+        serde: Any | None = None,
+    ) -> None:
+        try:
+            import psycopg
+        except ImportError as exc:  # pragma: no cover - optional production extra
+            raise ImportError(
+                "psycopg is required for the PostgreSQL store. "
+                "Install it with: pip install 'reactivegraph[postgres]'"
+            ) from exc
+
+        from reactivegraph.serde import ReactiveSerializer
+
+        self.conn_string = str(conn_string)
+        self.schema = str(schema or "public")
+        self.index_config = index
+        self.serde = serde if serde is not None else ReactiveSerializer()
+        self.conn = psycopg.connect(self.conn_string, autocommit=False)
+        self._db_lock = threading.RLock()
+        self._closed = False
+        self.setup()
+
+    def setup(self) -> None:
+        with self._db_lock:
+            self._ensure_open()
+            with self.conn.transaction():
+                # CREATE SCHEMA IF NOT EXISTS still races in PostgreSQL:
+                # concurrent transactions can both observe a missing
+                # namespace, then one fails on the unique catalog index.
+                # Serialize bootstrap per target schema with a lock that
+                # is released automatically when this transaction ends.
+                self.conn.execute(
+                    "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+                    ("reactivegraph_schema_bootstrap", self.schema),
+                )
+                self.conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"')
+                self.conn.execute(f'SET search_path TO "{self.schema}"')
+                self.conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS store (
+                        prefix TEXT NOT NULL,
+                        key TEXT NOT NULL,
+                        value TEXT NOT NULL,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ DEFAULT NOW(),
+                        expires_at TIMESTAMPTZ,
+                        ttl_minutes DOUBLE PRECISION,
+                        PRIMARY KEY (prefix, key)
+                    )
+                    """
+                )
+                self.conn.execute(
+                    "CREATE INDEX IF NOT EXISTS store_prefix_idx ON store (prefix)"
+                )
+                self.conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_store_expires_at ON store (expires_at) WHERE expires_at IS NOT NULL"
+                )
+
+    def close(self) -> None:
+        with self._db_lock:
+            if not self._closed:
+                self.conn.close()
+                self._closed = True
+
+    def __enter__(self) -> PostgresStore:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.close()
+
+    def _execute(self, sql: str, params: Sequence[Any] = ()):
+        if self._closed:
+            raise RuntimeError("PostgreSQL store is closed")
+        self.conn.execute(f'SET search_path TO "{self.schema}"')
+        return self.conn.execute(sql, tuple(params))
+
+    def batch(self, ops: Iterable[Any]) -> list[Any]:
+        return self._run(ops)
+
+    async def abatch(self, ops: Iterable[Any]) -> list[Any]:
+        return await asyncio.to_thread(self._run, list(ops))
+
+    def _run(self, ops: Iterable[Any]) -> list[Any]:
+        materialised = list(ops)
+        results: list[Any] = [None] * len(materialised)
+        puts: dict[tuple[tuple[str, ...], str], tuple[Any, ...]] = {}
+        for index, op in enumerate(materialised):
+            kind = _op_kind(op)
+            if kind == "get":
+                results[index] = self._get_item(
+                    _op_namespace(op),
+                    _op_key(op),
+                    refresh_ttl=bool(_op_attr(op, "refresh_ttl", True)),
+                )
+            elif kind == "put":
+                namespace, key = _op_namespace(op), _op_key(op)
+                _validate_namespace(namespace)
+                self._normalise_ttl(_op_ttl(op))
+                puts[(namespace, key)] = (namespace, key, _op_value(op), index)
+            elif kind == "search":
+                results[index] = self._search(op)
+            elif kind == "list_namespaces":
+                results[index] = self._list_namespaces(op)
+            else:
+                raise ValueError(f"Unknown operation type: {type(op)}")
+
+        now = datetime.now(timezone.utc)
+        with self._db_lock:
+            self._ensure_open()
+            with self.conn.transaction():
+                for namespace, key, value, index in puts.values():
+                    prefix = self._namespace_to_text(namespace)
+                    if value is None:
+                        self._execute(
+                            "DELETE FROM store WHERE prefix = %s AND key = %s",
+                            (prefix, key),
+                        )
+                        continue
+                    ttl = self._normalise_ttl(_op_ttl(materialised[index]))
+                    self._execute(
+                        """
+                        INSERT INTO store (prefix, key, value, created_at, updated_at, expires_at, ttl_minutes)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (prefix, key) DO UPDATE SET
+                            value = EXCLUDED.value,
+                            created_at = EXCLUDED.created_at,
+                            updated_at = EXCLUDED.updated_at,
+                            expires_at = EXCLUDED.expires_at,
+                            ttl_minutes = EXCLUDED.ttl_minutes
+                        """,
+                        (
+                            prefix,
+                            key,
+                            self.serde.dumps_json(value),
+                            now,
+                            now,
+                            now + timedelta(minutes=ttl) if ttl is not None else None,
+                            ttl,
+                        ),
+                    )
+        return results
+
+    @staticmethod
+    def _normalise_ttl(ttl: Any) -> float | None:
+        if ttl is None:
+            return None
+        if isinstance(ttl, bool) or not isinstance(ttl, (int, float)):
+            raise TypeError("ttl must be a number of minutes or None")
+        return float(ttl)
+
+    @staticmethod
+    def _namespace_to_text(namespace: Sequence[str]) -> str:
+        return ".".join(namespace)
+
+    @staticmethod
+    def _decode_namespace(prefix: str) -> tuple[str, ...]:
+        return tuple(prefix.split("."))
+
+    def _row_to_item(self, row: Any, *, search: bool = False) -> Item | SearchItem:
+        item_type = SearchItem if search else Item
+        kwargs: dict[str, Any] = {
+            "value": self.serde.loads_json(row[2]),
+            "key": row[1],
+            "namespace": self._decode_namespace(row[0]),
+            "created_at": row[3],
+            "updated_at": row[4],
+        }
+        return item_type(**kwargs)
+
+    def _get_item(
+        self,
+        namespace: Sequence[str],
+        key: str,
+        *,
+        refresh_ttl: bool = True,
+    ) -> Item | None:
+        _validate_namespace(namespace)
+        prefix = self._namespace_to_text(namespace)
+        with self._db_lock:
+            self._ensure_open()
+            row = self._execute(
+                """
+                SELECT prefix, key, value, created_at, updated_at, expires_at, ttl_minutes
+                FROM store WHERE prefix = %s AND key = %s
+                """,
+                (prefix, str(key)),
+            ).fetchone()
+            if row is None:
+                return None
+            if row[5] is not None and row[5] <= datetime.now(timezone.utc):
+                return None
+            if (
+                refresh_ttl
+                and row[5] is not None
+                and row[6] is not None
+                and self.ttl_config.get("refresh_on_read", False)
+            ):
+                self._execute(
+                    """
+                    UPDATE store SET expires_at = %s WHERE prefix = %s AND key = %s
+                    """,
+                    (
+                        datetime.now(timezone.utc) + timedelta(minutes=row[6]),
+                        prefix,
+                        str(key),
+                    ),
+                )
+            return self._row_to_item(row)
+
+    def _search(self, op: Any) -> list[SearchItem]:
+        prefix = _op_namespace(op)
+        filter_dict = _op_filter(op)
+        limit = int(_op_attr(op, "limit", 10))
+        offset = int(_op_attr(op, "offset", 0))
+        query = _op_attr(op, "query", None)
+        refresh_ttl = bool(_op_attr(op, "refresh_ttl", True))
+        with self._db_lock:
+            self._ensure_open()
+            rows = self._execute(
+                """
+                SELECT prefix, key, value, created_at, updated_at, expires_at, ttl_minutes
+                FROM store ORDER BY updated_at DESC, key DESC
+                """
+            ).fetchall()
+            candidates: list[SearchItem] = []
+            now = datetime.now(timezone.utc)
+            for row in rows:
+                namespace = self._decode_namespace(row[0])
+                if not _does_match("prefix", prefix, namespace):
+                    continue
+                if row[5] is not None and row[5] <= now:
+                    continue
+                value = self.serde.loads_json(row[2])
+                if filter_dict and not all(
+                    _compare_values(value.get(key), expected)
+                    for key, expected in filter_dict.items()
+                ):
+                    continue
+                if (
+                    refresh_ttl
+                    and row[5] is not None
+                    and row[6] is not None
+                    and self.ttl_config.get("refresh_on_read", False)
+                ):
+                    self._execute(
+                        "UPDATE store SET expires_at = %s WHERE prefix = %s AND key = %s",
+                        (now + timedelta(minutes=row[6]), row[0], row[1]),
+                    )
+                candidates.append(self._row_to_item(row, search=True))
+        if query:
+            del query
+        return candidates[offset : offset + limit]
+
+    def _list_namespaces(self, op: Any) -> list[tuple[str, ...]]:
+        conditions = _op_attr(op, "match_conditions", None) or ()
+        max_depth = _op_attr(op, "max_depth", None)
+        limit = int(_op_attr(op, "limit", 100))
+        offset = int(_op_attr(op, "offset", 0))
+        with self._db_lock:
+            self._ensure_open()
+            rows = self._execute(
+                """
+                SELECT DISTINCT prefix FROM store
+                WHERE expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP
+                """
+            ).fetchall()
+        namespaces = {self._decode_namespace(row[0]) for row in rows}
+        if conditions:
+            namespaces = {
+                namespace
+                for namespace in namespaces
+                if all(_does_match(c.match_type, c.path, namespace) for c in conditions)
+            }
+        if max_depth is not None:
+            values = sorted({namespace[:max_depth] for namespace in namespaces})
+        else:
+            values = sorted(namespaces)
+        return values[offset : offset + limit]
+
+    def get(self, namespace: Sequence[str], key: str, *, refresh_ttl: bool | None = None) -> Item | None:
+        return self._get_item(namespace, key, refresh_ttl=True if refresh_ttl is None else refresh_ttl)
+
+    async def aget(self, namespace: Sequence[str], key: str, *, refresh_ttl: bool | None = None) -> Item | None:
+        return await asyncio.to_thread(self.get, namespace, key, refresh_ttl=refresh_ttl)
+
+    def put(self, namespace: Sequence[str], key: str, value: dict[str, Any], index: Any = None, *, ttl: Any = None) -> None:
+        del index
+        self.batch([PutOp(tuple(namespace), str(key), value, ttl=ttl)])
+
+    async def aput(self, namespace: Sequence[str], key: str, value: dict[str, Any], index: Any = None, *, ttl: Any = None) -> None:
+        await asyncio.to_thread(self.put, namespace, key, value, index, ttl=ttl)
+
+    def delete(self, namespace: Sequence[str], key: str) -> None:
+        self.batch([PutOp(tuple(namespace), str(key), None, ttl=None)])
+
+    async def adelete(self, namespace: Sequence[str], key: str) -> None:
+        await asyncio.to_thread(self.delete, namespace, key)
+
+    def search(
+        self,
+        namespace_prefix: Sequence[str],
+        /,
+        *,
+        query: str | None = None,
+        filter: dict[str, Any] | None = None,
+        limit: int = 10,
+        offset: int = 0,
+        refresh_ttl: bool | None = None,
+    ) -> list[SearchItem]:
+        return self.batch([
+            SearchOp(tuple(namespace_prefix), filter, limit, offset, query, True if refresh_ttl is None else refresh_ttl)
+        ])[0]
+
+    async def asearch(
+        self,
+        namespace_prefix: Sequence[str],
+        /,
+        *,
+        query: str | None = None,
+        filter: dict[str, Any] | None = None,
+        limit: int = 10,
+        offset: int = 0,
+        refresh_ttl: bool | None = None,
+    ) -> list[SearchItem]:
+        return await asyncio.to_thread(self.search, namespace_prefix, query=query, filter=filter, limit=limit, offset=offset, refresh_ttl=refresh_ttl)
+
+    def list_namespaces(
+        self,
+        *,
+        prefix: Sequence[str] | None = None,
+        suffix: Sequence[str] | None = None,
+        max_depth: int | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[tuple[str, ...]]:
+        conditions = []
+        if prefix:
+            conditions.append(MatchCondition("prefix", tuple(prefix)))
+        if suffix:
+            conditions.append(MatchCondition("suffix", tuple(suffix)))
+        return self.batch([ListNamespacesOp(tuple(conditions), max_depth, limit, offset)])[0]
+
+    async def alist_namespaces(
+        self,
+        *,
+        prefix: Sequence[str] | None = None,
+        suffix: Sequence[str] | None = None,
+        max_depth: int | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[tuple[str, ...]]:
+        return await asyncio.to_thread(self.list_namespaces, prefix=prefix, suffix=suffix, max_depth=max_depth, limit=limit, offset=offset)
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("PostgreSQL store is closed")
+
+
 # ---------------------------------------------------------------------------
 # Operations
 #
@@ -697,16 +1565,41 @@ def _op_ttl(op: Any) -> Any:
 # Module-level singleton
 # ---------------------------------------------------------------------------
 
-_store: MemoryStore | None = None
+_store: MemoryStore | SqliteStore | PostgresStore | None = None
 _store_lock = threading.Lock()
 
 
-def get_store() -> MemoryStore:
-    """Return the process-wide store, creating it on first use."""
+def get_store(config: dict[str, Any] | Any | None = None) -> MemoryStore | SqliteStore | PostgresStore:
+    """Return the configured process-wide store.
+
+    ``memory``, ``sqlite``, and ``postgres`` are implemented natively. Other
+    durable backends fail closed rather than silently degrading to
+    process-local state.
+    """
     global _store
+    if config is None or not isinstance(config, dict):
+        config = {"type": "memory"}
+    backend = str(config.get("type", "memory"))
+    if backend not in {"memory", "sqlite", "postgres"}:
+        raise NotImplementedError(
+            f"store backend {backend!r} is not ported to ReactiveGraph yet. "
+            "Refusing to silently fall back to process-local state."
+        )
     with _store_lock:
         if _store is None:
-            _store = MemoryStore()
+            if backend == "sqlite":
+                connection_string = config.get("connection_string") or config.get("path")
+                if not connection_string:
+                    raise ValueError(
+                        "store.connection_string is required for the sqlite backend"
+                    )
+                _store = SqliteStore(connection_string)
+            elif backend == "postgres":
+                _store = PostgresStore(
+                    config["connection_string"], schema=config.get("schema", "public")
+                )
+            else:
+                _store = MemoryStore()
         return _store
 
 
@@ -714,4 +1607,6 @@ def reset_store() -> None:
     """Drop the process-wide store (tests, config reload)."""
     global _store
     with _store_lock:
+        if isinstance(_store, (SqliteStore, PostgresStore)):
+            _store.close()
         _store = None

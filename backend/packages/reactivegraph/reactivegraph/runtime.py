@@ -12,7 +12,8 @@ process never observe each other's context.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Callable, Iterator
+import contextvars
+from collections.abc import Callable, Generator, Iterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -30,6 +31,48 @@ __all__ = (
 
 StreamWriter = Callable[[Any], None]
 ContextT = TypeVar("ContextT", default=None)
+T = TypeVar("T")
+
+
+class _PinnedIterator(Generic[T]):
+    """An iterator whose generator always advances in one captured Context.
+
+    A synchronous generator may be advanced by different executor threads
+    (``asyncio.to_thread(next, iterator)``). A ContextVar token set before one
+    ``yield`` cannot be reset after a later ``yield`` in another thread's
+    Context, and values set before the first yield would otherwise disappear
+    on the next advance. Pinning every generator operation to the Context
+    captured at construction keeps the whole run in one Context, matching the
+    way LangGraph supports the same thread-hopping iteration pattern.
+    """
+
+    def __init__(self, generator: Generator[T, Any, Any]) -> None:
+        self._generator = generator
+        self._context = contextvars.copy_context()
+
+    def __iter__(self) -> _PinnedIterator[T]:
+        return self
+
+    def __next__(self) -> T:
+        return self._context.run(next, self._generator)
+
+    def send(self, value: Any) -> T:
+        return self._context.run(self._generator.send, value)
+
+    def throw(self, *args: Any) -> T:
+        return self._context.run(self._generator.throw, *args)
+
+    def close(self) -> None:
+        self._context.run(self._generator.close)
+
+    def __del__(self) -> None:
+        # A caller may abandon an iterator without exhausting or closing it.
+        # CPython then closes the raw generator directly in the GC thread,
+        # bypassing this wrapper and the pinned Context. Explicitly close it
+        # here so GeneratorExit always reaches the run scope in that Context.
+        close = getattr(self, "close", None)
+        if close is not None:
+            close()
 
 
 def _no_op_stream_writer(_chunk: Any) -> None:

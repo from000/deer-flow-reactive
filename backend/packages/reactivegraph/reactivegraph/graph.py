@@ -25,7 +25,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from reactivegraph.host import DriverError, DriverHost
-from reactivegraph.runtime import Runtime, get_config, get_runtime, runtime_context
+from reactivegraph.runtime import (
+    Runtime,
+    _PinnedIterator,
+    get_config,
+    get_runtime,
+    runtime_context,
+)
 from reactivegraph.state import TrackedStateProxy
 
 # Config keys that exist only on the Python side of the boundary. A ``Runtime``
@@ -778,15 +784,18 @@ class ReactiveGraph:
         duration of the run (upstream sets the child-runnable config for
         ``stream`` just like it does for ``invoke``).
         """
-        with _run_scope(config):
-            yield from self._stream_impl(
-                event,
-                payload,
-                thread_id=thread_id,
-                trace=trace,
-                run_id=run_id,
-                config=config,
-            )
+        def _generate() -> Iterator[dict]:
+            with _run_scope(config):
+                yield from self._stream_impl(
+                    event,
+                    payload,
+                    thread_id=thread_id,
+                    trace=trace,
+                    run_id=run_id,
+                    config=config,
+                )
+
+        return _PinnedIterator(_generate())
 
     def _stream_impl(
         self,

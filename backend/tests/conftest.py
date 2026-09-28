@@ -14,8 +14,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# Make 'app' and 'deerflow' importable from any working directory
+# Make 'app', 'deerflow', and the workspace-local ReactiveGraph package
+# importable from any working directory.
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "reactivegraph"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 # Break the circular import chain that exists in production code:

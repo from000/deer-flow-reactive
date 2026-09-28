@@ -57,7 +57,7 @@ from reactivegraph.middleware import (
     ModelRequest,
     ModelResponse,
 )
-from reactivegraph.runtime import Runtime, get_runtime, runtime_context
+from reactivegraph.runtime import Runtime, _PinnedIterator, get_runtime, runtime_context
 from reactivegraph.state import TrackedStateProxy
 from reactivegraph.thread_state import (
     NO_CHECKPOINTER_MESSAGE,
@@ -1498,7 +1498,9 @@ class AgentGraph:
         modes, as_list = _normalize_stream_modes(stream_mode)
         payload = self._seed_budget(self._seed_channel_defaults(_normalize_input(input)), config)
         runtime = _resolve_runtime(config, kwargs.get("context"))
-        return self._stream_modes(payload, config, modes, runtime, as_list=as_list)
+        return _PinnedIterator(
+            self._stream_modes(payload, config, modes, runtime, as_list=as_list)
+        )
 
     async def astream(
         self,
