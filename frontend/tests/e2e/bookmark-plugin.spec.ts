@@ -11,6 +11,9 @@ import { mockLangGraphAPI, MOCK_THREAD_ID } from "./utils/mock-api";
 let gateway: ChildProcess;
 let gatewayURL: string;
 test.beforeAll(async ({ request }) => {
+  // Cold-importing the Python gateway can exceed the default 30s hook
+  // budget when several workers start fixtures at once.
+  test.setTimeout(120_000);
   const probe = createServer();
   await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
   const address = probe.address();
