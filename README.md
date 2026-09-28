@@ -2297,3 +2297,20 @@ Your unwavering commitment and expertise have been the driving force behind Deer
 ## Star History
 
 [![Star History Chart](https://star-history.dera.page/svg?repos=bytedance/deer-flow&type=Date)](https://star-history.dera.page/#bytedance/deer-flow&Date)
+
+---
+
+## ReactiveGraph Migration
+
+This checkout is the real DeerFlow backend migration onto ReactiveGraph.
+
+- Engine: ReactiveGraph `AgentGraph`
+- Production agent/runtime/checkpoint/store paths: ReactiveGraph-backed
+- Full backend suite: **19,098 passed, 0 failed**
+- Real full-factory output parity with upstream: yes
+- Observed local latency advantage: **7-8x**
+- Durable SQLite recovery: checkpoint and store both supported
+
+Read [`REACTIVEGRAPH.md`](./REACTIVEGRAPH.md) for the exact scope, evidence,
+remaining boundaries, and the explanation of why `langchain_core` remains as a
+message/model/tool interoperability protocol.

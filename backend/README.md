@@ -2,7 +2,7 @@
 
 **Language:** English | [简体中文](README_zh.md)
 
-DeerFlow is a LangGraph-based AI super agent with sandbox execution, persistent memory, and extensible tool integration. The backend enables AI agents to execute code, browse the web, manage files, delegate tasks to subagents, and retain context across conversations - all in isolated, per-thread environments.
+DeerFlow is a super-agent harness with sandbox execution, persistent memory, and extensible tool integration. This fork runs its backend execution base on ReactiveGraph while retaining the LangGraph-compatible API and LangChain Core message/model/tool protocol. The backend enables AI agents to execute code, browse the web, manage files, delegate tasks to subagents, and retain context across conversations - all in isolated, per-thread environments.
 
 ---
 
@@ -529,8 +529,9 @@ reachability.
 
 ## Technology Stack
 
-- **LangGraph** (1.0.6+) - Agent framework and multi-agent orchestration
-- **LangChain** (1.2.3+) - LLM abstractions and tool system
+- **ReactiveGraph** - Backend execution engine, transactional state, scheduling, trace, checkpoint/store
+- **LangChain Core** - Message, model, and tool interoperability protocol
+- **LangGraph-compatible API/Studio surface** - Retained for host and tooling compatibility
 - **FastAPI** (0.115.0+) - Gateway REST API
 - **langchain-mcp-adapters** - Model Context Protocol support
 - **agent-sandbox** - Sandboxed code execution
@@ -538,6 +539,13 @@ reachability.
 - **tavily-python** / **firecrawl-py** - Web search and scraping
 
 ---
+
+## ReactiveGraph migration
+
+This backend runs the production agent, middleware, worker, checkpointer, and
+store paths on ReactiveGraph. See the repository-root
+[REACTIVEGRAPH.md](../REACTIVEGRAPH.md) for verified scope, performance data,
+and the remaining product-scale boundaries.
 
 ## Documentation
 
