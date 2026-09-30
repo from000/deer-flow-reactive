@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import pytest
 import sqlalchemy as sa
@@ -40,6 +41,15 @@ _REVISION = "0018_oauth_identity_pg_partial"
 _INDEX = "idx_users_oauth_identity"
 
 
+def _asyncpg_url(url: str | None) -> str | None:
+    if not url:
+        return url
+    parts = urlsplit(url)
+    scheme = "postgresql+asyncpg" if parts.scheme in {"postgres", "postgresql"} else parts.scheme
+    query = urlencode([(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True) if key not in {"sslmode", "channel_binding"}])
+    return urlunsplit(parts._replace(scheme=scheme, query=query))
+
+
 async def _index_predicate(engine, schema: str) -> str | None:
     """The index's WHERE predicate as SQL text, or None if it is a full
     (non-partial) index. Raises if the index does not exist."""
@@ -56,7 +66,7 @@ async def _index_predicate(engine, schema: str) -> str | None:
 
 async def test_0018_adds_partial_predicate_and_downgrade_restores_full_index() -> None:
     schema = f"deerflow_test_{uuid.uuid4().hex[:12]}"
-    engine = create_async_engine(POSTGRES_URL or "")
+    engine = create_async_engine(_asyncpg_url(POSTGRES_URL) or "")
     cfg = _get_alembic_config(engine, postgres_schema=schema)
 
     try:
