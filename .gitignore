@@ -69,3 +69,6 @@ config.yaml.bak
 
 # Monocle agent-observability trace output (local file exporter)
 .monocle/
+
+# Local verification logs and generated reports
+.verification/

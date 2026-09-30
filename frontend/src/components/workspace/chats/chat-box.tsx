@@ -69,6 +69,9 @@ const SidecarPanel = dynamic(
 );
 
 const RIGHT_PANEL_ANIMATION_MS = 280;
+// Quiet period after the last width change before the pinned content width is
+// released (see the open/close effect below).
+const RIGHT_PANEL_SETTLE_MS = 120;
 const RIGHT_PANEL_DEFAULT_SIZE = "40%";
 
 type RightPanelKind = "sidecar" | "artifacts" | "browser";
@@ -168,6 +171,7 @@ const ChatBox: React.FC<{
   }, [pathname]);
 
   const sidePanelRef = usePanelRef();
+  const asideRef = useRef<HTMLElement | null>(null);
   // Width the panel reopens at: the last size the user dragged it to.
   const openSizeRef = useRef(RIGHT_PANEL_DEFAULT_SIZE);
   // While the panel width animates, the content is held at its final width and
@@ -248,13 +252,43 @@ const ChatBox: React.FC<{
       sidePanelRef.current?.collapse();
     }
 
-    const timeout = window.setTimeout(() => {
+    // Release the pinned width only once the panel has actually stopped
+    // moving. A fixed timer races the CSS flex-grow transition (the panel
+    // mounts later than this effect when its content is lazy-loaded), and
+    // releasing early reflows the messages at a mid-animation width, which
+    // makes the list jump twice while it opens.
+    let settleTimeout: number | undefined;
+    const release = () => {
       setAnimatingRightPanel(false);
       setPinnedContentWidth(null);
-    }, RIGHT_PANEL_ANIMATION_MS);
+    };
+    // Debounce on the panel's real width: the flex-grow transition is
+    // asynchronous and the lazily-mounted content starts it late, so the
+    // only reliable "animation finished" signal is "width stopped changing".
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(() => {
+        window.clearTimeout(settleTimeout);
+        settleTimeout = window.setTimeout(() => {
+          observer?.disconnect();
+          release();
+        }, RIGHT_PANEL_SETTLE_MS);
+      });
+      if (asideRef.current) {
+        observer.observe(asideRef.current);
+      }
+    }
+    // Safety net for environments without ResizeObserver, and for a transition
+    // that never goes quiet.
+    const fallback = window.setTimeout(() => {
+      observer?.disconnect();
+      release();
+    }, RIGHT_PANEL_SETTLE_MS * 10);
 
     return () => {
-      window.clearTimeout(timeout);
+      observer?.disconnect();
+      window.clearTimeout(settleTimeout);
+      window.clearTimeout(fallback);
     };
   }, [rightPanelOpen, sidePanelRef]);
 
@@ -434,6 +468,7 @@ const ChatBox: React.FC<{
         className="min-h-0 min-w-0"
       >
         <aside
+          ref={asideRef}
           aria-hidden={!rightPanelOpen}
           className={cn(
             "size-full min-h-0 min-w-0 overflow-hidden transition-opacity duration-[280ms] ease-out motion-reduce:transition-none",
