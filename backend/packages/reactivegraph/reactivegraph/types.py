@@ -14,6 +14,12 @@ reducer; a look-alike class would be fed to the reducer and raise.
 deliberately not an exception: middleware that catches ``Exception`` to wrap
 ordinary failures must never swallow a human-in-the-loop pause. The control
 flow signal is :class:`reactivegraph.errors.GraphInterrupt`.
+
+Portions of this module are adapted from upstream `langgraph`
+(https://github.com/langchain-ai/langgraph) so that hosts written
+against the LangChain / LangGraph surface keep working on the
+ReactiveGraph engine. See THIRD_PARTY_NOTICES.md for the upstream
+MIT copyright notices.
 """
 
 from __future__ import annotations

@@ -5,6 +5,12 @@ turn *our* deprecations into errors without silencing unrelated ones. The
 message rendering mirrors the upstream categories (``message. Deprecated in
 VX.Y to be removed in VZ.W.``) so deprecation logs stay comparable after the
 engine swap.
+
+Portions of this module are adapted from upstream `langgraph`
+(https://github.com/langchain-ai/langgraph) so that hosts written
+against the LangChain / LangGraph surface keep working on the
+ReactiveGraph engine. See THIRD_PARTY_NOTICES.md for the upstream
+MIT copyright notices.
 """
 
 from __future__ import annotations

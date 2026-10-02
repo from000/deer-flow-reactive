@@ -9,6 +9,12 @@ environment where neither LangChain nor LangGraph is installed.
 The functions deliberately operate structurally as well as on native
 ReactiveGraph messages.  That keeps the boundary usable when a host passes a
 foreign message object whose identity checks cannot be bridged by subclassing.
+
+Portions of this module are adapted from upstream `langchain-core`
+(https://github.com/langchain-ai/langchain) so that hosts written
+against the LangChain / LangGraph surface keep working on the
+ReactiveGraph engine. See THIRD_PARTY_NOTICES.md for the upstream
+MIT copyright notices.
 """
 
 from __future__ import annotations

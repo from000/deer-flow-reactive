@@ -12,6 +12,12 @@ The node supports four input shapes:
 * a message list whose latest AI message carries tool calls;
 * a bare list of tool-call mappings;
 * a ``ToolCallWithContext`` mapping dispatched through the ``Send`` API.
+
+Portions of this module are adapted from upstream `langgraph-prebuilt`
+(https://github.com/langchain-ai/langgraph) so that hosts written
+against the LangChain / LangGraph surface keep working on the
+ReactiveGraph engine. See THIRD_PARTY_NOTICES.md for the upstream
+MIT copyright notices.
 """
 
 from __future__ import annotations

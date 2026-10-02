@@ -16,6 +16,12 @@ messages are kept verbatim; only the import roots changed:
 The ``DEFAULT_SUMMARY_PROMPT`` text is a public contract (the ``<messages>``
 marker and ``{messages}`` placeholder are spliced by downstream consumers), so
 it is reproduced unchanged.
+
+Portions of this module are adapted from upstream `langchain`
+(https://github.com/langchain-ai/langchain) so that hosts written
+against the LangChain / LangGraph surface keep working on the
+ReactiveGraph engine. See THIRD_PARTY_NOTICES.md for the upstream
+MIT copyright notices.
 """
 
 from __future__ import annotations

@@ -12,6 +12,12 @@ concatenation, and the conversion helpers. It is deliberately *not* a
 re-export of LangChain: the engine owns its message contract, and hosts
 convert at the model boundary instead of importing a second copy of the
 class hierarchy.
+
+Portions of this module are adapted from upstream `langchain-core`
+(https://github.com/langchain-ai/langchain) so that hosts written
+against the LangChain / LangGraph surface keep working on the
+ReactiveGraph engine. See THIRD_PARTY_NOTICES.md for the upstream
+MIT copyright notices.
 """
 
 from __future__ import annotations

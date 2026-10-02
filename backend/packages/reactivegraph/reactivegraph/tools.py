@@ -8,6 +8,12 @@ argument markers, and the OpenAI function/tool schema conversion helpers.
 It deliberately imports no external agent framework: tools are plain pydantic
 models plus callables, which lets the engine replace the runtime underneath a
 real agent factory without changing tool definitions or model-facing schemas.
+
+Portions of this module are adapted from upstream `langchain-core`
+(https://github.com/langchain-ai/langchain) so that hosts written
+against the LangChain / LangGraph surface keep working on the
+ReactiveGraph engine. See THIRD_PARTY_NOTICES.md for the upstream
+MIT copyright notices.
 """
 
 from __future__ import annotations

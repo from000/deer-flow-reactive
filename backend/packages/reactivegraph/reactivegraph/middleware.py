@@ -13,6 +13,13 @@ This module keeps the *shape* of that contract without importing LangChain.
 That is what makes it possible to replace the engine underneath a real agent
 factory while preserving every middleware's type annotations and runtime
 behaviour.
+
+Portions of this module are adapted from upstream `langgraph-prebuilt`
+(https://github.com/langchain-ai/langgraph) and `langchain`
+(https://github.com/langchain-ai/langchain), so that hosts written
+against the LangChain / LangGraph surface keep working on the
+ReactiveGraph engine. See THIRD_PARTY_NOTICES.md for the upstream
+MIT copyright notices.
 """
 
 from __future__ import annotations

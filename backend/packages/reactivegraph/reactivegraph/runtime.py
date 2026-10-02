@@ -7,6 +7,12 @@ engine therefore publishes the active config and runtime on a
 
 The value is scoped to the *task* that set it, so concurrent runs in one
 process never observe each other's context.
+
+Portions of this module are adapted from upstream `langgraph`
+(https://github.com/langchain-ai/langgraph) so that hosts written
+against the LangChain / LangGraph surface keep working on the
+ReactiveGraph engine. See THIRD_PARTY_NOTICES.md for the upstream
+MIT copyright notices.
 """
 
 from __future__ import annotations

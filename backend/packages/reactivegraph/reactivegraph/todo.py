@@ -9,6 +9,12 @@ the one-``write_todos``-call-per-turn rule).
 
 Prompts are copied verbatim from ``langchain.agents.middleware.todo`` so a host
 that tuned its agent against upstream keeps the same model-facing text.
+
+Portions of this module are adapted from upstream `langchain`
+(https://github.com/langchain-ai/langchain) so that hosts written
+against the LangChain / LangGraph surface keep working on the
+ReactiveGraph engine. See THIRD_PARTY_NOTICES.md for the upstream
+MIT copyright notices.
 """
 
 from __future__ import annotations
