@@ -360,7 +360,9 @@ class ReactiveGraph:
 
     @staticmethod
     def build(
-        build_fn: Callable[[GraphBuilder], None],
+        # The callback's return value is ignored. Accepting object keeps the
+        # fluent ``lambda b: b.task(...).on(...)`` form type-correct for callers.
+        build_fn: Callable[[GraphBuilder], object],
         host: DriverHost | None = None,
         graph_id: str = "graph",
     ) -> ReactiveGraph:
@@ -705,10 +707,15 @@ class ReactiveGraph:
                     run_id=run_id,
                     config=_wire_config(config),
                 )
-            self._last_run = result if isinstance(result, dict) else {}
-            self._last_run_id = self._last_run.get("runId")
+            # ``_last_run`` is graph-wide observability state for ``resume``.
+            # It is intentionally shared, so return the local result: two
+            # concurrent invokes must never race here and hand one caller the
+            # other run's state.
+            run_result = result if isinstance(result, dict) else {}
+            self._last_run = run_result
+            self._last_run_id = run_result.get("runId")
             self._trace.append({"event": "run:end"})
-            return self._last_run.get("state", {})
+            return run_result.get("state", {})
         # in-process fallback: publish the same ambient config/runtime so a
         # host's middleware behaves identically with and without a Driver.
         with _run_scope(config):

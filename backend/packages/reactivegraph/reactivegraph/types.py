@@ -27,7 +27,9 @@ from __future__ import annotations
 import warnings
 from collections.abc import Hashable, Sequence
 from dataclasses import asdict, dataclass
-from typing import Any, ClassVar, Generic, Literal, TypeAlias, TypeVar, cast, final
+from typing import Any, ClassVar, Generic, Literal, TypeAlias, TypeVar, cast
+
+from typing_extensions import final
 
 from reactivegraph.checkpoint import CheckpointStore
 from reactivegraph.messages import ToolOutputMixin

@@ -26,10 +26,10 @@ import json
 import uuid
 import warnings
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any, Literal, TypedDict, cast
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from typing_extensions import NotRequired
+from typing_extensions import NotRequired, TypedDict
 
 try:  # pragma: no cover - exercised by the optional-integration tests
     from langchain_core import messages as _lc_messages

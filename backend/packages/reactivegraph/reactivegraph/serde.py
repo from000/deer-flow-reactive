@@ -247,9 +247,9 @@ class ReactiveSerializer:
                 cls = _safe_builtin_class(
                     module,
                     name,
-                    (dt.date, dt.datetime, dt.time, dt.timedelta),
+                    (dt.date, dt.datetime, dt.time, dt.timedelta, dt.tzinfo),
                 )
-                if name in {"date", "datetime"}:
+                if name in {"date", "datetime", "timedelta", "timezone"}:
                     return cls(*args)
             if module == "pathlib":
                 cls = _safe_builtin_class(module, name, (pathlib.PurePath,))
@@ -268,9 +268,14 @@ class ReactiveSerializer:
                 return uuid.UUID(arg)
             if module == "decimal":
                 return decimal.Decimal(arg)
-            if module == "enum":
-                raise SerializationError("enum reconstruction requires a loaded class")
-            raise SerializationError(f"blocked constructor: {module}.{name}")
+            # Enums carry their real module/name (e.g. ``myapp.Color``), so
+            # resolve them only from an already-loaded module and require the
+            # target to actually be an Enum subclass.
+            try:
+                enum_cls = _loaded_enum_class(module, name)
+            except SerializationError:
+                raise SerializationError(f"blocked constructor: {module}.{name}") from None
+            return enum_cls(arg)
         if code == EXT_CONSTRUCTOR_KW_ARGS:
             module, name, kwargs = value
             if module == "datetime" and name == "time":
@@ -359,6 +364,17 @@ def _safe_builtin_class(module: str, name: str, expected: tuple[type, ...]) -> t
     return cls
 
 
+def _loaded_enum_class(module: str, name: str) -> type[Enum]:
+    """Resolve an enum class only from an already-loaded module."""
+    loaded = sys.modules.get(module)
+    if loaded is None:
+        raise SerializationError(f"enum module is not loaded: {module}")
+    cls = getattr(loaded, name, None)
+    if not isinstance(cls, type) or not issubclass(cls, Enum):
+        raise SerializationError(f"blocked enum class: {module}.{name}")
+    return cls
+
+
 def _loaded_pydantic_class(module: str, name: str) -> type[BaseModel]:
     loaded = sys.modules.get(module)
     if loaded is None:
@@ -408,6 +424,15 @@ def _json_encode(value: Any, *, depth: int) -> Any:
         )
     if isinstance(value, deque):
         return _tag("deque", [_json_encode(v, depth=depth + 1) for v in value])
+    if isinstance(value, Enum):
+        return _tag(
+            "enum",
+            {
+                "module": value.__class__.__module__,
+                "name": value.__class__.__name__,
+                "value": _json_encode(value.value, depth=depth + 1),
+            },
+        )
     if isinstance(value, BaseModel):
         return _tag(
             "pydantic",
@@ -468,6 +493,9 @@ def _json_decode(value: Any, *, depth: int) -> Any:
             return frozenset(_json_decode(item, depth=depth + 1) for item in payload)
         if tag == "deque":
             return deque(_json_decode(item, depth=depth + 1) for item in payload)
+        if tag == "enum":
+            cls = _loaded_enum_class(payload["module"], payload["name"])
+            return cls(_json_decode(payload["value"], depth=depth + 1))
         if tag == "pydantic":
             cls = _loaded_pydantic_class(payload["module"], payload["name"])
             return cls.model_validate(_json_decode(payload["value"], depth=depth + 1))

@@ -30,9 +30,9 @@ import uuid
 import warnings
 from collections.abc import Callable, Iterable, Mapping
 from functools import partial
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
-from typing_extensions import override
+from typing_extensions import TypedDict, override
 
 from reactivegraph.constants import REMOVE_ALL_MESSAGES
 from reactivegraph.message_utils import (
