@@ -25,6 +25,7 @@ from collections.abc import AsyncIterator
 from reactivegraph import BaseStore
 
 from deerflow.config.app_config import AppConfig, get_app_config
+from deerflow.runtime.cancellation import drained_resource
 from deerflow.runtime.store.provider import (
     POSTGRES_CONN_REQUIRED,
     _resolve_store_config,
@@ -33,7 +34,6 @@ from deerflow.runtime.store.provider import (
 )
 
 logger = logging.getLogger(__name__)
-
 
 
 # ---------------------------------------------------------------------------
@@ -61,12 +61,10 @@ async def _async_store(config) -> AsyncIterator[BaseStore]:
         conn_str = resolve_sqlite_conn_str(config.connection_string or "store.db")
         await asyncio.to_thread(ensure_sqlite_parent_dir, conn_str)
         store = await asyncio.to_thread(SqliteStore, conn_str)
-        try:
+        async with drained_resource(store, lambda: asyncio.to_thread(store.close)):
             await asyncio.to_thread(store.setup)
             logger.info("Store: using ReactiveGraph SqliteStore (%s)", conn_str)
             yield store
-        finally:
-            await asyncio.to_thread(store.close)
         return
 
     if config.type == "postgres":
@@ -80,12 +78,10 @@ async def _async_store(config) -> AsyncIterator[BaseStore]:
             config.connection_string,
             schema=config.postgres_schema or "public",
         )
-        try:
+        async with drained_resource(store, lambda: asyncio.to_thread(store.close)):
             await asyncio.to_thread(store.setup)
             logger.info("Store: using ReactiveGraph PostgresStore")
             yield store
-        finally:
-            await asyncio.to_thread(store.close)
         return
 
     raise ValueError(f"Unknown store backend type: {config.type!r}")

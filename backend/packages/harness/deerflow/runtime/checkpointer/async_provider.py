@@ -26,6 +26,7 @@ from reactivegraph import Checkpointer
 
 from deerflow.config.app_config import AppConfig, get_app_config
 from deerflow.persistence.postgres_schema import normalize_libpq_dsn
+from deerflow.runtime.cancellation import drained_resource
 from deerflow.runtime.checkpointer.provider import POSTGRES_CONN_REQUIRED
 from deerflow.runtime.store._sqlite_utils import ensure_sqlite_parent_dir, resolve_sqlite_conn_str
 
@@ -69,11 +70,9 @@ async def _async_checkpointer(config) -> AsyncIterator[Checkpointer]:
         )
         store = await asyncio.to_thread(SqliteCheckpointSaver, conn_str)
         saver = ReactiveGraphSaver(store=store)
-        try:
+        async with drained_resource(saver, saver.aclose):
             await saver.asetup()
             yield saver
-        finally:
-            await saver.aclose()
         return
 
     if config.type == "postgres":
@@ -90,11 +89,9 @@ async def _async_checkpointer(config) -> AsyncIterator[Checkpointer]:
             schema=config.postgres_schema or "public",
         )
         saver = ReactiveGraphSaver(store=store)
-        try:
+        async with drained_resource(saver, saver.aclose):
             await saver.asetup()
             yield saver
-        finally:
-            await saver.aclose()
         return
 
     raise ValueError(f"Unknown checkpointer type: {config.type!r}")
@@ -119,16 +116,12 @@ async def _async_checkpointer_from_database(db_config) -> AsyncIterator[Checkpoi
 
         from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
 
-        conn_str = await asyncio.to_thread(
-            _prepare_database_sqlite_checkpointer_path, db_config
-        )
+        conn_str = await asyncio.to_thread(_prepare_database_sqlite_checkpointer_path, db_config)
         store = await asyncio.to_thread(SqliteCheckpointSaver, conn_str)
         saver = ReactiveGraphSaver(store=store)
-        try:
+        async with drained_resource(saver, saver.aclose):
             await saver.asetup()
             yield saver
-        finally:
-            await saver.aclose()
         return
 
     if db_config.backend == "postgres":
@@ -145,11 +138,9 @@ async def _async_checkpointer_from_database(db_config) -> AsyncIterator[Checkpoi
             schema=db_config.postgres_schema or "public",
         )
         saver = ReactiveGraphSaver(store=store)
-        try:
+        async with drained_resource(saver, saver.aclose):
             await saver.asetup()
             yield saver
-        finally:
-            await saver.aclose()
         return
 
     raise ValueError(f"Unknown database backend: {db_config.backend!r}")
