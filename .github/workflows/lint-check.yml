@@ -2,7 +2,7 @@ name: Lint Check
 
 on:
   push:
-    branches: [ 'main', '*-dev' ]
+    branches: ['main', '*-dev', 'reactivegraph-checkpointer']
   pull_request:
     branches: [ '*' ]
 

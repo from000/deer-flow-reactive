@@ -2,7 +2,7 @@ name: Frontend Unit Tests
 
 on:
   push:
-    branches: [ 'main', '*-dev' ]
+    branches: ['main', '*-dev', 'reactivegraph-checkpointer']
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
 
