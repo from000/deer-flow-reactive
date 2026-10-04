@@ -709,7 +709,8 @@ test("retracts the optimistic human when compaction re-keys the submitted turn",
     result.current.thread.messages.filter(
       (message) =>
         message.type === "human" &&
-        String(message.content).includes("final-turn question"),
+        typeof message.content === "string" &&
+        message.content.includes("final-turn question"),
     ),
   ).toHaveLength(1);
   expect(submittedId).not.toBe("h-turn-32");

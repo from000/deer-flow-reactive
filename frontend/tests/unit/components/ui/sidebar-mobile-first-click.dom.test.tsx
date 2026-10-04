@@ -21,7 +21,7 @@ function SidebarHarness() {
   return (
     <SidebarProvider>
       <Sidebar>
-        <a href="/workspace/chats/new">New chat</a>
+        <button type="button">New chat</button>
       </Sidebar>
       <SidebarTrigger />
     </SidebarProvider>
