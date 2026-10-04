@@ -89,7 +89,7 @@ def test_replay_write_read_file_ultra_matches_golden(tmp_path: Path, monkeypatch
     # The SSE stream can be perfectly shaped while the checkpoint behind it is
     # empty: the graph emits state from its own run while the thread's persisted
     # head stays blank. Asserting the *read-back* transcript is what makes this
-    # suite catch a durability regression (see BUGS.md history).
+    # suite catch a durability regression (the a06c1816 fix).
     messages = thread_state.get("values", {}).get("messages") or []
     assert messages, "the replay run emitted SSE events but persisted no messages — thread state is not durable"
     assert any(m.get("type") == "ai" or m.get("role") == "assistant" for m in messages), f"persisted transcript has no assistant turn: {messages!r}"
