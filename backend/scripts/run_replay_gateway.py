@@ -9,6 +9,13 @@ runnable standalone for debugging::
 
 ``tests/`` is put on the path so the config ``use: replay_provider:ReplayChatModel``
 resolves; ``GATEWAY_CORS_ORIGINS`` is set so the frontend on :3000 can talk to it.
+
+Note for maintainers: putting ``backend/tests`` on ``sys.path`` means any
+top-level *directory* there becomes an importable name. A directory named after
+a real package shadows it as an implicit namespace package (``__file__`` is
+None, so every attribute lookup fails). That is what broke this gateway when a
+copy of the core tests lived at ``tests/reactivegraph/``. Keep test directories
+namespaced, or give them ``__init__.py``.
 """
 
 from __future__ import annotations
