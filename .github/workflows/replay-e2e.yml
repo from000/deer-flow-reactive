@@ -21,6 +21,10 @@ on:
       - "backend/tests/seed_runs_router.py"
       - "backend/tests/test_replay_golden.py"
       - "backend/scripts/run_replay_gateway.py"
+      # The vendored engine IS the graph the contract test drives. Without this
+      # an engine change could alter every run's checkpoint behaviour while no
+      # workflow fires (it did: see the a06c1816 durability fix).
+      - "backend/packages/reactivegraph/**"
       - ".github/workflows/replay-e2e.yml"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -34,6 +38,10 @@ on:
       - "backend/tests/seed_runs_router.py"
       - "backend/tests/test_replay_golden.py"
       - "backend/scripts/run_replay_gateway.py"
+      # The vendored engine IS the graph the contract test drives. Without this
+      # an engine change could alter every run's checkpoint behaviour while no
+      # workflow fires (it did: see the a06c1816 durability fix).
+      - "backend/packages/reactivegraph/**"
       - ".github/workflows/replay-e2e.yml"
 
 concurrency:

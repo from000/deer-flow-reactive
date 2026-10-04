@@ -9,6 +9,9 @@ on:
       - 'backend/extension_test_fixtures/bookmark_plugin_gateway.py'
       - 'backend/extension_test_fixtures/browser_asset_gateway.py'
       - 'backend/packages/extension-api/**'
+      # Same reason as replay-e2e.yml: the vendored engine backs every run,
+      # so an engine-only change must still exercise the browser suite.
+      - 'backend/packages/reactivegraph/**'
       - 'backend/packages/harness/deerflow/extensions/**'
       - 'backend/packages/harness/deerflow/config/plugin_settings.py'
       - 'backend/pyproject.toml'
@@ -23,6 +26,9 @@ on:
       - 'backend/extension_test_fixtures/bookmark_plugin_gateway.py'
       - 'backend/extension_test_fixtures/browser_asset_gateway.py'
       - 'backend/packages/extension-api/**'
+      # Same reason as replay-e2e.yml: the vendored engine backs every run,
+      # so an engine-only change must still exercise the browser suite.
+      - 'backend/packages/reactivegraph/**'
       - 'backend/packages/harness/deerflow/extensions/**'
       - 'backend/packages/harness/deerflow/config/plugin_settings.py'
       - 'backend/pyproject.toml'
