@@ -31,6 +31,10 @@ structures and behavioural contracts from:
   (`langgraph`, `langgraph-checkpoint`, `langgraph-prebuilt`)
 - [`langchain-ai/langchain`](https://github.com/langchain-ai/langchain)
   (`langchain-core`, `langchain`)
+- [`langchain-ai/langgraphjs`](https://github.com/langchain-ai/langgraphjs)
+  (MIT) — the *behavioural* contract our TypeScript compatibility fixtures and
+  capability manifest are written against. Those artefacts are attributed
+  upstream; no LangGraph.js code is redistributed here.
 
 `todo.py` ports the `TodoListMiddleware` prompt text and behaviour, and
 `summarization.py` ports `SummarizationMiddleware`, both from the `langchain`
