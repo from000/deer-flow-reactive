@@ -73,11 +73,16 @@ engine and state model.
 ## What remains intentionally outside this migration
 
 - frontend behavior comparison
-- production Postgres provider
-- Redis / distributed bridge
 - production-scale channel, MCP, and sandbox load testing
 - goal continuation
 - `custom` stream mode
+
+The Postgres checkpoint/store path is **not** on this list: the harness resolves
+`config.type: postgres` to the native ReactiveGraph providers
+(`reactivegraph.checkpoint.PostgresCheckpointSaver` and
+`reactivegraph.store.PostgresStore`), and CI runs those suites against a real
+Postgres 17 service (`TEST_POSTGRES_URI` in
+`.github/workflows/backend-unit-tests.yml`).
 
 These are documented boundaries, not hidden limitations.
 

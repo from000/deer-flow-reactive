@@ -73,11 +73,16 @@ ReactiveGraph 替换的是**编排运行时**：图执行、依赖追踪、选�
 ## 有意留在本次迁移之外的部分
 
 - 前端行为对比
-- 生产 Postgres provider
-- Redis / 分布式桥接
 - 生产规模下的 channel、MCP、sandbox 压测
 - goal continuation
 - `custom` stream 模式
+
+Postgres checkpoint/store 路径**不在此列**：harness 会把
+`config.type: postgres` 解析到原生 ReactiveGraph provider
+（`reactivegraph.checkpoint.PostgresCheckpointSaver` 与
+`reactivegraph.store.PostgresStore`），并且 CI 用真实 Postgres 17 服务
+（`.github/workflows/backend-unit-tests.yml` 的 `TEST_POSTGRES_URI`）
+跑这些套件。
 
 这些是已记录的边界，不是隐藏的缺陷。
 
