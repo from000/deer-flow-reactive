@@ -8,15 +8,20 @@ construction path run on ReactiveGraph.
 
 ## Verified state
 
-At the verified local revision:
+At the verified revision, from CI (`.github/workflows/backend-unit-tests.yml`,
+which provisions real `postgres:17` and `redis:7-alpine` services so the
+integration tests execute instead of skipping):
 
 ```text
-backend make test:      19,098 passed, 168 skipped, 0 failed
+backend unit tests:     19,101 passed, 82 skipped, 0 failed  (4 shards combined)
 blocking I/O suite:     154 passed
 engine suite:           51 passed
 no-LangGraph probes:    6 passed
 live-model tests:       previously failing four tests retried, 4 passed
 ```
+
+A DSN-less local run skips the external-service tests and therefore reports
+19,098 passed / 168 skipped; the CI figure is the authoritative one.
 
 A real full-factory comparison against upstream produced normalized output parity:
 

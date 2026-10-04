@@ -1012,3 +1012,21 @@ DeerFlow 建立在开源社区大量优秀工作的基础上。所有让 DeerFlo
 ## Star History
 
 [![Star History Chart](https://star-history.dera.page/svg?repos=bytedance/deer-flow&type=Date)](https://star-history.dera.page/#bytedance/deer-flow&Date)
+
+---
+
+## ReactiveGraph 迁移
+
+本 checkout 是真实的 DeerFlow 后端向 ReactiveGraph 的迁移。
+
+- 引擎：ReactiveGraph `AgentGraph`
+- 生产 agent/runtime/checkpoint/store 路径：均由 ReactiveGraph 支撑
+- 完整后端测试：**19,101 passed，0 failed**（CI，含真实 Postgres 17 + Redis 7 服务）
+- 与上游的真实 full-factory 输出一致性：是
+- 实测本机延迟优势：**7-8x**
+- SQLite 持久化恢复：checkpoint 与 store 均支持
+
+完整范围、证据、仍存在的边界，以及为什么 `langchain_core` 仍作为
+消息/模型/工具互操作协议保留，见
+[`REACTIVEGRAPH_zh.md`](./REACTIVEGRAPH_zh.md)（英文版为
+[`REACTIVEGRAPH.md`](./REACTIVEGRAPH.md)）。

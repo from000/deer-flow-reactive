@@ -2306,7 +2306,7 @@ This checkout is the real DeerFlow backend migration onto ReactiveGraph.
 
 - Engine: ReactiveGraph `AgentGraph`
 - Production agent/runtime/checkpoint/store paths: ReactiveGraph-backed
-- Full backend suite: **19,098 passed, 0 failed**
+- Full backend suite: **19,101 passed, 0 failed** (CI, real Postgres 17 + Redis 7 services)
 - Real full-factory output parity with upstream: yes
 - Observed local latency advantage: **7-8x**
 - Durable SQLite recovery: checkpoint and store both supported

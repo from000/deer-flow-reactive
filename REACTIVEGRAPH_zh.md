@@ -13,13 +13,19 @@ ReactiveGraph 上。
 
 在已验证的本地版本上：
 
+数据来自 CI（`.github/workflows/backend-unit-tests.yml`，会拉起真实的
+`postgres:17` 与 `redis:7-alpine` 服务，因此集成测试是真正执行而非 skip）：
+
 ```text
-backend make test:      19,098 passed, 168 skipped, 0 failed
+backend unit tests:     19,101 passed, 82 skipped, 0 failed（4 个 shard 合计）
 blocking I/O suite:     154 passed
 engine suite:            51 passed
 no-LangGraph probes:      6 passed
 live-model tests:         之前失败的四个用例重试，4 passed
 ```
+
+不带外部服务的本地运行会跳过这些集成测试，报告 19,098 passed / 168 skipped；
+以 CI 数字为准。
 
 与 upstream 的真实 full-factory 对比产出了归一化输出一致性：
 
