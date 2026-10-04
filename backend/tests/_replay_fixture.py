@@ -138,6 +138,17 @@ def drive_gateway(app, *, prompt: str, context: dict) -> list[dict]:
     This is the exact wire path the React frontend uses (LangGraph SDK), driven
     in-process via Starlette's TestClient with the real auth flow.
     """
+    return drive_gateway_with_state(app, prompt=prompt, context=context)[0]
+
+
+def drive_gateway_with_state(app, *, prompt: str, context: dict) -> tuple[list[dict], dict]:
+    """Like :func:`drive_gateway`, but also return the persisted thread state.
+
+    The API can emit a perfectly-shaped SSE stream while the checkpoint behind
+    it stays empty — that is exactly the class of bug this pair of assertions
+    exists to catch, so callers that care about durability read the thread back
+    through the public endpoint after the run finishes.
+    """
     from starlette.testclient import TestClient
 
     with TestClient(app) as client:
@@ -165,4 +176,8 @@ def drive_gateway(app, *, prompt: str, context: dict) -> list[dict]:
         }
         with client.stream("POST", f"/api/threads/{thread_id}/runs/stream", json=body, headers={"X-CSRF-Token": csrf}) as resp:
             assert resp.status_code == 200, resp.read().decode()
-            return sse_event_shapes(resp)
+            events = sse_event_shapes(resp)
+
+        state = client.get(f"/api/threads/{thread_id}/state")
+        assert state.status_code == 200, state.text
+        return events, state.json()

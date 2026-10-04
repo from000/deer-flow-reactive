@@ -18,7 +18,12 @@ import os
 from pathlib import Path
 
 import pytest
-from _replay_fixture import REPLAY_MODEL_BLOCK, build_config_yaml, drive_gateway, prepare_hermetic_extras
+from _replay_fixture import (
+    REPLAY_MODEL_BLOCK,
+    build_config_yaml,
+    drive_gateway_with_state,
+    prepare_hermetic_extras,
+)
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "replay"
 
@@ -75,11 +80,20 @@ def test_replay_write_read_file_ultra_matches_golden(tmp_path: Path, monkeypatch
 
     replay_provider.reset_replay_misses()
 
-    events = drive_gateway(create_app(), prompt=fixture["prompt"], context=fixture["context"])
+    events, thread_state = drive_gateway_with_state(create_app(), prompt=fixture["prompt"], context=fixture["context"])
 
     assert events, "replay produced no SSE events"
     assert events[0]["event"] == "metadata", f"first event should be metadata, got {events[0]!r}"
     assert events[-1]["event"] == "end", f"last event should be end (run completed), got {events[-1]!r}"
+
+    # The SSE stream can be perfectly shaped while the checkpoint behind it is
+    # empty: the graph emits state from its own run while the thread's persisted
+    # head stays blank. Asserting the *read-back* transcript is what makes this
+    # suite catch a durability regression (see BUGS.md history).
+    messages = thread_state.get("values", {}).get("messages") or []
+    assert messages, "the replay run emitted SSE events but persisted no messages — thread state is not durable"
+    assert any(m.get("type") == "ai" or m.get("role") == "assistant" for m in messages), f"persisted transcript has no assistant turn: {messages!r}"
+    assert thread_state.get("values", {}).get("title"), "the auto-title middleware write did not reach the checkpoint"
 
     misses = replay_provider.replay_misses()
     assert not misses, f"replay miss ({len(misses)}): the fixture is stale vs the current system prompt or agent graph. Re-record it (see backend/docs/REPLAY_E2E.md). Missed hashes: {misses}"

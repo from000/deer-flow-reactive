@@ -137,6 +137,25 @@ def _configurable(config: Mapping[str, Any] | None) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _config_snapshot(config: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Isolate a config envelope without copying the host objects inside it.
+
+    A ``RunnableConfig`` can carry non-deep-copyable execution state (the
+    run-scoped ``Runtime`` pins a store whose lock is a ``threading.RLock``).
+    Copying the outer mapping and the ``configurable``/``metadata`` envelopes
+    gives the caller a mutable snapshot without ever touching the values
+    themselves, which is what upstream's ``StateSnapshot`` does as well.
+    """
+    if not isinstance(config, Mapping):
+        return {}
+    out = dict(config)
+    for key in ("configurable", "metadata"):
+        nested = config.get(key)
+        if isinstance(nested, Mapping):
+            out[key] = dict(nested)
+    return out
+
+
 def _merge_config_metadata(
     config: Mapping[str, Any] | None, metadata: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -270,7 +289,13 @@ class ThreadCheckpointer:
 
     @staticmethod
     def _with_configurable(config: Mapping[str, Any] | None, **values: Any) -> dict[str, Any]:
-        out = copy.deepcopy(dict(config)) if isinstance(config, Mapping) else {}
+        # Shallow copy on purpose: a RunnableConfig legitimately carries values
+        # that cannot be deep-copied (locks, open handles, live host objects).
+        # ``deepcopy`` raised ``cannot pickle '_thread.RLock' object`` here and
+        # aborted the whole run before a single node executed. Only the
+        # ``configurable`` mapping is rewritten; every other top-level key is
+        # passed through by reference, which is what the caller's config expects.
+        out = dict(config) if isinstance(config, Mapping) else {}
         configurable = dict(_configurable(config))
         for key, value in values.items():
             if value is None:
@@ -350,7 +375,7 @@ class ThreadCheckpointer:
             return StateSnapshot(
                 values={},
                 next=(),
-                config=copy.deepcopy(dict(config)) if isinstance(config, Mapping) else {},
+                config=_config_snapshot(config),
                 metadata=None,
                 created_at=None,
                 parent_config=None,
@@ -360,10 +385,14 @@ class ThreadCheckpointer:
         return StateSnapshot(
             values=self.load_values(head),
             next=(),
-            config=copy.deepcopy(head.config),
+            config=_config_snapshot(head.config),
             metadata=dict(head.metadata),
             created_at=head.checkpoint.get("ts"),
-            parent_config=copy.deepcopy(head.parent_config),
+            parent_config=(
+                _config_snapshot(head.parent_config)
+                if head.parent_config is not None
+                else None
+            ),
             tasks=(),
             interrupts=(),
         )
@@ -382,7 +411,7 @@ class ThreadCheckpointer:
             return StateSnapshot(
                 values={},
                 next=(),
-                config=copy.deepcopy(dict(config)) if isinstance(config, Mapping) else {},
+                config=_config_snapshot(config),
                 metadata=None,
                 created_at=None,
                 parent_config=None,
@@ -392,10 +421,14 @@ class ThreadCheckpointer:
         return StateSnapshot(
             values=await self.aload_values(head),
             next=(),
-            config=copy.deepcopy(head.config),
+            config=_config_snapshot(head.config),
             metadata=dict(head.metadata),
             created_at=head.checkpoint.get("ts"),
-            parent_config=copy.deepcopy(head.parent_config),
+            parent_config=(
+                _config_snapshot(head.parent_config)
+                if head.parent_config is not None
+                else None
+            ),
             tasks=(),
             interrupts=(),
         )

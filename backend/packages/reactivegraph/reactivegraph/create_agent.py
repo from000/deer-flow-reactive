@@ -31,7 +31,15 @@ from __future__ import annotations
 
 import copy
 import uuid
-from collections.abc import AsyncIterator, Callable, Generator, Iterable, Iterator, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Callable,
+    Generator,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -1314,6 +1322,18 @@ class AgentGraph:
             return merged, []
         return folded, written
 
+    def _stream_committer(
+        self, config: dict | None, head: Any, written: Sequence[str] | None
+    ) -> _StreamCommitter:
+        """Build the per-run checkpoint writer used by ``stream``/``astream``."""
+        return _StreamCommitter(
+            threads=self._bind_threads(),
+            channels=self.channels,
+            config=config,
+            head=head,
+            written=list(written or []),
+        )
+
     def _commit_run(
         self, config: dict | None, head: Any, state: dict[str, Any], written: list[str]
     ) -> None:
@@ -1496,10 +1516,24 @@ class AgentGraph:
         """
         self._reject_inherited_checkpointer()
         modes, as_list = _normalize_stream_modes(stream_mode)
-        payload = self._seed_budget(self._seed_channel_defaults(_normalize_input(input)), config)
+        payload = _normalize_input(input)
+        head = None
+        written: list[str] = []
+        threads = self._bind_threads()
+        if threads is not None:
+            head = threads.get_head(config)
+            payload, written = self._seed_payload(payload, head)
+        payload = self._seed_budget(self._seed_channel_defaults(payload), config)
         runtime = _resolve_runtime(config, kwargs.get("context"))
         return _PinnedIterator(
-            self._stream_modes(payload, config, modes, runtime, as_list=as_list)
+            self._stream_modes(
+                payload,
+                config,
+                modes,
+                runtime,
+                as_list=as_list,
+                committer=self._stream_committer(config, head, written),
+            )
         )
 
     async def astream(
@@ -1518,9 +1552,21 @@ class AgentGraph:
         """
         self._reject_inherited_checkpointer()
         modes, as_list = _normalize_stream_modes(stream_mode)
-        payload = self._seed_budget(self._seed_channel_defaults(_normalize_input(input)), config)
+        payload = _normalize_input(input)
+        head = None
+        written: list[str] = []
+        threads = self._bind_threads()
+        if threads is not None:
+            head = await threads.aget_head(config)
+            payload, written = await self._aseed_payload(payload, head)
+        payload = self._seed_budget(self._seed_channel_defaults(payload), config)
         async for item in self._astream_modes(
-            payload, config, modes, context, as_list=as_list
+            payload,
+            config,
+            modes,
+            context,
+            as_list=as_list,
+            committer=self._stream_committer(config, head, written),
         ):
             yield item
 
@@ -1537,6 +1583,7 @@ class AgentGraph:
         runtime: Runtime,
         *,
         as_list: bool,
+        committer: _StreamCommitter | None = None,
     ) -> Generator[Any, Any, Any]:
         """Drive the graph once and adapt its native frames to LG modes."""
         if not modes:
@@ -1558,6 +1605,8 @@ class AgentGraph:
                 integration=self.config["metadata"]["ls_integration"],
             )
             for frame in raw:
+                if committer is not None:
+                    committer.commit_frame(frame)
                 yield from adapter.push(frame)
             yield from adapter.finish()
             # Only now, with every committed super-step already handed to the
@@ -1572,6 +1621,7 @@ class AgentGraph:
         context: Any,
         *,
         as_list: bool,
+        committer: _StreamCommitter | None = None,
     ) -> AsyncIterator[Any]:
         if not modes:
             return
@@ -1587,6 +1637,8 @@ class AgentGraph:
                 integration=self.config["metadata"]["ls_integration"],
             )
             async for frame in raw:
+                if committer is not None:
+                    await committer.acommit_frame(frame)
                 for item in adapter.push(frame):
                     yield item
             for item in adapter.finish():
@@ -1611,6 +1663,98 @@ class UnsupportedStreamModeError(ValueError):
         super().__init__(
             "Unsupported stream mode(s): " + ", ".join(self.modes)
         )
+
+
+class _StreamCommitter:
+    """Persist the run's supersteps while ``stream``/``astream`` is consumed.
+
+    LangGraph's Pregel loop checkpoints after every superstep. The compatible
+    streaming surface has to do the same even when the caller only asked for a
+    narrower mode — a worker that requests ``custom`` still expects the turn to
+    be recoverable — so the writer hangs off the *raw* ``values`` frames and is
+    independent of ``stream_mode``.
+
+    Writing as frames arrive (rather than in a ``finally``) matters because the
+    host stops consuming on abort and leaves the generator open; a deferred
+    write at that point never happens. Each write is chained onto the previous
+    one via ``aget_head(stored)``, so the thread's lineage stays a chain rather
+    than a set of orphaned roots.
+    """
+
+    def __init__(
+        self,
+        *,
+        threads: Any,
+        channels: Mapping,
+        config: Mapping | None,
+        head: Any,
+        written: Sequence[str],
+    ) -> None:
+        self._threads = threads
+        self._channels = channels
+        self._config = config
+        self._head = head
+        self._written = list(written)
+        self._first_commit = True
+
+    @staticmethod
+    def _state(frame: Any) -> dict[str, Any] | None:
+        if not isinstance(frame, Mapping) or frame.get("eventType") != "values":
+            return None
+        state = (frame.get("payload") or {}).get("state")
+        return state if isinstance(state, dict) and state else None
+
+    def _touched(self, committed: Mapping) -> list[str]:
+        """Channels to re-version for this superstep.
+
+        The seeded input channels count only on the first commit: afterwards
+        the adapter hands over the *full* state and the checkpointer derives
+        what actually changed against its parent. Naming them again would
+        re-version untouched channels on every frame.
+        """
+        if self._first_commit and self._written:
+            return self._written
+        return [key for key in committed if key in self._channels]
+
+    def commit_frame(self, frame: Any) -> None:
+        threads = self._threads
+        state = self._state(frame)
+        if threads is None or state is None:
+            return
+        committed = _public_state(state)
+        stored = threads.commit(
+            self._config,
+            self._head,
+            committed,
+            written=self._touched(committed),
+            metadata={"source": "loop", "step": 1, "parents": {}},
+        )
+        self._advance(stored, threads.get_head)
+
+    async def acommit_frame(self, frame: Any) -> None:
+        threads = self._threads
+        state = self._state(frame)
+        if threads is None or state is None:
+            return
+        committed = _public_state(state)
+        stored = await threads.acommit(
+            self._config,
+            self._head,
+            committed,
+            written=self._touched(committed),
+            metadata={"source": "loop", "step": 1, "parents": {}},
+        )
+        await self._aadvance(stored, threads.aget_head)
+
+    def _advance(self, stored: Any, read: Any) -> None:
+        self._first_commit = False
+        if stored is not None:
+            self._head = read(stored)
+
+    async def _aadvance(self, stored: Any, read: Any) -> None:
+        self._first_commit = False
+        if stored is not None:
+            self._head = await read(stored)
 
 
 def _normalize_stream_modes(
