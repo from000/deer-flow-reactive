@@ -274,15 +274,14 @@ class TestGetCheckpointer:
             cp = get_checkpointer()
 
         from reactivegraph.checkpoint import SqliteCheckpointSaver
+
         from deerflow.runtime.checkpointer.reactive_saver import ReactiveGraphSaver
 
         assert isinstance(cp, ReactiveGraphSaver)
         assert isinstance(cp.store, SqliteCheckpointSaver)
 
     def test_postgres_uses_native_saver(self):
-        load_checkpointer_config_from_dict(
-            {"type": "postgres", "connection_string": "postgresql://localhost/db"}
-        )
+        load_checkpointer_config_from_dict({"type": "postgres", "connection_string": "postgresql://localhost/db"})
         mock_store = MagicMock()
         mock_saver = MagicMock()
         mock_saver_cls = MagicMock(return_value=mock_saver)
@@ -301,9 +300,7 @@ class TestGetCheckpointer:
             cp = get_checkpointer()
 
         assert cp is mock_saver
-        mock_store.assert_called_once_with(
-            "postgresql://localhost/db", schema="public"
-        )
+        mock_store.assert_called_once_with("postgresql://localhost/db", schema="public")
         mock_saver_cls.assert_called_once_with(store=mock_store.return_value)
         mock_saver.setup.assert_called_once_with()
 
@@ -428,9 +425,7 @@ class TestGetCheckpointer:
             cp = get_checkpointer()
 
         assert cp is mock_saver
-        mock_store.assert_called_once_with(
-            "postgresql://localhost/db", schema="public"
-        )
+        mock_store.assert_called_once_with("postgresql://localhost/db", schema="public")
         mock_saver_cls.assert_called_once_with(store=mock_store.return_value)
         mock_saver.setup.assert_called_once_with()
 
@@ -456,9 +451,7 @@ class TestGetCheckpointer:
             cp = get_checkpointer()
 
         assert cp is mock_saver
-        mock_store.assert_called_once_with(
-            "postgresql://localhost/db", schema="deerflow"
-        )
+        mock_store.assert_called_once_with("postgresql://localhost/db", schema="deerflow")
         mock_saver.setup.assert_called_once_with()
 
     def test_store_postgres_schema_creates_schema_and_sets_search_path(self):
@@ -473,9 +466,7 @@ class TestGetCheckpointer:
             store = get_store()
 
         assert store is mock_store
-        mock_store_cls.assert_called_once_with(
-            "postgresql://localhost/db", schema="deerflow"
-        )
+        mock_store_cls.assert_called_once_with("postgresql://localhost/db", schema="deerflow")
         mock_store.setup.assert_called_once_with()
 
 

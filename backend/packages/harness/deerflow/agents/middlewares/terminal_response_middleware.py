@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from typing import Any, override
 
-from reactivegraph.middleware import AgentState
-from reactivegraph.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from reactivegraph import Runtime
+from reactivegraph.middleware import AgentMiddleware, AgentState
 
 from deerflow.agents.middlewares.model_response import append_visible_text, has_tool_call_intent, has_visible_content
 

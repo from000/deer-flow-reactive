@@ -65,9 +65,7 @@ def _run_without_langgraph(module: str) -> subprocess.CompletedProcess[str]:
 )
 def test_harness_agent_modules_import_without_langgraph(module: str) -> None:
     result = _run_without_langgraph(module)
-    assert result.returncode == 0, (
-        f"{module} still needs langgraph:\n{result.stderr[-2000:]}"
-    )
+    assert result.returncode == 0, f"{module} still needs langgraph:\n{result.stderr[-2000:]}"
 
 
 def test_middleware_base_is_reactivegraph() -> None:

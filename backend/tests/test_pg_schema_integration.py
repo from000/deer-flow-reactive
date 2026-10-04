@@ -32,12 +32,7 @@ async def test_postgres_schema_places_orm_checkpointer_and_store_tables_together
     app_config = SimpleNamespace(checkpointer=None, database=db_config)
 
     def _public_tables(rows):
-        return {
-            row.table_name
-            for row in rows
-            if row.table_schema == "public"
-            and ("checkpoint" in row.table_name or row.table_name == "store")
-        }
+        return {row.table_name for row in rows if row.table_schema == "public" and ("checkpoint" in row.table_name or row.table_name == "store")}
 
     await init_engine_from_config(db_config)
     engine = get_engine()
@@ -141,16 +136,12 @@ def test_sync_postgres_schema_places_checkpointer_and_store_tables_together():
         assert any(table_schema == schema and ("store" in table_name or "migration" in table_name) for table_schema, table_name in by_schema)
         # The run must not leak persistence tables into public. Existing tables
         # are tolerated because the local developer database may be shared.
-        public_after = {
-            table_name
-            for table_schema, table_name in by_schema
-            if table_schema == "public"
-            and ("checkpoint" in table_name or table_name == "store")
-        }
+        public_after = {table_name for table_schema, table_name in by_schema if table_schema == "public" and ("checkpoint" in table_name or table_name == "store")}
         assert public_after == public_before
     finally:
         with psycopg.connect(POSTGRES_URL or "", autocommit=True) as conn:
             conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
 
 @pytest.mark.anyio
 async def test_async_postgres_provider_uses_reactivegraph_native_backends():

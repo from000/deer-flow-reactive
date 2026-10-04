@@ -4,13 +4,9 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace as dc_replace
 from typing import NotRequired, override
 
-from reactivegraph.middleware import AgentState
-from reactivegraph.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage, ToolMessage
-from reactivegraph import END
-from reactivegraph import ToolCallRequest
-from reactivegraph import Runtime
-from reactivegraph import Command, Overwrite
+from reactivegraph import END, Command, Overwrite, Runtime, ToolCallRequest
+from reactivegraph.middleware import AgentMiddleware, AgentState
 
 from deerflow.agents.human_input import read_human_input_response
 from deerflow.agents.interaction_policy import resolve_run_interaction_policy

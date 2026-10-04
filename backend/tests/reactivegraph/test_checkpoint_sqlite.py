@@ -9,11 +9,10 @@ implementation may change internally.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import BaseModel
-
 from reactivegraph.checkpoint import (
     CheckpointStore,
     MemoryCheckpointSaver,
@@ -145,14 +144,8 @@ def test_sqlite_lineage_listing_and_metadata_filter(tmp_path) -> None:
         assert [t.checkpoint["id"] for t in history] == ["cp-4", "cp-3", "cp-2", "cp-1"]
         assert history[0].parent_config["configurable"]["checkpoint_id"] == "cp-3"
         assert history[-1].parent_config["configurable"]["checkpoint_id"] == "cp-1"
-        assert [
-            t.checkpoint["id"]
-            for t in saver.list(_cfg("thread-1"), filter={"source": "loop"}, limit=1)
-        ] == ["cp-3"]
-        assert [
-            t.checkpoint["id"]
-            for t in saver.list(_cfg("thread-1"), before=_cfg("thread-1", "cp-3"))
-        ] == ["cp-2", "cp-1"]
+        assert [t.checkpoint["id"] for t in saver.list(_cfg("thread-1"), filter={"source": "loop"}, limit=1)] == ["cp-3"]
+        assert [t.checkpoint["id"] for t in saver.list(_cfg("thread-1"), before=_cfg("thread-1", "cp-3"))] == ["cp-2", "cp-1"]
     finally:
         saver.close()
 
@@ -197,7 +190,7 @@ def test_sqlite_typed_values_round_trip(tmp_path) -> None:
     saver = SqliteCheckpointSaver(tmp_path / "checkpoints.sqlite")
     try:
         value = {
-            "when": datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            "when": datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
             "pair": ("a", 1),
             "model": Payload(name="x", count=2),
             "nested": {"items": [1, None, True]},
@@ -256,14 +249,9 @@ def test_sqlite_list_without_namespace_spans_the_thread(tmp_path) -> None:
         )
 
         thread_wide = {"configurable": {"thread_id": "t"}}
-        assert {
-            item.checkpoint["id"] for item in saver.list(thread_wide)
-        } == {"child", "root"}
+        assert {item.checkpoint["id"] for item in saver.list(thread_wide)} == {"child", "root"}
         assert [item.checkpoint["id"] for item in saver.list(_cfg("t"))] == ["root"]
-        assert [
-            item.checkpoint["id"]
-            for item in saver.list(_cfg("t", checkpoint_ns="subgraph"))
-        ] == ["child"]
+        assert [item.checkpoint["id"] for item in saver.list(_cfg("t", checkpoint_ns="subgraph"))] == ["child"]
     finally:
         saver.close()
 
@@ -358,14 +346,11 @@ def test_sqlite_is_a_checkpoint_store_and_uses_compatible_schema(tmp_path) -> No
 def test_get_checkpointer_sqlite_does_not_degrade_to_memory(tmp_path) -> None:
     reset_checkpointer()
     try:
-        saver = get_checkpointer(
-            {"type": "sqlite", "connection_string": str(tmp_path / "cp.sqlite")}
-        )
+        saver = get_checkpointer({"type": "sqlite", "connection_string": str(tmp_path / "cp.sqlite")})
         assert isinstance(saver, SqliteCheckpointSaver)
         assert not isinstance(saver, MemoryCheckpointSaver)
     finally:
         reset_checkpointer()
-
 
 
 @pytest.mark.anyio

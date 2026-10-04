@@ -51,11 +51,10 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, override
 
-from reactivegraph.middleware import AgentState
-from reactivegraph.middleware import AgentMiddleware
 from langchain_core.messages import AIMessage
-from reactivegraph.errors import GraphBubbleUp
 from reactivegraph import Runtime
+from reactivegraph.errors import GraphBubbleUp
+from reactivegraph.middleware import AgentMiddleware, AgentState
 
 from deerflow.agents.middlewares.safety_termination_detectors import (
     SafetyTermination,

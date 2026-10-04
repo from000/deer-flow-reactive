@@ -66,9 +66,7 @@ def _executor(module, model, monkeypatch, **kwargs):
     monkeypatch.setattr(module, "create_chat_model", lambda **_: model)
     middleware_module = ModuleType("deerflow.agents.middlewares.tool_error_handling_middleware")
     middleware_module.build_subagent_runtime_middlewares = lambda **_: []
-    monkeypatch.setitem(
-        sys.modules, "deerflow.agents.middlewares.tool_error_handling_middleware", middleware_module
-    )
+    monkeypatch.setitem(sys.modules, "deerflow.agents.middlewares.tool_error_handling_middleware", middleware_module)
 
     config = SubagentConfig(name="rg-probe", description="probe", model="probe-model")
     return module.SubagentExecutor(
@@ -183,9 +181,7 @@ def test_engine_error_message_matches_langchain_verbatim(monkeypatch) -> None:
         return str(excinfo.value)
 
     for limit in (2, 3, 4, 7):
-        assert message(rg_create_agent, ReactiveGraphRecursionError, limit) == message(
-            lc_create_agent, LangGraphRecursionError, limit
-        ), limit
+        assert message(rg_create_agent, ReactiveGraphRecursionError, limit) == message(lc_create_agent, LangGraphRecursionError, limit), limit
 
 
 def test_real_subagent_executor_catches_the_engine_recursion_error() -> None:

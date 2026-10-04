@@ -1,5 +1,11 @@
 line-length = 240
 target-version = "py312"
+# Vendored mirror of the ReactiveGraph core package. It is copied verbatim by
+# scripts/sync-reactivegraph-to-deerflow.sh, so it must not be reformatted here:
+# the core targets Python 3.10 and keeps typing_extensions imports that the
+# backend's 3.12 rules would rewrite, silently breaking byte-identity with the
+# source it is synced from. The core repo lints it with its own py310 config.
+extend-exclude = ["packages/reactivegraph"]
 
 [lint]
 select = ["E", "F", "I", "UP"]

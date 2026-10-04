@@ -8,7 +8,6 @@ engine demands. These tests pin the storage semantics only.
 from __future__ import annotations
 
 import pytest
-
 from reactivegraph.checkpoint import (
     CheckpointStore,
     MemoryCheckpointSaver,
@@ -74,9 +73,7 @@ class TestStoreContract:
 
     def test_records_parent_chain_and_lists_newest_first(self) -> None:
         store = CheckpointStore()
-        first = store.put(
-            _cfg("t1", "cp-1"), _cp("cp-1", {"n": 1}, "2026-01-01T00:00:00+00:00"), {}, {}
-        )
+        first = store.put(_cfg("t1", "cp-1"), _cp("cp-1", {"n": 1}, "2026-01-01T00:00:00+00:00"), {}, {})
         second = store.put(first, _cp("cp-2", {"n": 2}, "2026-01-01T00:00:01+00:00"), {}, {})
         store.put(second, _cp("cp-3", {"n": 3}, "2026-01-01T00:00:02+00:00"), {}, {})
 
@@ -111,14 +108,9 @@ class TestStoreContract:
         )
 
         thread_wide = {"configurable": {"thread_id": "t1"}}
-        assert {
-            item.checkpoint["id"] for item in store.list(thread_wide)
-        } == {"child", "root"}
+        assert {item.checkpoint["id"] for item in store.list(thread_wide)} == {"child", "root"}
         assert [item.checkpoint["id"] for item in store.list(_cfg("t1"))] == ["root"]
-        assert [
-            item.checkpoint["id"]
-            for item in store.list(_cfg("t1", checkpoint_ns="subgraph"))
-        ] == ["child"]
+        assert [item.checkpoint["id"] for item in store.list(_cfg("t1", checkpoint_ns="subgraph"))] == ["child"]
 
     def test_list_filters_by_metadata(self) -> None:
         store = CheckpointStore()

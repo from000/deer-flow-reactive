@@ -8,10 +8,9 @@ from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import override
 
-from reactivegraph.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
-from reactivegraph import ToolCallRequest
-from reactivegraph import Command
+from reactivegraph import Command, ToolCallRequest
+from reactivegraph.middleware import AgentMiddleware
 
 from deerflow.agents.thread_state import ThreadState
 

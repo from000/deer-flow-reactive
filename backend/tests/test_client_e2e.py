@@ -32,6 +32,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "../../.env"))
 # Markers
 # ---------------------------------------------------------------------------
 
+
 def requires_llm(func):
     """Mark credential-gated LLM calls as explicit opt-in live tests."""
     func = pytest.mark.live(func)

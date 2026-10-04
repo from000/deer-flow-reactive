@@ -71,11 +71,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, override
 
-from reactivegraph.middleware import AgentState
-from reactivegraph.middleware import AgentMiddleware
-from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import HumanMessage
 from reactivegraph import Runtime
+from reactivegraph.middleware import AgentMiddleware, AgentState, ModelCallResult, ModelRequest, ModelResponse
 
 from deerflow.agents.middlewares._bounded_dict import BoundedDict
 from deerflow.agents.middlewares.audit_context import (

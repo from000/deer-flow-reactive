@@ -14,9 +14,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, override
 
 from deerflow_extension_api import ContentKind, provenance_kwargs
-from reactivegraph.middleware import AgentMiddleware
-from reactivegraph.middleware import ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage
+from reactivegraph.middleware import AgentMiddleware, ModelRequest, ModelResponse
 
 from deerflow.runtime.events.catalog import (
     MIDDLEWARE_SKILL_ACTIVATION_TAG,

@@ -28,9 +28,9 @@ import sys
 from collections.abc import Sequence
 from typing import Any
 
+from reactivegraph import Overwrite
 from reactivegraph.channels.binop import BinaryOperatorAggregate
 from reactivegraph.errors import ErrorCode, InvalidUpdateError, create_error_message
-from reactivegraph import Overwrite
 
 try:  # pragma: no cover - exercised by the host-class patch tests
     from langgraph.channels.binop import (
@@ -80,9 +80,7 @@ def _as_overwrite(value: Any) -> tuple[bool, Any]:
     if HostBinaryOperatorAggregate is not None:
         # The host's ``Overwrite`` is a distinct class object; DeerFlow's write
         # paths (branch, /state) construct it while targeting engine channels.
-        host_overwrite = getattr(
-            sys.modules.get("langgraph.types"), "Overwrite", None
-        )
+        host_overwrite = getattr(sys.modules.get("langgraph.types"), "Overwrite", None)
         if host_overwrite is not None and isinstance(value, host_overwrite):
             return True, value.value
     return False, None
@@ -151,11 +149,7 @@ def ensure_binop_overwrite_first_write_patch() -> None:
     future LangGraph unwraps the first write itself, the probe reports the
     bug as absent and the patch stands down.
     """
-    targets = [
-        cls
-        for cls in _managed_binop_classes()
-        if not getattr(cls, _BINOP_PATCH_FLAG, False)
-    ]
+    targets = [cls for cls in _managed_binop_classes() if not getattr(cls, _BINOP_PATCH_FLAG, False)]
     if not targets:
         return
     try:

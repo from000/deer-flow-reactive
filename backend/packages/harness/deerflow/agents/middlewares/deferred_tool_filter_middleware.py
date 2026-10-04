@@ -16,12 +16,9 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import override
 
-from reactivegraph.middleware import AgentState
-from reactivegraph.middleware import AgentMiddleware
-from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import ToolMessage
-from reactivegraph import ToolCallRequest
-from reactivegraph import Command
+from reactivegraph import Command, ToolCallRequest
+from reactivegraph.middleware import AgentMiddleware, AgentState, ModelCallResult, ModelRequest, ModelResponse
 
 logger = logging.getLogger(__name__)
 

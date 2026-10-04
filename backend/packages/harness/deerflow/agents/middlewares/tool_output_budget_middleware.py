@@ -33,12 +33,9 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace as dc_replace
 from typing import TYPE_CHECKING, Any, override
 
-from reactivegraph.middleware import AgentState
-from reactivegraph.middleware import AgentMiddleware
-from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, ToolMessage
-from reactivegraph import ToolCallRequest
-from reactivegraph import Command
+from reactivegraph import Command, ToolCallRequest
+from reactivegraph.middleware import AgentMiddleware, AgentState, ModelCallResult, ModelRequest, ModelResponse
 
 from deerflow.agents.middlewares.tool_call_args import ToolCallOccurrence, pair_tool_call_results, rewrite_messages_tool_call_args
 from deerflow.agents.middlewares.tool_output_synopsis import render_tool_output_preview

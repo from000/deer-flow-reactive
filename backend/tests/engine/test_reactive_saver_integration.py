@@ -11,7 +11,7 @@ contract is genuinely honoured, not merely type-compatible.
 from __future__ import annotations
 
 import itertools
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, TypedDict
 
 import pytest
 from langchain_core.messages import AnyMessage
@@ -288,7 +288,6 @@ class TestPutWritesParity:
 
         assert not mismatches, f"{len(mismatches)} mismatching sequences, first: {mismatches[0]}"
 
-
     def test_writes_may_precede_checkpoint_like_upstream(self):
         """Pregel writes a task's ``__no_writes__`` marker before committing
         the checkpoint. Upstream savers accept that ordering; rejecting it
@@ -310,11 +309,7 @@ class TestPutWritesParity:
         upstream.put(cfg, checkpoint, {}, {})
         ours.put(cfg, checkpoint, {}, {})
 
-        assert (
-            list(ours.get_tuple(cfg).pending_writes)
-            == list(upstream.get_tuple(cfg).pending_writes)
-        )
-
+        assert list(ours.get_tuple(cfg).pending_writes) == list(upstream.get_tuple(cfg).pending_writes)
 
     def test_delta_snapshot_is_translated_to_host_type(self):
         """LangGraph's DeltaChannel only recognises its own namedtuple; the
@@ -325,7 +320,6 @@ class TestPutWritesParity:
         store = SqliteCheckpointSaver(":memory:")
         try:
             saver = ReactiveGraphSaver(store=store)
-            graph = _counter_graph(saver)
             # Build a graph that snapshots on every delta update.
             builder = StateGraph(DeltaState)
             builder.add_node("keep", lambda state: {})
@@ -333,9 +327,7 @@ class TestPutWritesParity:
             builder.add_edge("keep", END)
             delta_graph = builder.compile(checkpointer=saver)
             cfg = _cfg("delta-host")
-            delta_graph.invoke(
-                {"messages": [HumanMessage(content="m1", id="m1")]}, cfg
-            )
+            delta_graph.invoke({"messages": [HumanMessage(content="m1", id="m1")]}, cfg)
             value = delta_graph.get_state(cfg).values["messages"]
             assert [message.id for message in value] == ["m1"]
 
@@ -343,11 +335,7 @@ class TestPutWritesParity:
             # the channel and replay ancestor writes. Find the checkpoint that
             # actually carries the snapshot, then verify both layers preserve
             # LangGraph's private marker identity across SQLite serialization.
-            snapshots = [
-                tuple_.checkpoint["channel_values"]["messages"]
-                for tuple_ in saver.store.list(cfg, limit=None)
-                if "messages" in tuple_.checkpoint["channel_values"]
-            ]
+            snapshots = [tuple_.checkpoint["channel_values"]["messages"] for tuple_ in saver.store.list(cfg, limit=None) if "messages" in tuple_.checkpoint["channel_values"]]
             assert snapshots, "delta snapshot cadence must produce a stored snapshot"
             stored = snapshots[-1]
             assert isinstance(stored, HostDeltaSnapshot)

@@ -135,35 +135,25 @@ class ReactiveGraphSaver(BaseCheckpointSaver[str]):
     def storage_stats(self, thread_id: str) -> dict[str, int]:
         capability = getattr(self.store, "storage_stats", None)
         if capability is None:
-            raise NotImplementedError(
-                f"{type(self.store).__name__} does not support checkpoint storage stats"
-            )
+            raise NotImplementedError(f"{type(self.store).__name__} does not support checkpoint storage stats")
         return capability(thread_id)
 
     def checkpoint_ids_with_writes(self, thread_id: str) -> set[tuple[str, str]]:
         capability = getattr(self.store, "checkpoint_ids_with_writes", None)
         if capability is None:
-            raise NotImplementedError(
-                f"{type(self.store).__name__} does not support checkpoint write guards"
-            )
+            raise NotImplementedError(f"{type(self.store).__name__} does not support checkpoint write guards")
         return capability(thread_id)
 
     def delete_checkpoint(self, thread_id: str, key: tuple[str, str]) -> None:
         capability = getattr(self.store, "delete_checkpoint", None)
         if capability is None:
-            raise NotImplementedError(
-                f"{type(self.store).__name__} does not support checkpoint deletion"
-            )
+            raise NotImplementedError(f"{type(self.store).__name__} does not support checkpoint deletion")
         capability(thread_id, key)
 
-    def delete_unreachable_blobs(
-        self, thread_id: str, survivor_versions: set[Any]
-    ) -> None:
+    def delete_unreachable_blobs(self, thread_id: str, survivor_versions: set[Any]) -> None:
         capability = getattr(self.store, "delete_unreachable_blobs", None)
         if capability is None:
-            raise NotImplementedError(
-                f"{type(self.store).__name__} does not support checkpoint blob GC"
-            )
+            raise NotImplementedError(f"{type(self.store).__name__} does not support checkpoint blob GC")
         capability(thread_id, survivor_versions)
 
     # -- async -------------------------------------------------------------
@@ -212,30 +202,22 @@ class ReactiveGraphSaver(BaseCheckpointSaver[str]):
             return await capability(thread_id)
         return await asyncio.to_thread(self.storage_stats, thread_id)
 
-    async def acheckpoint_ids_with_writes(
-        self, thread_id: str
-    ) -> set[tuple[str, str]]:
+    async def acheckpoint_ids_with_writes(self, thread_id: str) -> set[tuple[str, str]]:
         capability = getattr(self.store, "acheckpoint_ids_with_writes", None)
         if capability is not None:
             return await capability(thread_id)
         return await asyncio.to_thread(self.checkpoint_ids_with_writes, thread_id)
 
-    async def adelete_checkpoint(
-        self, thread_id: str, key: tuple[str, str]
-    ) -> None:
+    async def adelete_checkpoint(self, thread_id: str, key: tuple[str, str]) -> None:
         capability = getattr(self.store, "adelete_checkpoint", None)
         if capability is not None:
             await capability(thread_id, key)
             return
         await asyncio.to_thread(self.delete_checkpoint, thread_id, key)
 
-    async def adelete_unreachable_blobs(
-        self, thread_id: str, survivor_versions: set[Any]
-    ) -> None:
+    async def adelete_unreachable_blobs(self, thread_id: str, survivor_versions: set[Any]) -> None:
         capability = getattr(self.store, "adelete_unreachable_blobs", None)
         if capability is not None:
             await capability(thread_id, survivor_versions)
             return
-        await asyncio.to_thread(
-            self.delete_unreachable_blobs, thread_id, survivor_versions
-        )
+        await asyncio.to_thread(self.delete_unreachable_blobs, thread_id, survivor_versions)

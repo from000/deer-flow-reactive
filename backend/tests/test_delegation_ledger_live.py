@@ -17,8 +17,6 @@ from typing import Any
 
 import pytest
 import yaml
-
-pytestmark = pytest.mark.live
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -28,6 +26,8 @@ from langgraph.runtime import Runtime
 from deerflow.agents.middlewares.durable_context_middleware import DurableContextMiddleware
 from deerflow.client import DeerFlowClient, StreamEvent
 from deerflow.config.app_config import reload_app_config, reset_app_config, set_app_config
+
+pytestmark = pytest.mark.live
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ROOT_CONFIG = _REPO_ROOT / "config.yaml"

@@ -23,7 +23,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
 from reactivegraph.checkpoint import SqliteCheckpointSaver
 
 pytestmark = pytest.mark.asyncio

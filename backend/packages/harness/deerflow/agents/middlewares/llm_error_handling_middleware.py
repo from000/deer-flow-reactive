@@ -13,11 +13,9 @@ from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from typing import Any, override
 
-from reactivegraph.middleware import AgentState
-from reactivegraph.middleware import AgentMiddleware
-from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage
 from reactivegraph.errors import GraphBubbleUp
+from reactivegraph.middleware import AgentMiddleware, AgentState, ModelCallResult, ModelRequest, ModelResponse
 
 from deerflow.agents.middlewares.model_response import append_visible_text, finish_reason, has_tool_call_intent, has_visible_content, last_ai_message
 from deerflow.config.app_config import AppConfig

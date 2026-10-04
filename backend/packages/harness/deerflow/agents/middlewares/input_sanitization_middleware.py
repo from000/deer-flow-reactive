@@ -27,11 +27,9 @@ from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from typing import override
 
-from reactivegraph.middleware import AgentState
-from reactivegraph.middleware import AgentMiddleware
-from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import HumanMessage
 from reactivegraph.errors import GraphBubbleUp
+from reactivegraph.middleware import AgentMiddleware, AgentState, ModelCallResult, ModelRequest, ModelResponse
 
 from deerflow.agents.middlewares.message_utils import requires_input_sanitization
 from deerflow.utils.messages import ORIGINAL_USER_CONTENT_KEY, message_content_to_text

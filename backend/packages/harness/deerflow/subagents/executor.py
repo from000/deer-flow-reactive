@@ -19,11 +19,11 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
-from langchain_core.tools import BaseTool
 from langchain_core.callbacks.base import BaseCallbackManager
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import var_child_runnable_config
+from langchain_core.tools import BaseTool
 from reactivegraph.create_agent import create_agent
 from reactivegraph.errors import GraphRecursionError
 

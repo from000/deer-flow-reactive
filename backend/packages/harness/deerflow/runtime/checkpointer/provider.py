@@ -51,7 +51,6 @@ POSTGRES_INSTALL = (
 POSTGRES_CONN_REQUIRED = "checkpointer.connection_string is required for the postgres backend"
 
 
-
 # ---------------------------------------------------------------------------
 # Config resolution
 # ---------------------------------------------------------------------------
@@ -142,9 +141,7 @@ def _sync_checkpointer_cm(config: CheckpointerConfig) -> Iterator[Checkpointer]:
         if not config.connection_string:
             raise ValueError(POSTGRES_CONN_REQUIRED)
 
-        store = PostgresCheckpointSaver(
-            config.connection_string, schema=config.postgres_schema or "public"
-        )
+        store = PostgresCheckpointSaver(config.connection_string, schema=config.postgres_schema or "public")
         saver = ReactiveGraphSaver(store=store)
         try:
             saver.setup()

@@ -14,11 +14,11 @@ from unittest.mock import patch
 
 import pytest
 from langgraph.store.base import BaseStore
+from reactivegraph.store import MemoryStore as ReactiveMemoryStore
 
 from deerflow.config.database_config import DatabaseConfig
 from deerflow.runtime.store.async_provider import make_store
 from deerflow.runtime.store.provider import get_store, reset_store, store_context
-from reactivegraph.store import MemoryStore as ReactiveMemoryStore
 
 
 @pytest.fixture(autouse=True)
@@ -51,14 +51,18 @@ def test_sync_memory_store_is_reactivegraph() -> None:
 
 
 def test_sync_singleton_is_reactivegraph() -> None:
-    with patch(
-        "deerflow.runtime.store.provider.ensure_config_loaded",
-    ), patch(
-        "deerflow.runtime.store.provider.get_checkpointer_config",
-        return_value=None,
-    ), patch(
-        "deerflow.runtime.store.provider.get_app_config",
-        side_effect=FileNotFoundError,
+    with (
+        patch(
+            "deerflow.runtime.store.provider.ensure_config_loaded",
+        ),
+        patch(
+            "deerflow.runtime.store.provider.get_checkpointer_config",
+            return_value=None,
+        ),
+        patch(
+            "deerflow.runtime.store.provider.get_app_config",
+            side_effect=FileNotFoundError,
+        ),
     ):
         assert isinstance(get_store(), ReactiveMemoryStore)
 
@@ -80,8 +84,18 @@ def test_memory_store_satisfies_host_protocol() -> None:
             # and host code must not require it to be.
             assert not isinstance(store, BaseStore)
             for method in (
-                "get", "put", "delete", "search", "list_namespaces", "batch",
-                "aget", "aput", "adelete", "asearch", "alist_namespaces", "abatch",
+                "get",
+                "put",
+                "delete",
+                "search",
+                "list_namespaces",
+                "batch",
+                "aget",
+                "aput",
+                "adelete",
+                "asearch",
+                "alist_namespaces",
+                "abatch",
             ):
                 assert callable(getattr(store, method))
 
@@ -99,9 +113,7 @@ async def test_thread_meta_store_roundtrip_on_reactive_store() -> None:
     store = ReactiveMemoryStore()
     threads = MemoryThreadMetaStore(store)
 
-    created = await threads.create(
-        "t-1", assistant_id="lead", display_name="First", user_id="u1"
-    )
+    created = await threads.create("t-1", assistant_id="lead", display_name="First", user_id="u1")
     assert created["thread_id"] == "t-1"
 
     fetched = await threads.get("t-1", user_id="u1")
@@ -128,12 +140,8 @@ async def test_thread_meta_search_filters_by_status_on_reactive_store() -> None:
 
     # New threads start "idle" (upstream default), so the status filter must
     # partition them exactly as it does on LangGraph's store.
-    idle_ids = {
-        r["thread_id"] for r in await threads.search(status="idle", user_id="u1", limit=10)
-    }
-    closed_ids = {
-        r["thread_id"] for r in await threads.search(status="closed", user_id="u1", limit=10)
-    }
+    idle_ids = {r["thread_id"] for r in await threads.search(status="idle", user_id="u1", limit=10)}
+    closed_ids = {r["thread_id"] for r in await threads.search(status="closed", user_id="u1", limit=10)}
     assert idle_ids == {"idle-1"}
     assert closed_ids == {"closed-1"}
 

@@ -16,8 +16,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from reactivegraph.middleware import AgentMiddleware
 from reactivegraph.create_agent import create_agent
+from reactivegraph.middleware import AgentMiddleware
 
 from deerflow.agents.features import RuntimeFeatures
 from deerflow.agents.middlewares.clarification_middleware import ClarificationMiddleware
@@ -30,8 +30,8 @@ from deerflow.tools.builtins import ask_clarification_tool
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
     from langchain_core.tools import BaseTool
-    from reactivegraph import BaseCheckpointSaver
     from langgraph.graph.state import CompiledStateGraph
+    from reactivegraph import BaseCheckpointSaver
 
     from deerflow.config.memory_config import MemoryConfig
     from deerflow.config.pii_redaction_config import PiiRedactionConfig

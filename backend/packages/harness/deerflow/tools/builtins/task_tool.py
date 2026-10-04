@@ -11,11 +11,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
-from langchain_core.tools import InjectedToolCallId, tool
 from langchain_core.callbacks import BaseCallbackManager
 from langchain_core.messages import ToolMessage
-from reactivegraph import get_stream_writer
-from reactivegraph import Command
+from langchain_core.tools import InjectedToolCallId, tool
+from reactivegraph import Command, get_stream_writer
 
 from deerflow.agents.middlewares.receipt_verification import verify_receipt_citations
 from deerflow.authz.principal import normalize_authz_attributes

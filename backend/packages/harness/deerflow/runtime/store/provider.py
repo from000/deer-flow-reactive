@@ -45,7 +45,6 @@ POSTGRES_STORE_INSTALL = (
 POSTGRES_CONN_REQUIRED = "checkpointer.connection_string is required for the postgres backend"
 
 
-
 def _resolve_store_config(app_config: AppConfig) -> CheckpointerConfig:
     """Resolve the Store backend from legacy or unified application config.
 
@@ -125,9 +124,7 @@ def _sync_store_cm(config) -> Iterator[BaseStore]:
         if not config.connection_string:
             raise ValueError(POSTGRES_CONN_REQUIRED)
 
-        store = PostgresStore(
-            config.connection_string, schema=config.postgres_schema or "public"
-        )
+        store = PostgresStore(config.connection_string, schema=config.postgres_schema or "public")
         try:
             store.setup()
             logger.info("Store: using ReactiveGraph PostgresStore")

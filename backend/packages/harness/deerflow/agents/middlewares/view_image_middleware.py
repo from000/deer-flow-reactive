@@ -9,9 +9,8 @@ from typing import override
 from uuid import uuid4
 
 from deerflow_extension_api import ContentKind, provenance_kwargs
-from reactivegraph.middleware import AgentMiddleware
-from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
+from reactivegraph.middleware import AgentMiddleware, ModelCallResult, ModelRequest, ModelResponse
 
 from deerflow.agents.thread_state import ThreadState
 from deerflow.sandbox.lease import run_sync_lifecycle_operation

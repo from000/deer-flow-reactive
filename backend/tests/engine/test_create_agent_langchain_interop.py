@@ -63,9 +63,7 @@ def test_real_langchain_model_and_tool_complete_a_tool_loop() -> None:
             [
                 LCAIMessage(
                     content="",
-                    tool_calls=[
-                        {"name": "add", "args": {"a": 2, "b": 3}, "id": "c1", "type": "tool_call"}
-                    ],
+                    tool_calls=[{"name": "add", "args": {"a": 2, "b": 3}, "id": "c1", "type": "tool_call"}],
                 ),
                 LCAIMessage(content="5"),
             ]
@@ -85,13 +83,7 @@ def test_real_langchain_model_and_tool_complete_a_tool_loop() -> None:
 @tool
 def route(city: str, tool_call_id: Annotated[str, InjectedToolCallId]) -> Command:
     """Route to a city, returning a graph Command instead of a value."""
-    return Command(
-        update={
-            "messages": [
-                LCToolMessage(content=f"routed:{city}", tool_call_id=tool_call_id)
-            ]
-        }
-    )
+    return Command(update={"messages": [LCToolMessage(content=f"routed:{city}", tool_call_id=tool_call_id)]})
 
 
 @tool
@@ -106,9 +98,7 @@ def _drive(tool_obj: BaseTool, name: str, args: dict) -> dict:
             [
                 LCAIMessage(
                     content="",
-                    tool_calls=[
-                        {"name": name, "args": args, "id": "c1", "type": "tool_call"}
-                    ],
+                    tool_calls=[{"name": name, "args": args, "id": "c1", "type": "tool_call"}],
                 ),
                 LCAIMessage(content="done"),
             ]

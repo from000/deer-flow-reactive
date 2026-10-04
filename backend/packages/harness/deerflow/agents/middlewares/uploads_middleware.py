@@ -9,11 +9,10 @@ from collections import Counter
 from pathlib import Path
 from typing import NotRequired, override
 
-from reactivegraph.middleware import AgentState
-from reactivegraph.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import run_in_executor
 from reactivegraph import Runtime
+from reactivegraph.middleware import AgentMiddleware, AgentState
 
 from deerflow.agents.middlewares.input_sanitization_middleware import neutralize_untrusted_tags
 from deerflow.config.paths import Paths, get_paths

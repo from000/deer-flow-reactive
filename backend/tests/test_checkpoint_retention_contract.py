@@ -184,6 +184,7 @@ class _SaverAccessor:
 # Normalized storage stats (same shape as bench_channels._normalized_storage_stats)
 # ---------------------------------------------------------------------------
 
+
 def _normalized(
     *,
     checkpoint_rows: int,

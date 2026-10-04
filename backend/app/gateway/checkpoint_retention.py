@@ -189,11 +189,7 @@ def _ensure_supported_saver(saver: BaseCheckpointSaver) -> None:
         pass
     if async_postgres_saver is not None and isinstance(saver, async_postgres_saver):
         return
-    raise NotImplementedError(
-        "checkpoint retention requires the async maintenance capabilities "
-        f"{_MAINTENANCE_CAPABILITIES!r} or AsyncPostgresSaver, got "
-        f"{type(saver).__module__}.{type(saver).__name__}"
-    )
+    raise NotImplementedError(f"checkpoint retention requires the async maintenance capabilities {_MAINTENANCE_CAPABILITIES!r} or AsyncPostgresSaver, got {type(saver).__module__}.{type(saver).__name__}")
 
 
 async def _thread_storage_stats(saver: Any, thread_id: str) -> dict[str, int]:

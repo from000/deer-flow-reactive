@@ -60,13 +60,10 @@ from dataclasses import dataclass
 from dataclasses import replace as dc_replace
 from typing import override
 
-from reactivegraph.middleware import AgentState
-from reactivegraph.middleware import AgentMiddleware
-from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import HumanMessage, ToolMessage
+from reactivegraph import Command, ToolCallRequest
 from reactivegraph.errors import GraphBubbleUp
-from reactivegraph import ToolCallRequest
-from reactivegraph import Command
+from reactivegraph.middleware import AgentMiddleware, AgentState, ModelCallResult, ModelRequest, ModelResponse
 
 from deerflow.agents.middlewares.message_utils import requires_input_sanitization
 from deerflow.agents.middlewares.tool_result_sanitization_middleware import _REMOTE_CONTENT_TOOL_NAMES

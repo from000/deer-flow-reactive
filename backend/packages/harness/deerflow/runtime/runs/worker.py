@@ -33,8 +33,7 @@ from datetime import datetime
 from functools import lru_cache
 from typing import Any, Final, Literal, cast
 
-from reactivegraph import empty_checkpoint
-from reactivegraph import Overwrite
+from reactivegraph import Overwrite, empty_checkpoint
 
 from deerflow.agents.goal_state import GoalEvaluation, GoalState
 from deerflow.agents.middlewares.input_sanitization_middleware import neutralize_untrusted_tags

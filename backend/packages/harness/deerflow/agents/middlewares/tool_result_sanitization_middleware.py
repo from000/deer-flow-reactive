@@ -30,11 +30,9 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace as dc_replace
 from typing import override
 
-from reactivegraph.middleware import AgentState
-from reactivegraph.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
-from reactivegraph import ToolCallRequest
-from reactivegraph import Command
+from reactivegraph import Command, ToolCallRequest
+from reactivegraph.middleware import AgentMiddleware, AgentState
 
 from deerflow.agents.middlewares.tool_transform_meta import append_tool_transform
 from deerflow.tools.mcp_metadata import is_mcp_tool

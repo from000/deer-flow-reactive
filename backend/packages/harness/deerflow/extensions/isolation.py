@@ -33,8 +33,8 @@ from collections.abc import Awaitable, Callable
 from types import TracebackType
 from typing import Any
 
-from reactivegraph.middleware import AgentMiddleware
 from reactivegraph.errors import GraphBubbleUp
+from reactivegraph.middleware import AgentMiddleware
 
 from deerflow.extensions.loader import Diagnostic
 

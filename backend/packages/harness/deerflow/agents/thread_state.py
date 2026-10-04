@@ -4,7 +4,6 @@ from collections.abc import Mapping, Sequence
 from functools import cache
 from typing import Annotated, Any, NotRequired, TypedDict, cast, get_type_hints
 
-from reactivegraph.middleware import AgentState
 from langchain_core.messages import (
     AnyMessage,
     BaseMessageChunk,
@@ -12,8 +11,9 @@ from langchain_core.messages import (
     convert_to_messages,
     message_chunk_to_message,
 )
-from reactivegraph.channels import DeltaChannel
 from reactivegraph import REMOVE_ALL_MESSAGES
+from reactivegraph.channels import DeltaChannel
+from reactivegraph.middleware import AgentState
 
 import deerflow.checkpoint_patches as _checkpoint_patches  # noqa: F401 - import-time saver fixes
 from deerflow.agents.goal_state import GoalState

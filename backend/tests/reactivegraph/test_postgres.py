@@ -7,37 +7,38 @@ real PostgreSQL server and verify the native ReactiveGraph durable backends.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
-import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Core package tests are copied from the ReactiveGraph repository; add the
 # source package explicitly because the backend's editable workspace paths do
 # not include this standalone package directory.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packages" / "reactivegraph"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "packages" / "reactivegraph"))  # noqa: E402
 
 import pytest
 from pydantic import BaseModel
-
 from reactivegraph.checkpoint import (
     PostgresCheckpointSaver,
     get_checkpointer,
     reset_checkpointer,
 )
-class Payload(BaseModel):
-    name: str
-    count: int
-
+from reactivegraph.store import get_store, reset_store
 
 try:
     from reactivegraph.store import PostgresStore
 except ImportError:
     PostgresStore = None
-from reactivegraph.store import get_store, reset_store
+
+
+class Payload(BaseModel):
+    name: str
+    count: int
+
 
 DSN = os.environ.get("REACTIVEGRAPH_TEST_POSTGRES_DSN")
 
@@ -112,9 +113,7 @@ def test_postgres_checkpoint_round_trip_reopen_and_maintenance(dsn: str, schema:
         _drop_schema(dsn, schema)
 
 
-def test_postgres_checkpoint_put_is_immutable_for_existing_id(
-    dsn: str, schema: str
-) -> None:
+def test_postgres_checkpoint_put_is_immutable_for_existing_id(dsn: str, schema: str) -> None:
     """Reusing a checkpoint id must not rewrite its immutable snapshot."""
     if not dsn:
         pytest.skip("set REACTIVEGRAPH_TEST_POSTGRES_DSN")
@@ -152,9 +151,7 @@ def test_postgres_checkpoint_put_is_immutable_for_existing_id(
         _drop_schema(dsn, schema)
 
 
-def test_postgres_checkpoint_lineage_listing_and_metadata_filter(
-    dsn: str, schema: str
-) -> None:
+def test_postgres_checkpoint_lineage_listing_and_metadata_filter(dsn: str, schema: str) -> None:
     """PostgreSQL must preserve checkpoint lineage and listing semantics."""
     if not dsn:
         pytest.skip("set REACTIVEGRAPH_TEST_POSTGRES_DSN")
@@ -199,16 +196,8 @@ def test_postgres_checkpoint_lineage_listing_and_metadata_filter(
         ]
         assert history[0].parent_config["configurable"]["checkpoint_id"] == "cp-3"
         assert history[-1].parent_config["configurable"]["checkpoint_id"] == "cp-1"
-        assert [
-            item.checkpoint["id"]
-            for item in saver.list(
-                cfg("pg-lineage"), filter={"source": "loop"}, limit=1
-            )
-        ] == ["cp-3"]
-        assert [
-            item.checkpoint["id"]
-            for item in saver.list(cfg("pg-lineage"), before=cfg("pg-lineage", "cp-3"))
-        ] == ["cp-2", "cp-1"]
+        assert [item.checkpoint["id"] for item in saver.list(cfg("pg-lineage"), filter={"source": "loop"}, limit=1)] == ["cp-3"]
+        assert [item.checkpoint["id"] for item in saver.list(cfg("pg-lineage"), before=cfg("pg-lineage", "cp-3"))] == ["cp-2", "cp-1"]
 
         # Without an explicit checkpoint_ns, listing spans the whole thread.
         saver.put(
@@ -217,18 +206,13 @@ def test_postgres_checkpoint_lineage_listing_and_metadata_filter(
             {},
             {},
         )
-        assert {
-            item.checkpoint["id"]
-            for item in saver.list({"configurable": {"thread_id": "pg-lineage"}})
-        } == {"cp-1", "cp-2", "cp-3", "cp-4", "child"}
+        assert {item.checkpoint["id"] for item in saver.list({"configurable": {"thread_id": "pg-lineage"}})} == {"cp-1", "cp-2", "cp-3", "cp-4", "child"}
     finally:
         saver.close()
         _drop_schema(dsn, schema)
 
 
-def test_postgres_checkpoint_write_idempotency_and_typed_round_trip(
-    dsn: str, schema: str
-) -> None:
+def test_postgres_checkpoint_write_idempotency_and_typed_round_trip(dsn: str, schema: str) -> None:
     """Regular writes are idempotent, reserved writes overwrite, and values round-trip."""
     if not dsn:
         pytest.skip("set REACTIVEGRAPH_TEST_POSTGRES_DSN")
@@ -242,7 +226,7 @@ def test_postgres_checkpoint_write_idempotency_and_typed_round_trip(
                 "id": "cp-1",
                 "ts": "2026-01-01T00:00:00+00:00",
                 "channel_values": {
-                    "when": datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+                    "when": datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
                     "pair": ("a", 1),
                     "model": Payload(name="x", count=2),
                     "nested": {"items": [1, None, True]},
@@ -265,7 +249,7 @@ def test_postgres_checkpoint_write_idempotency_and_typed_round_trip(
             ("task-1", "messages", ["first"]),
         ]
         loaded = tuple_.checkpoint["channel_values"]
-        assert loaded["when"] == datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+        assert loaded["when"] == datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
         assert loaded["pair"] == ("a", 1)
         assert loaded["model"] == Payload(name="x", count=2)
         assert loaded["nested"] == {"items": [1, None, True]}
@@ -311,9 +295,7 @@ def test_postgres_writes_may_precede_checkpoint(dsn: str, schema: str) -> None:
         _drop_schema(dsn, schema)
 
 
-def test_postgres_store_list_namespaces_excludes_expired_rows(
-    dsn: str, schema: str
-) -> None:
+def test_postgres_store_list_namespaces_excludes_expired_rows(dsn: str, schema: str) -> None:
     """A namespace visible only through expired items must be hidden."""
     if not dsn:
         pytest.skip("set REACTIVEGRAPH_TEST_POSTGRES_DSN")
@@ -371,9 +353,7 @@ def test_postgres_store_round_trip_search_and_reopen(dsn: str, schema: str) -> N
         _drop_schema(dsn, schema)
 
 
-def test_postgres_store_put_resets_created_and_updated_at(
-    dsn: str, schema: str
-) -> None:
+def test_postgres_store_put_resets_created_and_updated_at(dsn: str, schema: str) -> None:
     """A repeated put replaces the item and resets both timestamps."""
     if not dsn:
         pytest.skip("set REACTIVEGRAPH_TEST_POSTGRES_DSN")
@@ -432,12 +412,8 @@ async def test_postgres_async_mirror_delete_and_lifecycle(dsn: str, schema: str)
         tuple_ = await saver.aget_tuple(config)
         assert tuple_ is not None
         assert tuple_.pending_writes == [("task-async", "value", "queued")]
-        assert [item.checkpoint["id"] async for item in saver.alist(config)] == [
-            "cp-async"
-        ]
-        assert await saver.acheckpoint_ids_with_writes("async-thread") == {
-            ("", "cp-async")
-        }
+        assert [item.checkpoint["id"] async for item in saver.alist(config)] == ["cp-async"]
+        assert await saver.acheckpoint_ids_with_writes("async-thread") == {("", "cp-async")}
         assert (await saver.astorage_stats("async-thread"))["checkpoint_rows"] == 1
 
         await saver.adelete_checkpoint("async-thread", ("", "cp-async"))
@@ -502,9 +478,8 @@ def test_postgres_operations_fail_closed_after_close(dsn: str, schema: str) -> N
     finally:
         _drop_schema(dsn, schema)
 
-def test_postgres_concurrent_instances_bootstrap_and_preserve_writes(
-    dsn: str, schema: str
-) -> None:
+
+def test_postgres_concurrent_instances_bootstrap_and_preserve_writes(dsn: str, schema: str) -> None:
     """Separate clients can bootstrap one schema and write concurrently."""
     if not dsn:
         pytest.skip("set REACTIVEGRAPH_TEST_POSTGRES_DSN")
@@ -549,9 +524,7 @@ def test_postgres_concurrent_instances_bootstrap_and_preserve_writes(
         store = PostgresStore(dsn, schema=schema)
         try:
             assert saver.storage_stats(thread_id)["checkpoint_rows"] == worker_count
-            assert saver.checkpoint_ids_with_writes(thread_id) == {
-                ("", f"cp-{worker}") for worker in range(worker_count)
-            }
+            assert saver.checkpoint_ids_with_writes(thread_id) == {("", f"cp-{worker}") for worker in range(worker_count)}
             for worker in range(worker_count):
                 tuple_ = saver.get_tuple(
                     {
@@ -563,9 +536,7 @@ def test_postgres_concurrent_instances_bootstrap_and_preserve_writes(
                 )
                 assert tuple_ is not None
                 assert tuple_.checkpoint["channel_values"] == {"worker": worker}
-                assert tuple_.pending_writes == [
-                    (f"task-{worker}", "worker", worker)
-                ]
+                assert tuple_.pending_writes == [(f"task-{worker}", "worker", worker)]
                 item = store.get(("concurrent",), f"key-{worker}")
                 assert item is not None
                 assert item.value == {"worker": worker}
@@ -576,9 +547,7 @@ def test_postgres_concurrent_instances_bootstrap_and_preserve_writes(
         _drop_schema(dsn, schema)
 
 
-def test_postgres_concurrent_same_key_upsert_keeps_complete_value(
-    dsn: str, schema: str
-) -> None:
+def test_postgres_concurrent_same_key_upsert_keeps_complete_value(dsn: str, schema: str) -> None:
     """Concurrent writers to one key leave one complete committed value."""
     if not dsn:
         pytest.skip("set REACTIVEGRAPH_TEST_POSTGRES_DSN")
@@ -616,11 +585,7 @@ def test_postgres_concurrent_same_key_upsert_keeps_complete_value(
                 item.value["worker"],
                 item.value["round"],
                 item.value["payload"],
-            ) in {
-                (worker, round_, f"{worker}:{round_}")
-                for worker in range(worker_count)
-                for round_ in range(rounds)
-            }
+            ) in {(worker, round_, f"{worker}:{round_}") for worker in range(worker_count) for round_ in range(rounds)}
         finally:
             store.close()
     finally:

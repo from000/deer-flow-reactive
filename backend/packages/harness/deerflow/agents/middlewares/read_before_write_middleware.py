@@ -43,11 +43,9 @@ import weakref
 from collections.abc import Awaitable, Callable
 from typing import Any, override
 
-from reactivegraph.middleware import AgentMiddleware
-from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, ToolMessage
-from reactivegraph import ToolCallRequest
-from reactivegraph import Command
+from reactivegraph import Command, ToolCallRequest
+from reactivegraph.middleware import AgentMiddleware, ModelCallResult, ModelRequest, ModelResponse
 
 from deerflow.agents.middlewares.tool_call_args import pair_tool_call_results, rewrite_messages_tool_call_args
 from deerflow.agents.middlewares.tool_result_meta import normalize_tool_result, stamp_exception_meta

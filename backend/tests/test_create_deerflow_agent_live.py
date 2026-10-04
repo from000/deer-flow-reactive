@@ -12,6 +12,7 @@ import uuid
 import pytest
 from langchain_core.tools import tool
 
+
 def requires_llm(func):
     """Mark credential-gated LLM calls as explicit opt-in live tests."""
     func = pytest.mark.live(func)

@@ -1,10 +1,9 @@
 from pathlib import Path
 from typing import Annotated
 
-from langchain_core.tools import InjectedToolCallId, tool
 from langchain_core.messages import ToolMessage
-from reactivegraph import get_config
-from reactivegraph import Command
+from langchain_core.tools import InjectedToolCallId, tool
+from reactivegraph import Command, get_config
 
 from deerflow.config.paths import VIRTUAL_PATH_PREFIX, get_paths
 from deerflow.runtime.user_context import resolve_runtime_user_id

@@ -6,10 +6,9 @@ import logging
 from collections.abc import Mapping, Sequence
 from typing import Any, TypedDict, override
 
-from reactivegraph.middleware import AgentState
-from reactivegraph.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage
 from reactivegraph import Runtime
+from reactivegraph.middleware import AgentMiddleware, AgentState
 
 from deerflow.agents.middlewares.message_utils import is_genuine_user_message
 from deerflow.agents.middlewares.tool_promotion_audit_middleware import record_tool_promotion

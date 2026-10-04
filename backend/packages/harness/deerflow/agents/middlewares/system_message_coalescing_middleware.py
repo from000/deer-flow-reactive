@@ -31,10 +31,8 @@ from collections.abc import Awaitable, Callable
 from typing import override
 
 from deerflow_extension_api import ContentKind, provenance_kwargs
-from reactivegraph.middleware import AgentState
-from reactivegraph.middleware import AgentMiddleware
-from reactivegraph.middleware import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import SystemMessage
+from reactivegraph.middleware import AgentMiddleware, AgentState, ModelCallResult, ModelRequest, ModelResponse
 
 from deerflow.agents.middlewares.dynamic_context_middleware import is_dynamic_context_reminder
 

@@ -2,11 +2,9 @@ import logging
 from datetime import UTC, datetime
 from typing import NotRequired, override
 
-from reactivegraph.middleware import AgentState
-from reactivegraph.middleware import AgentMiddleware
 from langchain_core.messages import HumanMessage
-from reactivegraph import get_config
-from reactivegraph import Runtime
+from reactivegraph import Runtime, get_config
+from reactivegraph.middleware import AgentMiddleware, AgentState
 
 from deerflow.agents.thread_state import ThreadDataState
 from deerflow.config.paths import Paths, get_paths

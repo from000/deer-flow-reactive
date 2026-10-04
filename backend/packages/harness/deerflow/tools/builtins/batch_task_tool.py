@@ -8,10 +8,10 @@ from contextvars import ContextVar
 from dataclasses import asdict, replace
 from typing import Annotated, Any, cast
 
-from langchain_core.tools import InjectedToolCallId, tool
 from langchain_core.messages import ToolMessage
-from reactivegraph import Command
+from langchain_core.tools import InjectedToolCallId, tool
 from pydantic import BaseModel, Field
+from reactivegraph import Command
 
 from deerflow.authz.principal import normalize_authz_attributes
 from deerflow.knowledge_scope import KNOWLEDGE_SCOPE_RUNTIME_KEY, execution_scope

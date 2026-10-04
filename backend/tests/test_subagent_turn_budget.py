@@ -200,9 +200,7 @@ def _smallest_limit_completing_reactivegraph(chain: list[AgentMiddleware], turns
     low, high = 1, 512
     while low < high:
         candidate = (low + high) // 2
-        agent = rg_create_agent(
-            model=_ScriptedModel(turns=turns), tools=[ping], middleware=chain
-        )
+        agent = rg_create_agent(model=_ScriptedModel(turns=turns), tools=[ping], middleware=chain)
         try:
             agent.invoke({"messages": [("user", "go")]}, {"recursion_limit": candidate})
         except RGRecursionError:
@@ -229,9 +227,7 @@ class TestReactiveGraphMatchesLangChainAccounting:
     def test_smallest_completing_limit_matches_langchain(self, hooks, turns):
         chain = [_middleware(*spec) for spec in hooks]
 
-        assert _smallest_limit_completing_reactivegraph(chain, turns) == _smallest_limit_completing(
-            chain, turns
-        )
+        assert _smallest_limit_completing_reactivegraph(chain, turns) == _smallest_limit_completing(chain, turns)
 
 
 class TestFormulaMatchesCompiledGraph:

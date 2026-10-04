@@ -31,8 +31,8 @@ from typing import Annotated, Any
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import tool
-from reactivegraph import Command
 from pydantic import BaseModel, BeforeValidator
+from reactivegraph import Command
 
 from deerflow.config.agents_config import load_agent_config, preserve_non_managed_fields, validate_agent_name
 from deerflow.config.app_config import get_app_config

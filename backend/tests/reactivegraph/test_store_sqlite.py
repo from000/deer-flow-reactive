@@ -5,7 +5,6 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
-
 from reactivegraph.store import (
     InvalidNamespaceError,
     MemoryStore,
@@ -92,12 +91,7 @@ def test_sqlite_store_search_filters_operators_and_paging(tmp_path) -> None:
         assert [i.key for i in store.search(("docs",), filter={"status": "open"})] == ["c", "a"]
         assert all(isinstance(item, SearchItem) for item in store.search(("docs",)))
         assert [i.key for i in store.search(("docs",), filter={"score": {"$gte": 2}})] == ["c", "b"]
-        assert [
-            i.key
-            for i in store.search(
-                ("docs",), filter={"score": {"$gt": 1}}, limit=1, offset=1
-            )
-        ] == ["b"]
+        assert [i.key for i in store.search(("docs",), filter={"score": {"$gt": 1}}, limit=1, offset=1)] == ["b"]
     finally:
         store.close()
 
@@ -174,9 +168,7 @@ def test_sqlite_store_ttl_is_stored_as_langgraph_compatible_timestamp(tmp_path) 
         store.close()
     conn = sqlite3.connect(path)
     try:
-        row = conn.execute(
-            "SELECT expires_at, ttl_minutes, typeof(expires_at) FROM store"
-        ).fetchone()
+        row = conn.execute("SELECT expires_at, ttl_minutes, typeof(expires_at) FROM store").fetchone()
         assert row is not None
         assert row[1] == 5
         assert row[2] == "text"
@@ -210,7 +202,6 @@ def test_sqlite_store_is_not_memory_store(tmp_path) -> None:
     finally:
         store.close()
         reset_store()
-
 
 
 def test_unknown_store_backend_fails_closed() -> None:
