@@ -23,6 +23,32 @@ live-model tests:       previously failing four tests retried, 4 passed
 A DSN-less local run skips the external-service tests and therefore reports
 19,098 passed / 168 skipped; the CI figure is the authoritative one.
 
+### Reproducing the verification locally
+
+The exact CI invocation is reproducible from a checkout of this repository:
+start `postgres:17` (user/password/db = `deerflow`/`deerflow`/`deerflow_test`)
+and `redis:7-alpine` on their default ports, then run
+
+```bash
+export TEST_POSTGRES_URI='postgresql://deerflow:deerflow@localhost:5432/deerflow_test?sslmode=disable'
+export DEDUPE_TEST_POSTGRES_URL="$TEST_POSTGRES_URI"
+cd backend
+uv sync --group dev --extra postgres
+for shard in 1 2 3 4; do make test-shard SPLITS=4 GROUP=$shard; done
+```
+
+Alternatively, recreate both services with Docker:
+
+```bash
+docker run -d --name rg-deerflow-pg -p 5432:5432 \
+  -e POSTGRES_USER=deerflow -e POSTGRES_PASSWORD=deerflow \
+  -e POSTGRES_DB=deerflow_test postgres:17
+docker run -d --name rg-deerflow-redis -p 6379:6379 redis:7-alpine
+```
+
+All four shards must report `0 failed`; the combined pass/skip counts are the
+ones quoted above.
+
 A real full-factory comparison against upstream produced normalized output parity:
 
 | Metric | upstream LangGraph | ReactiveGraph |
