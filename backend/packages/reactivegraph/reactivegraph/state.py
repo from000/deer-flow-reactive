@@ -35,6 +35,7 @@ def path_to_string(path: tuple) -> str:
 
 
 def parse_path(canonical: str) -> tuple:
+    """Split a dotted/bracketed path into its segments."""
     if canonical == "":
         return ()
     segments: list = []
@@ -204,6 +205,7 @@ class TrackedStateProxy:
         return value
 
     def get(self, key: Any, default: Any = None) -> Any:
+        """Tracked read of *key*, recording it in the current scope."""
         raw = self._raw()
         self._record_read((key,))
         if isinstance(raw, dict) and key in raw:
@@ -211,6 +213,7 @@ class TrackedStateProxy:
         return default
 
     def keys(self) -> list:
+        """Tracked state keys in insertion order."""
         raw = self._raw()
         return list(raw.keys()) if isinstance(raw, dict) else []
 
@@ -256,6 +259,7 @@ class TrackedStateProxy:
             self._record_patch("remove", (key,), key, before)
 
     def append(self, value: Any) -> None:
+        """Append one tracked path mutation."""
         raw = self._raw()
         if isinstance(raw, list):
             before = list(raw)
@@ -283,6 +287,7 @@ class TrackedStateProxy:
         return list(self._patches)
 
     def clear_tracking(self) -> None:
+        """Reset the tracked read/write sets."""
         self._reads.clear()
         self._patches.clear()
         self._children.clear()
@@ -298,9 +303,11 @@ class TrackedState:
 
     @property
     def proxy(self) -> TrackedStateProxy:
+        """Create a tracked proxy over this state."""
         return self._proxy
 
     def begin(self) -> TrackedState:
+        """Start a new tracking scope."""
         self._proxy.clear_tracking()
         return self
 
@@ -314,9 +321,11 @@ class TrackedState:
         self._proxy = TrackedStateProxy(_deep_copy(self._committed))
 
     def version(self) -> int:
+        """State version incremented on every commit."""
         return self._version
 
     def state(self) -> dict:
+        """The underlying plain dict."""
         return self._proxy.snapshot()
 
 

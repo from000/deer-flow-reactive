@@ -55,6 +55,7 @@ class ReactiveSerializer:
     """Typed msgpack serializer with a no-pickle security boundary."""
 
     def dumps_typed(self, obj: Any) -> tuple[str, bytes]:
+        """Serialize a value with its type tag."""
         if obj is None:
             return "null", b""
         if isinstance(obj, bytes):
@@ -64,6 +65,7 @@ class ReactiveSerializer:
         return "msgpack", self._pack(obj)
 
     def loads_typed(self, data: tuple[str, bytes]) -> Any:
+        """Deserialize a type-tagged value."""
         type_, payload = data
         if type_ == "null":
             return None
@@ -80,6 +82,7 @@ class ReactiveSerializer:
         raise SerializationError(f"unknown serialization type: {type_!r}")
 
     def dumps_json(self, value: Any) -> str:
+        """Serialize a value as JSON bytes."""
         return json.dumps(
             _json_encode(value, depth=0),
             ensure_ascii=False,
@@ -87,6 +90,7 @@ class ReactiveSerializer:
         )
 
     def loads_json(self, value: str | bytes) -> Any:
+        """Deserialize JSON bytes into a value."""
         decoded = json.loads(value)
         return _json_decode(decoded, depth=0)
 
@@ -238,71 +242,107 @@ class ReactiveSerializer:
         return msgpack.ExtType(code, self._pack_prepared(value))
 
     def _ext_hook(self, code: int, data: bytes) -> Any:
+        """Decode one msgpack extension frame (fail-closed on unknown codes).
+
+        Every branch resolves through an allow-list helper
+        (``_safe_builtin_class`` / ``_loaded_enum_class`` /
+        ``_loaded_pydantic_class``) instead of importing arbitrary callables
+        named by the payload, so a hostile checkpoint cannot trigger imports.
+        """
         value = self._unpack(data)
-        if code == EXT_CONSTRUCTOR_POS_ARGS:
-            module, name, args = value
-            if (module, name) == ("builtins", "tuple"):
-                return tuple(args)
-            if module == "datetime":
-                cls = _safe_builtin_class(
-                    module,
-                    name,
-                    (dt.date, dt.datetime, dt.time, dt.timedelta, dt.tzinfo),
-                )
-                if name in {"date", "datetime", "timedelta", "timezone"}:
-                    return cls(*args)
-            if module == "pathlib":
-                cls = _safe_builtin_class(module, name, (pathlib.PurePath,))
-                return cls(*args)
-            if module == "re" and name == "compile":
-                return re.compile(*args)
-            raise SerializationError(f"blocked constructor: {module}.{name}")
-        if code == EXT_CONSTRUCTOR_SINGLE_ARG:
-            module, name, arg = value
-            if module == "builtins":
-                cls = _safe_builtin_class(module, name, (set, frozenset))
-                return cls(arg)
-            if module == "collections" and name == "deque":
-                return deque(arg)
-            if module == "uuid":
-                return uuid.UUID(arg)
-            if module == "decimal":
-                return decimal.Decimal(arg)
-            # Enums carry their real module/name (e.g. ``myapp.Color``), so
-            # resolve them only from an already-loaded module and require the
-            # target to actually be an Enum subclass.
-            try:
-                enum_cls = _loaded_enum_class(module, name)
-            except SerializationError:
-                raise SerializationError(f"blocked constructor: {module}.{name}") from None
-            return enum_cls(arg)
-        if code == EXT_CONSTRUCTOR_KW_ARGS:
-            module, name, kwargs = value
-            if module == "datetime" and name == "time":
-                return dt.time(**kwargs)
-            raise SerializationError(f"blocked keyword constructor: {module}.{name}")
-        if code == EXT_METHOD_SINGLE_ARG:
-            module, name, arg, method = value
-            if (module, name, method) == ("datetime", "datetime", "fromisoformat"):
-                return dt.datetime.fromisoformat(arg)
-            raise SerializationError(f"blocked method call: {module}.{name}.{method}")
-        if code in (EXT_PYDANTIC_V1, EXT_PYDANTIC_V2):
-            module, name, dumped = value[:3]
-            cls = _loaded_pydantic_class(module, name)
-            if code == EXT_PYDANTIC_V1:
-                try:
-                    return cls(**dumped)
-                except Exception:
-                    return cls.construct(**dumped)
-            return cls.model_validate(dumped)
-        if code == EXT_DELTA_SNAPSHOT:
-            return _restore_delta_snapshot(value)
-        raise SerializationError(f"blocked msgpack extension code: {code}")
+        handlers = {
+            EXT_CONSTRUCTOR_POS_ARGS: _decode_pos_args,
+            EXT_CONSTRUCTOR_SINGLE_ARG: _decode_single_arg,
+            EXT_CONSTRUCTOR_KW_ARGS: _decode_kw_args,
+            EXT_METHOD_SINGLE_ARG: _decode_method_single_arg,
+            EXT_PYDANTIC_V1: _decode_pydantic_v1,
+            EXT_PYDANTIC_V2: _decode_pydantic_v2,
+            EXT_DELTA_SNAPSHOT: _restore_delta_snapshot,
+        }
+        handler = handlers.get(code)
+        if handler is None:
+            raise SerializationError(f"blocked msgpack extension code: {code}")
+        return handler(value)
 
 
 @dataclasses.dataclass(frozen=True)
 class _DeltaSnapshot:
     value: Any
+
+
+def _decode_pos_args(value: Any) -> Any:
+    """Decode ``EXT_CONSTRUCTOR_POS_ARGS`` (builtins/datetime/pathlib/re)."""
+    module, name, args = value
+    if (module, name) == ("builtins", "tuple"):
+        return tuple(args)
+    if module == "datetime":
+        cls = _safe_builtin_class(
+            module,
+            name,
+            (dt.date, dt.datetime, dt.time, dt.timedelta, dt.tzinfo),
+        )
+        if name in {"date", "datetime", "timedelta", "timezone"}:
+            return cls(*args)
+    if module == "pathlib":
+        cls = _safe_builtin_class(module, name, (pathlib.PurePath,))
+        return cls(*args)
+    if module == "re" and name == "compile":
+        return re.compile(*args)
+    raise SerializationError(f"blocked constructor: {module}.{name}")
+
+
+def _decode_single_arg(value: Any) -> Any:
+    """Decode ``EXT_CONSTRUCTOR_SINGLE_ARG`` (sets/deque/uuid/decimal/enum)."""
+    module, name, arg = value
+    if module == "builtins":
+        cls = _safe_builtin_class(module, name, (set, frozenset))
+        return cls(arg)
+    if module == "collections" and name == "deque":
+        return deque(arg)
+    if module == "uuid":
+        return uuid.UUID(arg)
+    if module == "decimal":
+        return decimal.Decimal(arg)
+    # Enums carry their real module/name (e.g. ``myapp.Color``), so resolve them
+    # only from an already-loaded module and require an actual Enum subclass.
+    try:
+        enum_cls = _loaded_enum_class(module, name)
+    except SerializationError:
+        raise SerializationError(f"blocked constructor: {module}.{name}") from None
+    return enum_cls(arg)
+
+
+def _decode_kw_args(value: Any) -> Any:
+    """Decode ``EXT_CONSTRUCTOR_KW_ARGS`` (only ``datetime.time`` is allowed)."""
+    module, name, kwargs = value
+    if module == "datetime" and name == "time":
+        return dt.time(**kwargs)
+    raise SerializationError(f"blocked keyword constructor: {module}.{name}")
+
+
+def _decode_method_single_arg(value: Any) -> Any:
+    """Decode ``EXT_METHOD_SINGLE_ARG`` (only ``datetime.fromisoformat``)."""
+    module, name, arg, method = value
+    if (module, name, method) == ("datetime", "datetime", "fromisoformat"):
+        return dt.datetime.fromisoformat(arg)
+    raise SerializationError(f"blocked method call: {module}.{name}.{method}")
+
+
+def _decode_pydantic_v1(value: Any) -> Any:
+    """Decode an ``EXT_PYDANTIC_V1`` payload, tolerating v1 construction."""
+    module, name, dumped = value[:3]
+    cls = _loaded_pydantic_class(module, name)
+    try:
+        return cls(**dumped)
+    except Exception:
+        return cls.construct(**dumped)
+
+
+def _decode_pydantic_v2(value: Any) -> Any:
+    """Decode an ``EXT_PYDANTIC_V2`` payload via ``model_validate``."""
+    module, name, dumped = value[:3]
+    cls = _loaded_pydantic_class(module, name)
+    return cls.model_validate(dumped)
 
 
 def _is_delta_snapshot(value: Any) -> bool:
@@ -394,38 +434,58 @@ def _loaded_pydantic_class(module: str, name: str) -> type[BaseModel]:
 # -- JSON codec used by the long-term SQLite store -----------------------
 
 
-def _json_encode(value: Any, *, depth: int) -> Any:
-    if depth > _MAX_DECODE_DEPTH:
-        raise SerializationError("JSON nesting exceeds the safety limit")
+# Scalar types with a lossless ``isoformat()``/``str()`` round trip.
+_JSON_ISO_SCALARS: tuple[tuple[type, str, str], ...] = (
+    (dt.datetime, "datetime", "isoformat"),
+    (dt.date, "date", "isoformat"),
+    (dt.time, "time", "isoformat"),
+)
+
+
+def _json_encode_scalar(value: Any, depth: int) -> tuple[bool, Any]:
+    """Handle scalars/tagged leaves; ``(handled, encoded)``."""
     if value is None or isinstance(value, (str, int, float, bool)):
-        return value
+        return True, value
     if isinstance(value, bytes):
-        return _tag("bytes", base64.b64encode(value).decode("ascii"))
+        return True, _tag("bytes", base64.b64encode(value).decode("ascii"))
     if isinstance(value, bytearray):
-        return _tag("bytearray", base64.b64encode(bytes(value)).decode("ascii"))
-    if isinstance(value, dt.datetime):
-        return _tag("datetime", value.isoformat())
-    if isinstance(value, dt.date):
-        return _tag("date", value.isoformat())
-    if isinstance(value, dt.time):
-        return _tag("time", value.isoformat())
+        return True, _tag("bytearray", base64.b64encode(bytes(value)).decode("ascii"))
+    for cls, tag, method in _JSON_ISO_SCALARS:
+        # ``datetime`` is a ``date`` subclass; check the exact class first.
+        if isinstance(value, cls) and not _is_shadowed_iso_scalar(value, cls):
+            return True, _tag(tag, getattr(value, method)())
     if isinstance(value, dt.timedelta):
-        return _tag("timedelta", value.total_seconds())
+        return True, _tag("timedelta", value.total_seconds())
     if isinstance(value, uuid.UUID):
-        return _tag("uuid", str(value))
+        return True, _tag("uuid", str(value))
     if isinstance(value, decimal.Decimal):
-        return _tag("decimal", str(value))
+        return True, _tag("decimal", str(value))
+    return False, None
+
+
+def _is_shadowed_iso_scalar(value: Any, cls: type) -> bool:
+    """Whether *value* belongs to a more specific scalar class in the table."""
+    return isinstance(value, dt.datetime) and cls is dt.date
+
+
+def _json_encode_sequence(value: Any, depth: int) -> tuple[bool, Any]:
+    """Handle tuple/set/frozenset/deque; ``(handled, encoded)``."""
     if isinstance(value, tuple):
-        return _tag("tuple", [_json_encode(v, depth=depth + 1) for v in value])
+        return True, _tag("tuple", [_json_encode(v, depth=depth + 1) for v in value])
     if isinstance(value, (set, frozenset)):
-        return _tag(
+        return True, _tag(
             type(value).__name__,
             [_json_encode(v, depth=depth + 1) for v in value],
         )
     if isinstance(value, deque):
-        return _tag("deque", [_json_encode(v, depth=depth + 1) for v in value])
+        return True, _tag("deque", [_json_encode(v, depth=depth + 1) for v in value])
+    return False, None
+
+
+def _json_encode_object(value: Any, depth: int) -> tuple[bool, Any]:
+    """Handle Enum/BaseModel; ``(handled, encoded)``."""
     if isinstance(value, Enum):
-        return _tag(
+        return True, _tag(
             "enum",
             {
                 "module": value.__class__.__module__,
@@ -434,7 +494,7 @@ def _json_encode(value: Any, *, depth: int) -> Any:
             },
         )
     if isinstance(value, BaseModel):
-        return _tag(
+        return True, _tag(
             "pydantic",
             {
                 "module": value.__class__.__module__,
@@ -442,6 +502,22 @@ def _json_encode(value: Any, *, depth: int) -> Any:
                 "value": _json_encode(value.model_dump(), depth=depth + 1),
             },
         )
+    return False, None
+
+
+def _json_encode(value: Any, *, depth: int) -> Any:
+    """Encode one value into the tagged JSON representation.
+
+    Family order matters: scalars and tagged leaves are checked before
+    containers, and mapping keys must all be strings so the result can be
+    dumped as JSON without ambiguity.
+    """
+    if depth > _MAX_DECODE_DEPTH:
+        raise SerializationError("JSON nesting exceeds the safety limit")
+    for encode_family in (_json_encode_scalar, _json_encode_sequence, _json_encode_object):
+        handled, encoded = encode_family(value, depth)
+        if handled:
+            return encoded
     if isinstance(value, Mapping):
         if not all(isinstance(key, str) for key in value):
             raise SerializationError("JSON store values require string dictionary keys")
@@ -455,51 +531,70 @@ def _json_encode(value: Any, *, depth: int) -> Any:
     )
 
 
+# Tag -> zero-argument decoder for values whose payload needs no recursion.
+_JSON_SIMPLE_DECODERS: dict[str, Any] = {
+    "bytes": base64.b64decode,
+    "bytearray": lambda payload: bytearray(base64.b64decode(payload)),
+    "datetime": dt.datetime.fromisoformat,
+    "date": dt.date.fromisoformat,
+    "time": dt.time.fromisoformat,
+    "timedelta": lambda payload: dt.timedelta(seconds=payload),
+    "uuid": uuid.UUID,
+    "decimal": decimal.Decimal,
+}
+
+
+def _decode_json_collection(tag: str, payload: Any, depth: int) -> Any | None:
+    """Decode the iterable tag family; ``None`` when *tag* is not one of them."""
+    builders: dict[str, Any] = {
+        "tuple": tuple,
+        "set": set,
+        "frozenset": frozenset,
+        "deque": deque,
+    }
+    builder = builders.get(tag)
+    if builder is None:
+        return None
+    return builder(_json_decode(item, depth=depth + 1) for item in payload)
+
+
+def _decode_json_tagged(tag: str, payload: Any, depth: int) -> Any:
+    """Decode one tagged payload (the envelope has already been validated)."""
+    decoder = _JSON_SIMPLE_DECODERS.get(tag)
+    if decoder is not None:
+        return decoder(payload)
+    collection = _decode_json_collection(tag, payload, depth)
+    if collection is not None:
+        return collection
+    if tag == "enum":
+        cls = _loaded_enum_class(payload["module"], payload["name"])
+        return cls(_json_decode(payload["value"], depth=depth + 1))
+    if tag == "pydantic":
+        cls = _loaded_pydantic_class(payload["module"], payload["name"])
+        return cls.model_validate(_json_decode(payload["value"], depth=depth + 1))
+    raise SerializationError(f"unknown JSON type tag: {tag!r}")
+
+
+def _is_json_tag_envelope(value: dict[str, Any]) -> bool:
+    """Whether *value* is a complete, well-formed tag envelope."""
+    tag = value.get(_JSON_TAG)
+    return (
+        tag is not None
+        and value.get("v") == _JSON_TAG_VERSION
+        and set(value) == {_JSON_TAG, "v", "value"}
+    )
+
+
 def _json_decode(value: Any, *, depth: int) -> Any:
+    """Decode the tagged JSON representation back into Python values."""
     if depth > _MAX_DECODE_DEPTH:
         raise SerializationError("JSON nesting exceeds the safety limit")
     if isinstance(value, list):
         return [_json_decode(item, depth=depth + 1) for item in value]
     if not isinstance(value, dict):
         return value
-    tag = value.get(_JSON_TAG)
-    if tag is not None and value.get("v") == _JSON_TAG_VERSION and set(value) == {
-        _JSON_TAG,
-        "v",
-        "value",
-    }:
-        payload = value["value"]
-        if tag == "bytes":
-            return base64.b64decode(payload)
-        if tag == "bytearray":
-            return bytearray(base64.b64decode(payload))
-        if tag == "datetime":
-            return dt.datetime.fromisoformat(payload)
-        if tag == "date":
-            return dt.date.fromisoformat(payload)
-        if tag == "time":
-            return dt.time.fromisoformat(payload)
-        if tag == "timedelta":
-            return dt.timedelta(seconds=payload)
-        if tag == "uuid":
-            return uuid.UUID(payload)
-        if tag == "decimal":
-            return decimal.Decimal(payload)
-        if tag == "tuple":
-            return tuple(_json_decode(item, depth=depth + 1) for item in payload)
-        if tag == "set":
-            return set(_json_decode(item, depth=depth + 1) for item in payload)
-        if tag == "frozenset":
-            return frozenset(_json_decode(item, depth=depth + 1) for item in payload)
-        if tag == "deque":
-            return deque(_json_decode(item, depth=depth + 1) for item in payload)
-        if tag == "enum":
-            cls = _loaded_enum_class(payload["module"], payload["name"])
-            return cls(_json_decode(payload["value"], depth=depth + 1))
-        if tag == "pydantic":
-            cls = _loaded_pydantic_class(payload["module"], payload["name"])
-            return cls.model_validate(_json_decode(payload["value"], depth=depth + 1))
-        raise SerializationError(f"unknown JSON type tag: {tag!r}")
+    if _is_json_tag_envelope(value):
+        return _decode_json_tagged(value[_JSON_TAG], value["value"], depth)
     return {key: _json_decode(item, depth=depth + 1) for key, item in value.items()}
 
 

@@ -114,6 +114,7 @@ class CompiledStateGraph:
         as_node: str | None = None,
         task_id: str | None = None,
     ) -> dict[str, Any]:
+        """Apply *values* to a thread as if *as_node* produced them."""
         threads = self._bind_checkpointer()
         head = threads.get_head(config)
         update = _adopt_messages(dict(values or {}))
@@ -137,6 +138,7 @@ class CompiledStateGraph:
         as_node: str | None = None,
         task_id: str | None = None,
     ) -> dict[str, Any]:
+        """Async twin of :meth:`update_state`."""
         threads = self._bind_checkpointer()
         head = await threads.aget_head(config)
         update = _adopt_messages(dict(values or {}))
@@ -156,6 +158,7 @@ class CompiledStateGraph:
     # -- reads -------------------------------------------------------------
 
     def get_state(self, config: Mapping[str, Any] | None = None, **kwargs: Any) -> StateSnapshot:
+        """Read the current thread state through the checkpointer."""
         del kwargs
         threads = self._bind_checkpointer()
         return threads.snapshot(threads.get_head(config), config)
@@ -163,6 +166,7 @@ class CompiledStateGraph:
     async def aget_state(
         self, config: Mapping[str, Any] | None = None, **kwargs: Any
     ) -> StateSnapshot:
+        """Async twin of :meth:`get_state`."""
         del kwargs
         threads = self._bind_checkpointer()
         return await threads.asnapshot(await threads.aget_head(config), config)
@@ -176,6 +180,7 @@ class CompiledStateGraph:
         filter: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> Iterator[StateSnapshot]:
+        """Iterate the thread's checkpoint history, newest first."""
         del kwargs
         threads = self._bind_checkpointer()
         return threads.history(config, before=before, limit=limit, filter=filter)
@@ -189,6 +194,7 @@ class CompiledStateGraph:
         filter: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[StateSnapshot]:
+        """Async twin of :meth:`get_state_history`."""
         del kwargs
         threads = self._bind_checkpointer()
         return threads.ahistory(config, before=before, limit=limit, filter=filter)
@@ -206,6 +212,7 @@ class CompiledStateGraph:
         config: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        """Run *event* (or the graph) synchronously and return the result."""
         del kwargs
         threads = self._bind_checkpointer()
         head = threads.get_head(config)
@@ -229,6 +236,7 @@ class CompiledStateGraph:
         config: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        """Async twin of :meth:`invoke`."""
         del kwargs
         threads = self._bind_checkpointer()
         head = await threads.aget_head(config)
@@ -265,6 +273,7 @@ class StateGraph:
         self._entry_point: str | None = None
 
     def add_node(self, name: str, action: Any, **kwargs: Any) -> StateGraph:
+        """Register a node under *name* with its action function."""
         if kwargs:
             raise NotImplementedError(
                 "reactivegraph.StateGraph.add_node does not support extra options"
@@ -277,23 +286,27 @@ class StateGraph:
         return self
 
     def set_entry_point(self, name: str) -> StateGraph:
+        """Mark *node* as the graph entry point."""
         if name not in self._nodes:
             raise ValueError(f"unknown node {name!r}: declare it with add_node first")
         self._entry_point = name
         return self
 
     def set_finish_point(self, name: str) -> StateGraph:
+        """Mark *node* as a terminal node."""
         if name not in self._nodes:
             raise ValueError(f"unknown node {name!r}: declare it with add_node first")
         return self
 
     def add_edge(self, start: str, end: str) -> StateGraph:
+        """Add an unconditional edge between two nodes."""
         del start, end
         raise NotImplementedError(
             "reactivegraph.StateGraph is state-only: edges are not supported"
         )
 
     def compile(self, checkpointer: Any | None = None, **kwargs: Any) -> CompiledStateGraph:
+        """Compile the builder into an executable graph."""
         if kwargs:
             raise NotImplementedError(
                 "reactivegraph.StateGraph.compile does not support extra options"

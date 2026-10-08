@@ -67,6 +67,7 @@ class AgentState:
     human_decisions: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize this value to a plain dict."""
         return {
             "schema": AGENT_STATE_SCHEMA,
             "messages": [dict(message) for message in self.messages],
@@ -79,6 +80,7 @@ class AgentState:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> AgentState:
+        """Reconstruct this value from a plain dict."""
         schema = value.get("schema")
         if schema != AGENT_STATE_SCHEMA:
             raise ValueError(f"unsupported agent state schema: {schema!r}")
@@ -156,6 +158,7 @@ class ToolNode:
             raise ValueError("ToolNode concurrency must be >= 1")
 
         def execute(call: ToolCall) -> Message:
+            """Execute this tool with the given arguments."""
             name = call.get("name")
             tool = self._by_name.get(name) if isinstance(name, str) else None
             if tool is None:

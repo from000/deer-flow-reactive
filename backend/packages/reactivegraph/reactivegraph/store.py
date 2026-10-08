@@ -36,10 +36,39 @@ import copy
 import sqlite3
 import threading
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
+
+from reactivegraph.store_ops import (
+    GetOp,
+    ListNamespacesOp,
+    MatchCondition,
+    PutOp,
+    SearchOp,
+    _op_attr,
+    _op_filter,
+    _op_key,
+    _op_kind,
+    _op_namespace,
+    _op_ttl,
+    _op_value,
+)
+from reactivegraph.store_types import (
+    BaseStore as BaseStore,
+)
+from reactivegraph.store_types import (
+    InvalidNamespaceError as InvalidNamespaceError,
+)
+from reactivegraph.store_types import (
+    Item as Item,
+)
+from reactivegraph.store_types import (
+    SearchItem as SearchItem,
+)
+from reactivegraph.store_types import (
+    _validate_namespace,
+)
 
 __all__ = (
     "BaseStore",
@@ -52,203 +81,6 @@ __all__ = (
     "get_store",
     "reset_store",
 )
-
-
-class InvalidNamespaceError(ValueError):
-    """Provided namespace is invalid."""
-
-
-def _validate_namespace(namespace: Sequence[str]) -> None:
-    """Reject namespaces upstream rejects, with the same messages."""
-    if not namespace:
-        raise InvalidNamespaceError("Namespace cannot be empty.")
-    for label in namespace:
-        if not isinstance(label, str):
-            raise InvalidNamespaceError(
-                f"Invalid namespace label '{label}' found in {namespace}. Namespace labels"
-                f" must be strings, but got {type(label).__name__}."
-            )
-        if "." in label:
-            raise InvalidNamespaceError(
-                f"Invalid namespace label '{label}' found in {namespace}. "
-                f"Namespace labels cannot contain periods ('.')."
-            )
-        if not label:
-            raise InvalidNamespaceError(
-                f"Namespace labels cannot be empty strings. Got {label} in {namespace}"
-            )
-    if namespace[0] == "langgraph":
-        raise InvalidNamespaceError(
-            f'Root label for namespace cannot be "langgraph". Got: {namespace}'
-        )
-
-
-class _NativeBaseStore:
-    """LangGraph's ``BaseStore`` surface, implemented natively.
-
-    Used only when ``langgraph`` cannot be imported. As with the checkpoint
-    saver, unimplemented operations raise instead of silently reporting an
-    empty namespace: a host that forgets to configure a backend must see a
-    failure, not data loss. Concrete stores (including :class:`MemoryStore`)
-    are duck-typed and need not inherit from this class.
-    """
-
-    supports_ttl: bool = False
-    ttl_config: Any = None
-
-    def get(
-        self, namespace: Sequence[str], key: str, *, refresh_ttl: bool | None = None
-    ) -> Item | None:
-        del namespace, key, refresh_ttl
-        raise NotImplementedError
-
-    def put(
-        self,
-        namespace: Sequence[str],
-        key: str,
-        value: dict[str, Any],
-        index: Any = None,
-        *,
-        ttl: Any = None,
-    ) -> None:
-        del namespace, key, value, index, ttl
-        raise NotImplementedError
-
-    def delete(self, namespace: Sequence[str], key: str) -> None:
-        del namespace, key
-        raise NotImplementedError
-
-    def search(
-        self,
-        namespace_prefix: Sequence[str],
-        /,
-        *,
-        query: str | None = None,
-        filter: dict[str, Any] | None = None,
-        limit: int = 10,
-        offset: int = 0,
-        refresh_ttl: bool | None = None,
-    ) -> list[SearchItem]:
-        del namespace_prefix, query, filter, limit, offset, refresh_ttl
-        raise NotImplementedError
-
-    def list_namespaces(
-        self,
-        *,
-        prefix: Sequence[str] | None = None,
-        suffix: Sequence[str] | None = None,
-        max_depth: int | None = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> list[tuple[str, ...]]:
-        del prefix, suffix, max_depth, limit, offset
-        raise NotImplementedError
-
-    def batch(self, ops: Iterable[Any]) -> list[Any]:
-        del ops
-        raise NotImplementedError
-
-    async def aget(
-        self, namespace: Sequence[str], key: str, *, refresh_ttl: bool | None = None
-    ) -> Item | None:
-        del namespace, key, refresh_ttl
-        raise NotImplementedError
-
-    async def aput(
-        self,
-        namespace: Sequence[str],
-        key: str,
-        value: dict[str, Any],
-        index: Any = None,
-        *,
-        ttl: Any = None,
-    ) -> None:
-        del namespace, key, value, index, ttl
-        raise NotImplementedError
-
-    async def adelete(self, namespace: Sequence[str], key: str) -> None:
-        del namespace, key
-        raise NotImplementedError
-
-    async def asearch(
-        self,
-        namespace_prefix: Sequence[str],
-        /,
-        *,
-        query: str | None = None,
-        filter: dict[str, Any] | None = None,
-        limit: int = 10,
-        offset: int = 0,
-        refresh_ttl: bool | None = None,
-    ) -> list[SearchItem]:
-        del namespace_prefix, query, filter, limit, offset, refresh_ttl
-        raise NotImplementedError
-
-    async def alist_namespaces(
-        self,
-        *,
-        prefix: Sequence[str] | None = None,
-        suffix: Sequence[str] | None = None,
-        max_depth: int | None = None,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> list[tuple[str, ...]]:
-        del prefix, suffix, max_depth, limit, offset
-        raise NotImplementedError
-
-    async def abatch(self, ops: Iterable[Any]) -> list[Any]:
-        del ops
-        raise NotImplementedError
-
-
-try:  # pragma: no cover - exercised by the optional-integration tests
-    from langgraph.store.base import BaseStore as BaseStore
-except ImportError:  # pragma: no cover - langgraph is an optional host dep
-    BaseStore = _NativeBaseStore  # type: ignore[misc, assignment, unused-ignore]
-
-
-@dataclass(frozen=True)
-class Item:
-    """A stored item with its identity and timestamps.
-
-    ``namespace`` is normalised to a tuple so deserialised payloads behave like
-    freshly written ones.
-    """
-
-    value: dict[str, Any]
-    key: str
-    namespace: tuple[str, ...]
-    created_at: datetime
-    updated_at: datetime
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "namespace", tuple(self.namespace))
-
-    def __hash__(self) -> int:
-        # Upstream hashes identity, not payload: a mutable ``value`` dict must
-        # not make the item unhashable.
-        return hash((self.namespace, self.key))
-
-    def dict(self) -> dict[str, Any]:
-        return {
-            "namespace": list(self.namespace),
-            "key": self.key,
-            "value": self.value,
-            "created_at": self.created_at.isoformat(),
-            "updated_at": self.updated_at.isoformat(),
-        }
-
-
-@dataclass(frozen=True)
-class SearchItem(Item):
-    """An :class:`Item` returned from ``search``, optionally ranked."""
-
-    score: float | None = None
-
-    def dict(self) -> dict[str, Any]:
-        result = super().dict()
-        result["score"] = self.score
-        return result
 
 
 def _does_match(match_type: str, path: Sequence[str], namespace: Sequence[str]) -> bool:
@@ -339,6 +171,7 @@ class MemoryStore:
         return self._run(ops)
 
     async def abatch(self, ops: Iterable[Any]) -> list[Any]:
+        """Async twin of :meth:`batch`."""
         return self._run(ops)
 
     def _run(self, ops: Iterable[Any]) -> list[Any]:
@@ -466,12 +299,16 @@ class MemoryStore:
     def get(
         self, namespace: Sequence[str], key: str, *, refresh_ttl: bool | None = None
     ) -> Item | None:
+        """Return the stored item, or ``None`` when absent.
+
+        Derived from :meth:`batch` so subclasses only implement storage."""
         del refresh_ttl
         return self.batch([GetOp(tuple(namespace), str(key))])[0]
 
     async def aget(
         self, namespace: Sequence[str], key: str, *, refresh_ttl: bool | None = None
     ) -> Item | None:
+        """Async twin of :meth:`get`."""
         return self.get(namespace, key, refresh_ttl=refresh_ttl)
 
     def search(
@@ -485,6 +322,7 @@ class MemoryStore:
         offset: int = 0,
         refresh_ttl: bool | None = None,
     ) -> list[SearchItem]:
+        """Search one namespace, returning items ordered by score when supported."""
         del refresh_ttl
         return self.batch([
             SearchOp(tuple(namespace_prefix), filter, limit, offset, query)
@@ -501,6 +339,7 @@ class MemoryStore:
         offset: int = 0,
         refresh_ttl: bool | None = None,
     ) -> list[SearchItem]:
+        """Async twin of :meth:`search`."""
         return self.search(
             namespace_prefix,
             query=query,
@@ -519,6 +358,7 @@ class MemoryStore:
         *,
         ttl: Any = None,
     ) -> None:
+        """Persist *checkpoint* and return the updated config mapping."""
         del index
         self.batch([PutOp(tuple(namespace), str(key), value, ttl=ttl)])
 
@@ -531,12 +371,15 @@ class MemoryStore:
         *,
         ttl: Any = None,
     ) -> None:
+        """Async twin of :meth:`put`."""
         self.put(namespace, key, value, index, ttl=ttl)
 
     def delete(self, namespace: Sequence[str], key: str) -> None:
+        """Delete the item stored at *namespace*/*key* (missing keys are ignored)."""
         self.batch([PutOp(tuple(namespace), str(key), None, ttl=None)])
 
     async def adelete(self, namespace: Sequence[str], key: str) -> None:
+        """Async twin of :meth:`delete`."""
         self.delete(namespace, key)
 
     def list_namespaces(
@@ -548,6 +391,7 @@ class MemoryStore:
         limit: int = 100,
         offset: int = 0,
     ) -> list[tuple[str, ...]]:
+        """List namespaces, optionally preferring items matching *prefix*."""
         conditions = []
         if prefix:
             conditions.append(MatchCondition("prefix", tuple(prefix)))
@@ -566,6 +410,7 @@ class MemoryStore:
         limit: int = 100,
         offset: int = 0,
     ) -> list[tuple[str, ...]]:
+        """Async twin of :meth:`list_namespaces`."""
         return self.list_namespaces(
             prefix=prefix, suffix=suffix, max_depth=max_depth, limit=limit, offset=offset
         )
@@ -656,6 +501,7 @@ class SqliteStore:
             )
 
     def close(self) -> None:
+        """Release the underlying connection (idempotent)."""
         with self._db_lock:
             if not self._closed:
                 self.conn.close()
@@ -677,6 +523,7 @@ class SqliteStore:
         return self._run(ops)
 
     async def abatch(self, ops: Iterable[Any]) -> list[Any]:
+        """Async twin of :meth:`batch`."""
         return await asyncio.to_thread(self._run, list(ops))
 
     def _run(self, ops: Iterable[Any]) -> list[Any]:
@@ -941,6 +788,9 @@ class SqliteStore:
     def get(
         self, namespace: Sequence[str], key: str, *, refresh_ttl: bool | None = None
     ) -> Item | None:
+        """Return the checkpoint dict for *config*, or ``None`` when absent.
+
+        Derived from :meth:`get_tuple` so subclasses only implement storage."""
         return self._get_item(
             namespace,
             str(key),
@@ -950,6 +800,7 @@ class SqliteStore:
     async def aget(
         self, namespace: Sequence[str], key: str, *, refresh_ttl: bool | None = None
     ) -> Item | None:
+        """Async twin of :meth:`get`."""
         return await asyncio.to_thread(self.get, namespace, key, refresh_ttl=refresh_ttl)
 
     def put(
@@ -961,6 +812,7 @@ class SqliteStore:
         *,
         ttl: Any = None,
     ) -> None:
+        """Persist *checkpoint* and return the updated config mapping."""
         del index
         self.batch([PutOp(tuple(namespace), str(key), value, ttl=ttl)])
 
@@ -973,12 +825,15 @@ class SqliteStore:
         *,
         ttl: Any = None,
     ) -> None:
+        """Async twin of :meth:`put`."""
         await asyncio.to_thread(self.put, namespace, key, value, index, ttl=ttl)
 
     def delete(self, namespace: Sequence[str], key: str) -> None:
+        """Delete the item stored at *namespace*/*key* (missing keys are ignored)."""
         self.batch([PutOp(tuple(namespace), str(key), None, ttl=None)])
 
     async def adelete(self, namespace: Sequence[str], key: str) -> None:
+        """Async twin of :meth:`delete`."""
         await asyncio.to_thread(self.delete, namespace, key)
 
     def search(
@@ -992,6 +847,7 @@ class SqliteStore:
         offset: int = 0,
         refresh_ttl: bool | None = None,
     ) -> list[SearchItem]:
+        """Search one namespace, returning items ordered by score when supported."""
         return self.batch([
             SearchOp(
                 tuple(namespace_prefix),
@@ -1014,6 +870,7 @@ class SqliteStore:
         offset: int = 0,
         refresh_ttl: bool | None = None,
     ) -> list[SearchItem]:
+        """Async twin of :meth:`search`."""
         return await asyncio.to_thread(
             self.search,
             namespace_prefix,
@@ -1033,6 +890,7 @@ class SqliteStore:
         limit: int = 100,
         offset: int = 0,
     ) -> list[tuple[str, ...]]:
+        """List namespaces, optionally preferring items matching *prefix*."""
         conditions = []
         if prefix:
             conditions.append(MatchCondition("prefix", tuple(prefix)))
@@ -1051,6 +909,7 @@ class SqliteStore:
         limit: int = 100,
         offset: int = 0,
     ) -> list[tuple[str, ...]]:
+        """Async twin of :meth:`list_namespaces`."""
         return await asyncio.to_thread(
             self.list_namespaces,
             prefix=prefix,
@@ -1100,6 +959,7 @@ class PostgresStore:
         self.setup()
 
     def setup(self) -> None:
+        """Create the backing tables/indexes if they do not exist."""
         with self._db_lock:
             self._ensure_open()
             with self.conn.transaction():
@@ -1137,6 +997,7 @@ class PostgresStore:
                 )
 
     def close(self) -> None:
+        """Release the underlying connection (idempotent)."""
         with self._db_lock:
             if not self._closed:
                 self.conn.close()
@@ -1155,9 +1016,11 @@ class PostgresStore:
         return self.conn.execute(sql, tuple(params))
 
     def batch(self, ops: Iterable[Any]) -> list[Any]:
+        """Apply a sequence of get/put/search/list/delete operations."""
         return self._run(ops)
 
     async def abatch(self, ops: Iterable[Any]) -> list[Any]:
+        """Async twin of :meth:`batch`."""
         return await asyncio.to_thread(self._run, list(ops))
 
     def _run(self, ops: Iterable[Any]) -> list[Any]:
@@ -1369,6 +1232,9 @@ class PostgresStore:
         *,
         refresh_ttl: bool | None = None,
     ) -> Item | None:
+        """Return the checkpoint dict for *config*, or ``None`` when absent.
+
+        Derived from :meth:`get_tuple` so subclasses only implement storage."""
         return self._get_item(
             namespace,
             key,
@@ -1382,6 +1248,7 @@ class PostgresStore:
         *,
         refresh_ttl: bool | None = None,
     ) -> Item | None:
+        """Async twin of :meth:`get`."""
         return await asyncio.to_thread(
             self.get,
             namespace,
@@ -1398,6 +1265,7 @@ class PostgresStore:
         *,
         ttl: Any = None,
     ) -> None:
+        """Persist *checkpoint* and return the updated config mapping."""
         del index
         self.batch([PutOp(tuple(namespace), str(key), value, ttl=ttl)])
 
@@ -1410,6 +1278,7 @@ class PostgresStore:
         *,
         ttl: Any = None,
     ) -> None:
+        """Async twin of :meth:`put`."""
         await asyncio.to_thread(
             self.put,
             namespace,
@@ -1420,9 +1289,11 @@ class PostgresStore:
         )
 
     def delete(self, namespace: Sequence[str], key: str) -> None:
+        """Delete the item stored at *namespace*/*key* (missing keys are ignored)."""
         self.batch([PutOp(tuple(namespace), str(key), None, ttl=None)])
 
     async def adelete(self, namespace: Sequence[str], key: str) -> None:
+        """Async twin of :meth:`delete`."""
         await asyncio.to_thread(self.delete, namespace, key)
 
     def search(
@@ -1436,6 +1307,7 @@ class PostgresStore:
         offset: int = 0,
         refresh_ttl: bool | None = None,
     ) -> list[SearchItem]:
+        """Search one namespace, returning items ordered by score when supported."""
         return self.batch(
             [
                 SearchOp(
@@ -1460,6 +1332,7 @@ class PostgresStore:
         offset: int = 0,
         refresh_ttl: bool | None = None,
     ) -> list[SearchItem]:
+        """Async twin of :meth:`search`."""
         return await asyncio.to_thread(
             self.search,
             namespace_prefix,
@@ -1479,6 +1352,7 @@ class PostgresStore:
         limit: int = 100,
         offset: int = 0,
     ) -> list[tuple[str, ...]]:
+        """List namespaces, optionally preferring items matching *prefix*."""
         conditions = []
         if prefix:
             conditions.append(MatchCondition("prefix", tuple(prefix)))
@@ -1495,6 +1369,7 @@ class PostgresStore:
         limit: int = 100,
         offset: int = 0,
     ) -> list[tuple[str, ...]]:
+        """Async twin of :meth:`list_namespaces`."""
         return await asyncio.to_thread(
             self.list_namespaces,
             prefix=prefix,
@@ -1507,140 +1382,6 @@ class PostgresStore:
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("PostgreSQL store is closed")
-
-
-# ---------------------------------------------------------------------------
-# Operations
-#
-# These mirror the host engines' operation tuples so ``batch`` accepts both our
-# own objects and a host's (which are matched structurally, see ``_op_kind``).
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class GetOp:
-    """Retrieve one item by ``(namespace, key)``."""
-
-    namespace: tuple[str, ...]
-    key: str
-    refresh_ttl: bool = True
-
-
-@dataclass(frozen=True)
-class SearchOp:
-    """Search within a namespace prefix, with optional filter and ranking."""
-
-    namespace_prefix: tuple[str, ...]
-    filter: dict[str, Any] | None = None
-    limit: int = 10
-    offset: int = 0
-    query: str | None = None
-    refresh_ttl: bool = True
-
-
-@dataclass(frozen=True)
-class PutOp:
-    """Write ``value`` (or delete when ``value is None``) at a key."""
-
-    namespace: tuple[str, ...]
-    key: str
-    value: dict[str, Any] | None = None
-    index: Any = None
-    ttl: Any = None
-
-
-@dataclass(frozen=True)
-class MatchCondition:
-    """A prefix or suffix namespace pattern; ``*`` matches any one label."""
-
-    match_type: str
-    path: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ListNamespacesOp:
-    """List namespaces matching all conditions, truncated to ``max_depth``."""
-
-    match_conditions: tuple[MatchCondition, ...] | None = None
-    max_depth: int | None = None
-    limit: int = 100
-    offset: int = 0
-
-
-_OWN_OPS = (GetOp, PutOp, SearchOp, ListNamespacesOp)
-
-# Tuple form: ``(kind, namespace, key, value)`` — used by callers that build
-# operations inline. Namespace may be a tuple or a list.
-_TUPLE_KINDS = {"get", "put", "search", "delete", "list_namespaces"}
-
-
-def _op_kind(op: Any) -> str:
-    """Classify an operation, accepting our own objects, a host's, or tuples."""
-    if isinstance(op, GetOp):
-        return "get"
-    if isinstance(op, PutOp):
-        return "put"
-    if isinstance(op, SearchOp):
-        return "search"
-    if isinstance(op, ListNamespacesOp):
-        return "list_namespaces"
-    # Foreign (host) operation objects: classify by class name so a host can
-    # pass its own GetOp/PutOp/SearchOp/ListNamespacesOp without conversion.
-    # Checked BEFORE the tuple branch because a host's op may be a NamedTuple.
-    name = type(op).__name__
-    if name == "GetOp":
-        return "get"
-    if name == "PutOp":
-        return "put"
-    if name == "SearchOp":
-        return "search"
-    if name == "ListNamespacesOp":
-        return "list_namespaces"
-    # Inline tuple form: ``("put", namespace, key, value)``.
-    if type(op) is tuple:
-        if op and isinstance(op[0], str) and op[0] in _TUPLE_KINDS:
-            return op[0]
-        raise ValueError(f"Unknown operation type: {type(op)}")
-    raise ValueError(f"Unknown operation type: {type(op)}")
-
-
-def _op_attr(op: Any, name: str, default: Any) -> Any:
-    if type(op) is tuple:
-        return default
-    return getattr(op, name, default)
-
-
-def _op_namespace(op: Any) -> tuple[str, ...]:
-    if type(op) is tuple:
-        return tuple(op[1])
-    raw = getattr(op, "namespace", None)
-    if raw is None:
-        raw = getattr(op, "namespace_prefix", ())
-    return tuple(raw or ())
-
-
-def _op_key(op: Any) -> str:
-    if type(op) is tuple:
-        return str(op[2]) if len(op) > 2 else ""
-    return str(getattr(op, "key", ""))
-
-
-def _op_value(op: Any) -> Any:
-    if type(op) is tuple:
-        return op[3] if len(op) > 3 else None
-    return getattr(op, "value", None)
-
-
-def _op_filter(op: Any) -> dict[str, Any] | None:
-    return _op_attr(op, "filter", None)
-
-
-def _op_ttl(op: Any) -> Any:
-    """Normalise a host's NOT_PROVIDED sentinel to None (no TTL)."""
-    ttl = _op_attr(op, "ttl", None)
-    if ttl is None or type(ttl).__name__ == "NotProvided":
-        return None
-    return ttl
 
 
 # ---------------------------------------------------------------------------

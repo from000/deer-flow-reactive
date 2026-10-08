@@ -161,58 +161,80 @@ def _truncate(text: str, max_len: int = _XML_CONTENT_BLOCK_MAX_LEN) -> str:
     return text[:max_len] + "..."
 
 
+_XML_MEDIA_TAGS = {"image", "audio", "video"}
+
+
+def _xml_text_or_none(value: Any, *, truncate: bool = False) -> str | None:
+    """Escaped text payload, or ``None`` when the value is empty."""
+    if not value:
+        return None
+    text = str(value)
+    return escape(_truncate(text) if truncate else text)
+
+
+def _xml_media_block(block_type: str, block: dict[str, Any]) -> str | None:
+    """``<image|audio|video url=...|file_id=... />``."""
+    url = block.get("url")
+    if url:
+        return f"<{block_type} url={quoteattr(str(url))} />"
+    file_id = block.get("file_id")
+    if file_id:
+        return f"<{block_type} file_id={quoteattr(str(file_id))} />"
+    return None
+
+
+def _xml_image_url_block(block: dict[str, Any]) -> str | None:
+    """``<image url=... />`` for the OpenAI ``image_url`` block shape."""
+    image_url = block.get("image_url", {})
+    if not isinstance(image_url, dict):
+        return None
+    url = image_url.get("url", "")
+    if url and not str(url).startswith("data:"):
+        return f"<image url={quoteattr(str(url))} />"
+    return None
+
+
+def _xml_server_tool_call(block: dict[str, Any]) -> str:
+    """``<server_tool_call>`` with escaped id/name/args attributes."""
+    tc_id = quoteattr(str(block.get("id") or ""))
+    tc_name = quoteattr(str(block.get("name") or ""))
+    tc_args_json = json.dumps(block.get("args", {}), ensure_ascii=False)
+    tc_args = escape(_truncate(tc_args_json))
+    return f"<server_tool_call id={tc_id} name={tc_name}>{tc_args}</server_tool_call>"
+
+
+def _xml_server_tool_result(block: dict[str, Any]) -> str:
+    """``<server_tool_result>`` with escaped ids/status and truncated output."""
+    tool_call_id = quoteattr(str(block.get("tool_call_id") or ""))
+    status = quoteattr(str(block.get("status") or ""))
+    output = block.get("output")
+    output_str = escape(_truncate(json.dumps(output, ensure_ascii=False))) if output else ""
+    return (
+        f"<server_tool_result tool_call_id={tool_call_id} status={status}>"
+        f"{output_str}</server_tool_result>"
+    )
+
+
 def _format_content_block_xml(block: dict[str, Any]) -> str | None:
     """Format one standard content block as XML, or ``None`` to skip it."""
-    block_type = block.get("type", "")
     if _has_base64_data(block):
         return None
-
+    block_type = block.get("type", "")
     if block_type == "text":
-        text = block.get("text", "")
-        return escape(text) if text else None
-
+        return _xml_text_or_none(block.get("text", ""))
     if block_type == "reasoning":
-        reasoning = block.get("reasoning", "")
-        return f"<reasoning>{escape(reasoning)}</reasoning>" if reasoning else None
-
-    if block_type in {"image", "audio", "video"}:
-        url = block.get("url")
-        file_id = block.get("file_id")
-        if url:
-            return f"<{block_type} url={quoteattr(str(url))} />"
-        if file_id:
-            return f"<{block_type} file_id={quoteattr(str(file_id))} />"
-        return None
-
+        reasoning = _xml_text_or_none(block.get("reasoning", ""))
+        return f"<reasoning>{reasoning}</reasoning>" if reasoning else None
+    if block_type in _XML_MEDIA_TAGS:
+        return _xml_media_block(block_type, block)
     if block_type == "image_url":
-        image_url = block.get("image_url", {})
-        if isinstance(image_url, dict):
-            url = image_url.get("url", "")
-            if url and not str(url).startswith("data:"):
-                return f"<image url={quoteattr(str(url))} />"
-        return None
-
+        return _xml_image_url_block(block)
     if block_type == "text-plain":
-        text = block.get("text", "")
-        return escape(_truncate(text)) if text else None
-
+        return _xml_text_or_none(block.get("text", ""), truncate=True)
     if block_type == "server_tool_call":
-        tc_id = quoteattr(str(block.get("id") or ""))
-        tc_name = quoteattr(str(block.get("name") or ""))
-        tc_args_json = json.dumps(block.get("args", {}), ensure_ascii=False)
-        tc_args = escape(_truncate(tc_args_json))
-        return f"<server_tool_call id={tc_id} name={tc_name}>{tc_args}</server_tool_call>"
-
+        return _xml_server_tool_call(block)
     if block_type == "server_tool_result":
-        tool_call_id = quoteattr(str(block.get("tool_call_id") or ""))
-        status = quoteattr(str(block.get("status") or ""))
-        output = block.get("output")
-        output_str = escape(_truncate(json.dumps(output, ensure_ascii=False))) if output else ""
-        return (
-            f"<server_tool_result tool_call_id={tool_call_id} status={status}>"
-            f"{output_str}</server_tool_result>"
-        )
-
+        return _xml_server_tool_result(block)
     return None
 
 
@@ -242,6 +264,81 @@ def _role_for_message(
     raise ValueError(msg)
 
 
+def _prefix_line(
+    message: Any,
+    role: str,
+) -> str:
+    """Render one message in the ``prefix`` transcript format."""
+    line = f"{role}: {_message_text(message)}"
+    if not _is_ai_message(message):
+        return line
+    tool_calls = getattr(message, "tool_calls", None)
+    additional_kwargs = getattr(message, "additional_kwargs", {})
+    if tool_calls:
+        return line + str(tool_calls)
+    if isinstance(additional_kwargs, dict) and "function_call" in additional_kwargs:
+        return line + str(additional_kwargs["function_call"])
+    return line
+
+
+def _xml_content_parts(message: Any) -> list[str]:
+    """Escaped/formatted content fragments of one message."""
+    content = getattr(message, "content", "")
+    if isinstance(content, str):
+        return [escape(content)] if content else []
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            if block:
+                parts.append(escape(block))
+        elif isinstance(block, dict):
+            formatted = _format_content_block_xml(block)
+            if formatted:
+                parts.append(formatted)
+    return parts
+
+
+def _xml_tool_call_lines(tool_calls: Any) -> list[str]:
+    lines: list[str] = []
+    for tool_call in tool_calls:
+        tc_id = quoteattr(str(tool_call.get("id") or ""))
+        tc_name = quoteattr(str(tool_call.get("name") or ""))
+        tc_args = escape(json.dumps(tool_call.get("args", {}), ensure_ascii=False))
+        lines.append(f"  <tool_call id={tc_id} name={tc_name}>{tc_args}</tool_call>")
+    return lines
+
+
+def _xml_message(message: Any, role: str) -> str:
+    """Render one message in the ``xml`` transcript format."""
+    msg_type = str(message.role) if _is_chat_message(message) else role.lower()
+    content_parts = _xml_content_parts(message)
+
+    tool_calls = getattr(message, "tool_calls", None) if _is_ai_message(message) else None
+    additional_kwargs = getattr(message, "additional_kwargs", {})
+    has_function_call = bool(
+        _is_ai_message(message)
+        and not tool_calls
+        and isinstance(additional_kwargs, dict)
+        and "function_call" in additional_kwargs
+    )
+
+    if not tool_calls and not has_function_call:
+        return f"<message type={quoteattr(msg_type)}>{' '.join(content_parts)}</message>"
+
+    parts = [f"<message type={quoteattr(msg_type)}>"]
+    if content_parts:
+        parts.append(f"  <content>{' '.join(content_parts)}</content>")
+    if tool_calls:
+        parts.extend(_xml_tool_call_lines(tool_calls))
+    else:
+        function_call = additional_kwargs["function_call"]
+        fc_name = quoteattr(str(function_call.get("name") or ""))
+        fc_args = escape(str(function_call.get("arguments") or "{}"))
+        parts.append(f"  <function_call name={fc_name}>{fc_args}</function_call>")
+    parts.append("</message>")
+    return "\n".join(parts)
+
+
 def get_buffer_string(
     messages: Sequence[Any],
     human_prefix: str = "Human",
@@ -253,7 +350,12 @@ def get_buffer_string(
     message_separator: str = "\n",
     format: Literal["prefix", "xml"] = "prefix",  # noqa: A002
 ) -> str:
-    """Render messages using the upstream prefix or XML transcript contract."""
+    """Render messages using the upstream prefix or XML transcript contract.
+
+    ``prefix`` produces ``Role: text`` lines, appending serialized tool calls
+    for AI messages. ``xml`` produces the escaped ``<message>`` transcript
+    upstream uses for summarization prompts.
+    """
     if format not in {"prefix", "xml"}:
         msg = f"Unrecognized format={format!r}. Supported formats are 'prefix' and 'xml'."
         raise ValueError(msg)
@@ -268,67 +370,9 @@ def get_buffer_string(
             function_prefix,
             tool_prefix,
         )
-
-        if format == "prefix":
-            line = f"{role}: {_message_text(message)}"
-            tool_info = ""
-            if _is_ai_message(message):
-                tool_calls = getattr(message, "tool_calls", None)
-                additional_kwargs = getattr(message, "additional_kwargs", {})
-                if tool_calls:
-                    tool_info = str(tool_calls)
-                elif isinstance(additional_kwargs, dict) and "function_call" in additional_kwargs:
-                    tool_info = str(additional_kwargs["function_call"])
-            rendered.append(line + tool_info)
-            continue
-
-        msg_type = role.lower()
-        if _is_chat_message(message):
-            msg_type = str(message.role)
-        content = getattr(message, "content", "")
-        if isinstance(content, str):
-            content_parts = [escape(content)] if content else []
-        else:
-            content_parts = []
-            for block in content:
-                if isinstance(block, str):
-                    if block:
-                        content_parts.append(escape(block))
-                elif isinstance(block, dict):
-                    formatted = _format_content_block_xml(block)
-                    if formatted:
-                        content_parts.append(formatted)
-
-        tool_calls = getattr(message, "tool_calls", None) if _is_ai_message(message) else None
-        additional_kwargs = getattr(message, "additional_kwargs", {})
-        has_function_call = bool(
-            _is_ai_message(message)
-            and not tool_calls
-            and isinstance(additional_kwargs, dict)
-            and "function_call" in additional_kwargs
+        rendered.append(
+            _prefix_line(message, role) if format == "prefix" else _xml_message(message, role)
         )
-        if tool_calls or has_function_call:
-            parts = [f"<message type={quoteattr(msg_type)}>"]
-            if content_parts:
-                parts.append(f"  <content>{' '.join(content_parts)}</content>")
-            if tool_calls:
-                for tool_call in tool_calls:
-                    tc_id = quoteattr(str(tool_call.get("id") or ""))
-                    tc_name = quoteattr(str(tool_call.get("name") or ""))
-                    tc_args = escape(json.dumps(tool_call.get("args", {}), ensure_ascii=False))
-                    parts.append(f"  <tool_call id={tc_id} name={tc_name}>{tc_args}</tool_call>")
-            else:
-                function_call = additional_kwargs["function_call"]
-                fc_name = quoteattr(str(function_call.get("name") or ""))
-                fc_args = escape(str(function_call.get("arguments") or "{}"))
-                parts.append(f"  <function_call name={fc_name}>{fc_args}</function_call>")
-            parts.append("</message>")
-            rendered.append("\n".join(parts))
-        else:
-            rendered.append(
-                f"<message type={quoteattr(msg_type)}>{' '.join(content_parts)}</message>"
-            )
-
     return message_separator.join(rendered)
 
 
@@ -358,6 +402,87 @@ def _get_message_openai_role(message: Any) -> str:
     raise ValueError(msg)
 
 
+def _tool_schema_chars(tools: list[Any]) -> int:
+    """Serialized character count of CLI tool schemas (dicts pass through)."""
+    from reactivegraph.tools import convert_to_openai_tool
+
+    return sum(
+        len(json.dumps(tool if isinstance(tool, dict) else convert_to_openai_tool(tool)))
+        for tool in tools
+    )
+
+
+def _content_block_chars(content: list[Any], tokens_per_image: int) -> tuple[int, int]:
+    """Split list-content into ``(characters, image_tokens)``.
+
+    Image blocks are billed at a flat rate rather than by payload size, so the
+    two contributions are returned separately.
+    """
+    chars = 0
+    image_tokens = 0
+    for block in content:
+        if isinstance(block, str):
+            chars += len(block)
+        elif isinstance(block, dict):
+            block_type = block.get("type", "")
+            if block_type in {"image", "image_url"}:
+                image_tokens += tokens_per_image
+            elif block_type == "text":
+                chars += len(block.get("text", ""))
+            else:
+                chars += len(repr(block))
+        else:
+            chars += len(repr(block))
+    return chars, image_tokens
+
+
+def _message_chars(
+    message: Any,
+    *,
+    content: Any,
+    count_name: bool,
+) -> int:
+    """Character budget of one message, mirroring langchain-core's accounting."""
+    if isinstance(content, str):
+        chars = len(content)
+    elif isinstance(content, list):
+        chars, _ = _content_block_chars(content, 0)
+    else:
+        chars = len(repr(content))
+
+    if _is_ai_message(message) and not isinstance(content, list):
+        tool_calls = getattr(message, "tool_calls", None)
+        if tool_calls:
+            chars += len(repr(tool_calls))
+
+    if _is_tool_message(message):
+        chars += len(str(getattr(message, "tool_call_id", "")))
+
+    chars += len(_get_message_openai_role(message))
+    name = getattr(message, "name", None)
+    if name and count_name:
+        chars += len(str(name))
+    return chars
+
+
+def _model_provider(message: Any) -> str | None:
+    """Provider recorded in ``response_metadata``, when present and valid."""
+    response_metadata = getattr(message, "response_metadata", {})
+    if not isinstance(response_metadata, dict):
+        return None
+    value = response_metadata.get("model_provider")
+    return value if isinstance(value, str) else None
+
+
+def _usage_total_tokens(message: Any) -> int | None:
+    """``usage_metadata.total_tokens`` when the message reports one."""
+    usage_metadata = getattr(message, "usage_metadata", None)
+    if not isinstance(usage_metadata, dict):
+        return None
+    total = usage_metadata.get("total_tokens")
+    return total if isinstance(total, int) else None
+
+
 def count_tokens_approximately(
     messages: Iterable[MessageLikeRepresentation],
     *,
@@ -368,91 +493,56 @@ def count_tokens_approximately(
     use_usage_metadata_scaling: bool = False,
     tools: list[Any] | None = None,
 ) -> int:
-    """Approximate message and tool-schema token usage like langchain-core."""
+    """Approximate message and tool-schema token usage like langchain-core.
+
+    ``use_usage_metadata_scaling`` mirrors upstream: when every AI message
+    reports the same ``model_provider`` and the last one carries a
+    ``usage_metadata.total_tokens``, the estimate is scaled by the observed
+    ratio, clamped to ``[1.0, 1.25]``.
+    """
     converted_messages = _coerce_messages(messages)
     token_count = 0.0
-    ai_model_provider: str | None = None
-    invalid_model_provider = False
-    last_ai_total_tokens: int | None = None
-    approx_at_last_ai: float | None = None
 
     if tools:
-        from reactivegraph.tools import convert_to_openai_tool
+        token_count += math.ceil(_tool_schema_chars(tools) / chars_per_token)
 
-        tools_chars = sum(
-            len(json.dumps(tool if isinstance(tool, dict) else convert_to_openai_tool(tool)))
-            for tool in tools
-        )
-        token_count += math.ceil(tools_chars / chars_per_token)
+    provider: str | None = None
+    provider_conflict = False
+    last_ai_total: int | None = None
+    approx_at_last_ai: float | None = None
 
     for message in converted_messages:
-        message_chars = 0
         content = getattr(message, "content", "")
-        if isinstance(content, str):
-            message_chars += len(content)
-        elif isinstance(content, list):
-            for block in content:
-                if isinstance(block, str):
-                    message_chars += len(block)
-                elif isinstance(block, dict):
-                    block_type = block.get("type", "")
-                    if block_type in {"image", "image_url"}:
-                        token_count += tokens_per_image
-                    elif block_type == "text":
-                        text = block.get("text", "")
-                        message_chars += len(text)
-                    else:
-                        message_chars += len(repr(block))
-                else:
-                    message_chars += len(repr(block))
-        else:
-            message_chars += len(repr(content))
-
-        if _is_ai_message(message) and not isinstance(content, list):
-            tool_calls = getattr(message, "tool_calls", None)
-            if tool_calls:
-                message_chars += len(repr(tool_calls))
-
-        if _is_tool_message(message):
-            message_chars += len(str(getattr(message, "tool_call_id", "")))
-
-        message_chars += len(_get_message_openai_role(message))
-        name = getattr(message, "name", None)
-        if name and count_name:
-            message_chars += len(str(name))
-
-        token_count += math.ceil(message_chars / chars_per_token)
+        image_tokens = 0
+        if isinstance(content, list):
+            _, image_tokens = _content_block_chars(content, tokens_per_image)
+        token_count += image_tokens
+        chars = _message_chars(message, content=content, count_name=count_name)
+        token_count += math.ceil(chars / chars_per_token)
         token_count += extra_tokens_per_message
 
-        if use_usage_metadata_scaling and _is_ai_message(message):
-            response_metadata = getattr(message, "response_metadata", {})
-            model_provider = (
-                response_metadata.get("model_provider")
-                if isinstance(response_metadata, dict)
-                else None
-            )
-            if ai_model_provider is None:
-                ai_model_provider = model_provider
-            elif model_provider != ai_model_provider:
-                invalid_model_provider = True
-
-            usage_metadata = getattr(message, "usage_metadata", None)
-            if isinstance(usage_metadata, dict):
-                total_tokens = usage_metadata.get("total_tokens")
-                if isinstance(total_tokens, int):
-                    last_ai_total_tokens = total_tokens
-                    approx_at_last_ai = token_count
+        if not (use_usage_metadata_scaling and _is_ai_message(message)):
+            continue
+        current_provider = _model_provider(message)
+        if provider is None:
+            provider = current_provider
+        elif current_provider != provider:
+            provider_conflict = True
+        total = _usage_total_tokens(message)
+        if total is not None:
+            last_ai_total = total
+            approx_at_last_ai = token_count
 
     if (
         use_usage_metadata_scaling
         and len(converted_messages) > 1
-        and not invalid_model_provider
-        and ai_model_provider is not None
-        and last_ai_total_tokens is not None
+        and not provider_conflict
+        and provider is not None
+        and last_ai_total is not None
         and approx_at_last_ai
         and approx_at_last_ai > 0
     ):
-        scale_factor = last_ai_total_tokens / approx_at_last_ai
+        scale_factor = last_ai_total / approx_at_last_ai
         token_count *= min(1.25, max(1.0, scale_factor))
 
     return math.ceil(token_count)
@@ -470,6 +560,121 @@ def _default_text_splitter(text: str) -> list[str]:
     return [split + "\n" for split in splits[:-1]] + splits[-1:]
 
 
+def _largest_fitting_prefix(
+    count: int,
+    fits: Callable[[int], bool],
+) -> int:
+    """Return the largest ``i`` in ``[0, count]`` for which ``fits(i)`` holds.
+
+    ``fits`` must be monotone: once it returns ``False`` it must stay ``False``
+    for larger inputs.  Both call sites (whole-message prefixes and
+    text-split prefixes) satisfy that because token counts grow with input
+    size.
+    """
+    left, right = 0, count
+    for _ in range(count.bit_length()):
+        if left >= right:
+            break
+        mid = (left + right + 1) // 2
+        if fits(mid):
+            left = mid
+        else:
+            right = mid - 1
+    return left
+
+
+def _trailing_messages_matching(
+    messages: list[Any], end_on: MessageType
+) -> list[Any]:
+    """Drop trailing messages until the last one matches ``end_on``."""
+    for _ in range(len(messages)):
+        if not _is_message_type(messages[-1], end_on):
+            messages.pop()
+        else:
+            break
+    return messages
+
+
+def _partial_block_message(
+    message: Any,
+    *,
+    max_tokens: int,
+    token_counter: Callable[[list[Any]], int],
+    prefix: list[Any],
+    strategy: Literal["first", "last"],
+) -> tuple[Any | None, Any]:
+    """Try to keep a prefix/suffix of a multimodal message's content blocks.
+
+    Returns ``(trimmed, working)``.  ``trimmed`` is the message with the
+    fitting block subset when one was found (``None`` otherwise); ``working``
+    is the deep-copied message the algorithm used, whose content may still be
+    in reverse order for ``strategy="last"`` — the caller reuses it for the
+    text-splitting fallback exactly like the original implementation did.
+    """
+    working = message.model_copy(deep=True)
+    num_block = len(working.content)
+    if strategy == "last":
+        working.content = list(reversed(working.content))
+    for _ in range(1, num_block):
+        working.content = working.content[:-1]
+        if token_counter([*prefix, working]) <= max_tokens:
+            if strategy == "last":
+                working.content = list(reversed(working.content))
+            return working, working
+    return None, working
+
+
+def _first_text_block(message: Any) -> str | None:
+    """Return the first text payload of a message whose content is a list."""
+    content = getattr(message, "content", None)
+    if not isinstance(content, list) or not content:
+        return None
+    for block in content:
+        if isinstance(block, str):
+            return block
+        if isinstance(block, dict) and block.get("type") == "text":
+            value = block.get("text")
+            if isinstance(value, str):
+                return value
+    return None
+
+
+def _split_text_to_fit(
+    message: Any,
+    text: str,
+    *,
+    max_tokens: int,
+    token_counter: Callable[[list[Any]], int],
+    text_splitter: Callable[[str], list[str]],
+    prefix: list[Any],
+    strategy: Literal["first", "last"],
+) -> Any | None:
+    """Trim ``text`` to the largest split sequence that fits the budget."""
+    split_texts = text_splitter(text)
+    base = token_counter(prefix)
+    if strategy == "last":
+        split_texts = list(reversed(split_texts))
+    left = _largest_fitting_prefix(
+        len(split_texts),
+        lambda mid: (
+            base + token_counter([_with_content(message, "".join(split_texts[:mid]))])
+        )
+        <= max_tokens,
+    )
+    if left <= 0:
+        return None
+    content_splits = split_texts[:left]
+    if strategy == "last":
+        content_splits = list(reversed(content_splits))
+    return _with_content(message, "".join(content_splits))
+
+
+def _with_content(message: Any, content: Any) -> Any:
+    """Set ``content`` on *message* in place and return it (trim helpers only)."""
+    message.content = content
+    return message
+
+
 def _first_max_tokens(
     messages: Sequence[Any],
     *,
@@ -479,98 +684,58 @@ def _first_max_tokens(
     partial_strategy: Literal["first", "last"] | None = None,
     end_on: MessageType | None = None,
 ) -> list[Any]:
-    messages = list(messages)
-    if not messages:
-        return messages
+    """Keep the longest leading run of *messages* that fits *max_tokens*."""
+    remaining: list[Any] = list(messages)
+    if not remaining:
+        return remaining
 
-    if token_counter(messages) <= max_tokens:
-        if end_on:
-            for _ in range(len(messages)):
-                if not _is_message_type(messages[-1], end_on):
-                    messages.pop()
-                else:
-                    break
-        return messages
+    if token_counter(remaining) <= max_tokens:
+        if end_on is None:
+            return remaining
+        return _trailing_messages_matching(list(remaining), end_on)
 
-    left, right = 0, len(messages)
-    for _ in range(len(messages).bit_length()):
-        if left >= right:
-            break
-        mid = (left + right + 1) // 2
-        if token_counter(messages[:mid]) <= max_tokens:
-            left = mid
-        else:
-            right = mid - 1
-    idx = left
+    idx = _largest_fitting_prefix(
+        len(remaining),
+        lambda mid: token_counter(remaining[:mid]) <= max_tokens,
+    )
 
-    if partial_strategy and idx < len(messages):
-        included_partial = False
-        copied = False
-        content = getattr(messages[idx], "content", None)
+    if partial_strategy and idx < len(remaining):
+        candidate = remaining[idx]
+        content = getattr(candidate, "content", None)
+        working = candidate.model_copy(deep=True) if not isinstance(content, list) else None
+        trimmed: Any | None = None
         if isinstance(content, list):
-            excluded = messages[idx].model_copy(deep=True)
-            copied = True
-            num_block = len(excluded.content)
-            if partial_strategy == "last":
-                excluded.content = list(reversed(excluded.content))
-            for _ in range(1, num_block):
-                excluded.content = excluded.content[:-1]
-                if token_counter([*messages[:idx], excluded]) <= max_tokens:
-                    messages = [*messages[:idx], excluded]
-                    idx += 1
-                    included_partial = True
-                    break
-            if included_partial and partial_strategy == "last":
-                excluded.content = list(reversed(excluded.content))
-
-        if not included_partial:
-            if not copied:
-                excluded = messages[idx].model_copy(deep=True)
-            text: str | None = None
-            excluded_content = getattr(excluded, "content", None)
-            if isinstance(excluded_content, str):
-                text = excluded_content
-            elif isinstance(excluded_content, list) and excluded_content:
-                for block in excluded_content:
-                    if isinstance(block, str):
-                        text = block
-                        break
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        value = block.get("text")
-                        if isinstance(value, str):
-                            text = value
-                            break
-
+            trimmed, working = _partial_block_message(
+                candidate,
+                max_tokens=max_tokens,
+                token_counter=token_counter,
+                prefix=remaining[:idx],
+                strategy=partial_strategy,
+            )
+        if trimmed is None:
+            assert working is not None
+            text = content if isinstance(content, str) else _first_text_block(working)
             if text:
-                split_texts = text_splitter(text)
-                base_message_count = token_counter(messages[:idx])
-                if partial_strategy == "last":
-                    split_texts = list(reversed(split_texts))
-                left, right = 0, len(split_texts)
-                for _ in range(len(split_texts).bit_length()):
-                    if left >= right:
-                        break
-                    mid = (left + right + 1) // 2
-                    excluded.content = "".join(split_texts[:mid])
-                    if base_message_count + token_counter([excluded]) <= max_tokens:
-                        left = mid
-                    else:
-                        right = mid - 1
-                if left > 0:
-                    content_splits = split_texts[:left]
-                    if partial_strategy == "last":
-                        content_splits = list(reversed(content_splits))
-                    excluded.content = "".join(content_splits)
-                    messages = [*messages[:idx], excluded]
-                    idx += 1
+                trimmed = _split_text_to_fit(
+                    working,
+                    text,
+                    max_tokens=max_tokens,
+                    token_counter=token_counter,
+                    text_splitter=text_splitter,
+                    prefix=remaining[:idx],
+                    strategy=partial_strategy,
+                )
+        if trimmed is not None:
+            remaining = [*remaining[:idx], trimmed]
+            idx += 1
 
     if end_on:
         for _ in range(idx):
-            if idx > 0 and not _is_message_type(messages[idx - 1], end_on):
+            if idx > 0 and not _is_message_type(remaining[idx - 1], end_on):
                 idx -= 1
             else:
                 break
-    return messages[:idx]
+    return remaining[:idx]
 
 
 def _last_max_tokens(
@@ -654,6 +819,7 @@ def trim_messages(
             single_counter = cast("Callable[[Any], int]", token_counter)
 
             def list_token_counter(values: list[Any]) -> int:
+                """Token counter treating each list item as one token."""
                 return sum(single_counter(message) for message in values)
         else:
             list_token_counter = cast("Callable[[list[Any]], int]", token_counter)

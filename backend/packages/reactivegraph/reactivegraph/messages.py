@@ -1216,16 +1216,50 @@ _LC_CONSTRUCTOR_NAME_TO_TYPE = {
 }
 
 
-def _create_message_from_message_type(
+_MESSAGE_TYPE_HINTS = (
+    "'human', 'user', 'ai', 'assistant', 'system', 'developer', "
+    "'tool', 'remove', or 'chat'"
+)
+
+
+def _normalize_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert OpenAI-style ``function`` entries into native tool calls."""
+    converted: list[dict[str, Any]] = []
+    for call in tool_calls:
+        if "function" not in call:
+            converted.append(call)
+            continue
+        arguments = call["function"]["arguments"]
+        if isinstance(arguments, str):
+            arguments = json.loads(arguments, strict=False)
+        converted.append(
+            {
+                "name": call["function"]["name"],
+                "args": arguments,
+                "id": call["id"],
+                "type": "tool_call",
+            }
+        )
+    return converted
+
+
+def _message_kwargs(
     message_type: str,
-    content: str | list[str | dict[str, Any]],
-    name: str | None = None,
-    tool_call_id: str | None = None,
-    tool_calls: list[dict[str, Any]] | None = None,
-    id: str | None = None,
-    **additional_kwargs: Any,
-) -> BaseMessage:
-    """Build a message from a role string and content, upstream style."""
+    *,
+    name: str | None,
+    tool_call_id: str | None,
+    id: str | None,
+    additional_kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    """Assemble constructor kwargs from the raw ``**additional_kwargs`` funnel.
+
+    ``response_metadata``/``usage_metadata`` are promoted out of the catch-all
+    because token accounting reads them directly: ``model_dump()`` puts
+    ``usage_metadata`` at the top level, and leaving it in
+    ``additional_kwargs`` silently disables every budget check. Everything else
+    (including a nested ``additional_kwargs`` mapping) stays in
+    ``additional_kwargs``, matching LangChain's object path.
+    """
     kwargs: dict[str, Any] = {}
     if name is not None:
         kwargs["name"] = name
@@ -1235,13 +1269,6 @@ def _create_message_from_message_type(
         response_metadata = additional_kwargs.pop("response_metadata", None)
         if response_metadata:
             kwargs["response_metadata"] = response_metadata
-        # ``model_dump()`` puts ``usage_metadata`` at the top level, but the
-        # **kwargs funnel below would otherwise file it under
-        # ``additional_kwargs``. Token accounting (DeerFlow's
-        # TokenBudgetMiddleware, ``add_usage``) reads the field directly, so a
-        # swallowed value silently disables every budget check. Promote it for
-        # the message types that declare the field, exactly like LangChain's
-        # object path does.
         usage_metadata = additional_kwargs.pop("usage_metadata", None)
         extra = dict(additional_kwargs)
         nested = extra.pop("additional_kwargs", None)
@@ -1252,24 +1279,28 @@ def _create_message_from_message_type(
             kwargs["usage_metadata"] = usage_metadata
     if id is not None:
         kwargs["id"] = id
+    return kwargs
+
+
+def _create_message_from_message_type(
+    message_type: str,
+    content: str | list[str | dict[str, Any]],
+    name: str | None = None,
+    tool_call_id: str | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
+    id: str | None = None,
+    **additional_kwargs: Any,
+) -> BaseMessage:
+    """Build a message from a role string and content, upstream style."""
+    kwargs = _message_kwargs(
+        message_type,
+        name=name,
+        tool_call_id=tool_call_id,
+        id=id,
+        additional_kwargs=additional_kwargs,
+    )
     if tool_calls is not None:
-        converted: list[dict[str, Any]] = []
-        for call in tool_calls:
-            if "function" in call:
-                arguments = call["function"]["arguments"]
-                if isinstance(arguments, str):
-                    arguments = json.loads(arguments, strict=False)
-                converted.append(
-                    {
-                        "name": call["function"]["name"],
-                        "args": arguments,
-                        "id": call["id"],
-                        "type": "tool_call",
-                    }
-                )
-            else:
-                converted.append(call)
-        kwargs["tool_calls"] = converted
+        kwargs["tool_calls"] = _normalize_tool_calls(tool_calls)
 
     if message_type in {"human", "user"}:
         return HumanMessage(content=content, **kwargs)
@@ -1291,11 +1322,7 @@ def _create_message_from_message_type(
     if message_type == "chat":
         return ChatMessage(content=content, **kwargs)
 
-    known = (
-        "'human', 'user', 'ai', 'assistant', 'system', 'developer', "
-        "'tool', 'remove', or 'chat'"
-    )
-    msg = f"Unexpected message type: '{message_type}'. Use one of {known}."
+    msg = f"Unexpected message type: '{message_type}'. Use one of {_MESSAGE_TYPE_HINTS}."
     raise ValueError(msg)
 
 

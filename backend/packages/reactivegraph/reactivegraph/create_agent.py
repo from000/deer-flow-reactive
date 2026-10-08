@@ -30,33 +30,70 @@ not implement raise instead of silently degrading.
 from __future__ import annotations
 
 import copy
-import uuid
 from collections.abc import (
     AsyncIterator,
     Callable,
     Generator,
     Iterable,
     Iterator,
-    Mapping,
     Sequence,
 )
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, cast
 
-from reactivegraph.channels import channel_reducer, resolve_channels
-from reactivegraph.errors import (
-    ErrorCode,
-    GraphRecursionError,
-    create_error_message,
+# ``_implements_hook_pair``/``_middleware_node_name``/``_overrides_hook`` are
+# re-exported on purpose: the middleware interop test and downstream callers
+# import those private predicates from ``reactivegraph.create_agent``, their
+# historical home.
+from reactivegraph.agent_graph_view import (  # noqa: F401
+    _build_graph_view,
+    _get_can_jump_to,
+    _GraphBuilderView,
+    _GraphTopology,
+    _GraphView,
+    _hook_layout,
+    _implements_hook_pair,
+    _middleware_node_name,
+    _overrides_hook,
 )
-from reactivegraph.graph import GraphBuilder, ReactiveGraph, TaskOutcome
+from reactivegraph.agent_middleware_tools import (
+    _assert_no_duplicate_middleware,
+    _call_get,
+    _call_id,
+    _call_name,
+    _compose_tool_wrappers,
+    _is_unimplemented_stub,
+    _middleware_method,
+    _normalize_input,
+    _reject_unimplemented,
+    _resolve_runtime,
+)
+from reactivegraph.agent_recursion import (
+    _MAX_RECURSION_LIMIT,
+    _BoundModel,
+    _graph_recursion_error,
+    _RecursionBudgetExceeded,
+    _run_exhausted,
+    _run_recursion_limit,
+    _StepBudget,
+)
+from reactivegraph.agent_state import (
+    AGENT_STARTED,
+    ALL_HOOKS,
+    DEFAULT_RECURSION_LIMIT,
+    EXHAUSTED_KEY,
+    HOOK_PAIRS,
+    PRIVATE_STATE_KEYS,
+    RECURSION_LIMIT_KEY,
+    STEP_COUNT_KEY,
+)
+from reactivegraph.channels import channel_reducer, resolve_channels
+from reactivegraph.graph import GraphBuilder, ReactiveGraph, TaskOutcome, _runnable_base
 from reactivegraph.messages import (
     AIMessage,
-    AnyMessage,
     SystemMessage,
     ToolMessage,
     convert_to_messages,
-    message_to_foreign_dict,
 )
 from reactivegraph.middleware import (
     AgentMiddleware,
@@ -67,6 +104,30 @@ from reactivegraph.middleware import (
 )
 from reactivegraph.runtime import Runtime, _PinnedIterator, get_runtime, runtime_context
 from reactivegraph.state import TrackedStateProxy
+from reactivegraph.streaming import (
+    UnsupportedStreamModeError as UnsupportedStreamModeError,
+)
+from reactivegraph.streaming import (
+    _aadapt_stream as _aadapt_stream,
+)
+from reactivegraph.streaming import (
+    _adapt_stream as _adapt_stream,
+)
+from reactivegraph.streaming import (
+    _AdaptState as _AdaptState,
+)
+from reactivegraph.streaming import (
+    _normalize_stream_modes as _normalize_stream_modes,
+)
+from reactivegraph.streaming import (
+    _public_state as _public_state,
+)
+from reactivegraph.streaming import (
+    _StreamCommitter as _StreamCommitter,
+)
+from reactivegraph.streaming import (
+    _update_metadata as _update_metadata,
+)
 from reactivegraph.thread_state import (
     NO_CHECKPOINTER_MESSAGE,
     StateSnapshot,
@@ -77,268 +138,29 @@ from reactivegraph.types import Command
 
 __all__ = ("AgentGraph", "create_agent")
 
-# Upstream sets this on the compiled graph; DeerFlow reads it back.
-_DEFAULT_RECURSION_LIMIT = 9_999
-
-# The compiled task budget is a fixed wire value, so a run whose
-# ``recursion_limit`` exceeds it would be silently truncated by the scheduler's
-# at-most-once gate instead of raising. Refuse the run instead: the fallback's
-# own event-propagation guard sits at the same ceiling, so one bound covers
-# both execution paths.
-_MAX_RECURSION_LIMIT = 10_000
-
+# Recursion bounds, run-private keys and hook pairs live in
+# ``reactivegraph.agent_state`` so the streaming adapter can share them
+# without importing this module (that would be a cycle). The aliases below keep
+# the module-internal underscore names used throughout this file.
+_DEFAULT_RECURSION_LIMIT = DEFAULT_RECURSION_LIMIT
 
 # ---------------------------------------------------------------------------
 # recursion_limit accounting
 # ---------------------------------------------------------------------------
 
-# The compiled graph's "the one-shot lifecycle hook already fired" marker.
-_AGENT_STARTED = "__reactivegraph_agent_started__"
-
-# Run-private state keys. They ride the graph like any other channel so a task
-# re-entry reads the budget its predecessor spent, and they are stripped from
-# every public surface (``invoke`` result, ``values``/``updates`` frames,
-# checkpoints), exactly as ``_AGENT_STARTED`` already was.
-_RECURSION_LIMIT_KEY = "__reactivegraph_recursion_limit__"
-_STEP_COUNT_KEY = "__reactivegraph_step_count__"
-_EXHAUSTED_KEY = "__reactivegraph_recursion_exhausted__"
-_RUN_PRIVATE_KEYS = frozenset(
-    {_AGENT_STARTED, _RECURSION_LIMIT_KEY, _STEP_COUNT_KEY, _EXHAUSTED_KEY}
-)
-# ``jump_to`` is an ``EphemeralValue + PrivateStateAttr`` upstream: a hook can
-# use it to choose the next node, but it must not be visible to later nodes or
-# to the caller. The engine's compatibility layer owns that consumption.
-_PRIVATE_STATE_KEYS = _RUN_PRIVATE_KEYS | {"jump_to"}
-
-# Hook name -> the sync/async pair LangChain compiles into one node. The
-# ordering here is the order the nodes run in, which is also the order the
-# step budget must be charged in: when the limit lands between two nodes, the
-# earlier node's writes are the ones LangGraph committed before giving up.
-_HOOK_PAIRS: dict[str, tuple[str, str]] = {
-    "before_agent": ("before_agent", "abefore_agent"),
-    "before_model": ("before_model", "abefore_model"),
-    "after_model": ("after_model", "aafter_model"),
-    "after_agent": ("after_agent", "aafter_agent"),
-}
+_AGENT_STARTED = AGENT_STARTED
+_RECURSION_LIMIT_KEY = RECURSION_LIMIT_KEY
+_STEP_COUNT_KEY = STEP_COUNT_KEY
+_EXHAUSTED_KEY = EXHAUSTED_KEY
+_PRIVATE_STATE_KEYS = PRIVATE_STATE_KEYS
+_HOOK_PAIRS = HOOK_PAIRS
+_ALL_HOOKS = ALL_HOOKS
 
 
-_ALL_HOOKS = tuple(hook for pair in _HOOK_PAIRS.values() for hook in pair)
 
 
-def _middleware_base(middleware_type: type) -> type | None:
-    """The middleware base class *middleware_type* ultimately derives from.
-
-    Both frameworks' bases declare the whole hook surface (sync and async of
-    every pair) in their own ``__dict__``, so the *most-base* class in the MRO
-    that does so is the base the chain was built on — ours
-    (``reactivegraph.middleware.AgentMiddleware``) or the host's
-    (``langchain.agents.middleware.AgentMiddleware``) — without importing
-    either one. A user's intermediate base declares only the hooks it overrides
-    and is therefore not mistaken for the framework base.
-    """
-    for klass in reversed(middleware_type.__mro__):
-        if all(hook in klass.__dict__ for hook in _ALL_HOOKS):
-            return klass
-    return None
 
 
-def _overrides_hook(middleware_type: type, hook: str) -> bool:
-    """Whether *hook* is overridden, using upstream's identity comparison.
-
-    LangChain's factory decides participation with
-    ``m.__class__.hook is not AgentMiddleware.hook`` — identity against the
-    framework base, not against the most-base definition of *this* hook. That
-    distinction matters for a user's intermediate base class: a hook it defines
-    is an override even though it is the most-base definition in the MRO.
-
-    A structural "does the body do anything" test cannot substitute here: a
-    real override that returns ``None`` compiles to the same bytecode as the
-    base's docstring-only stub, and upstream still compiles a node for it.
-    """
-    resolved = getattr(middleware_type, hook, None)
-    if resolved is None:
-        return False
-    base = _middleware_base(middleware_type)
-    if base is not None and resolved is getattr(base, hook, None):
-        return False
-    return not _is_unimplemented_stub(resolved, hook)
-
-
-def _implements_hook_pair(middleware: Any, pair: tuple[str, str]) -> bool:
-    """Whether *middleware* overrides either side of one sync/async hook pair."""
-    middleware_type = type(middleware)
-    return any(_overrides_hook(middleware_type, hook) for hook in pair)
-
-
-def _validate_recursion_limit(limit: Any) -> Any:
-    """Validate a run's ``recursion_limit`` exactly the way upstream does.
-
-    ``0``/negative raise ``ValueError``; a non-numeric value raises ``TypeError``
-    from the comparison itself, which is what LangGraph's own check does.
-    ``None`` means "use the compiled default" and is resolved by the caller.
-
-    One bound is *ours*, not upstream's: the compiled task budgets and the
-    fallback event guard are fixed wire values, so a run whose limit exceeds
-    them would be truncated silently instead of raising. Fail closed instead.
-    """
-    if limit is None:
-        return None
-    if limit < 1:
-        raise ValueError("recursion_limit must be at least 1")
-    if limit > _MAX_RECURSION_LIMIT:
-        raise ValueError(
-            f"recursion_limit {limit!r} exceeds ReactiveGraph's compiled ceiling "
-            f"of {_MAX_RECURSION_LIMIT}; a larger limit would be silently "
-            "truncated by the engine's task budget"
-        )
-    return limit
-
-
-def _run_recursion_limit(config: dict | None, default: Any) -> Any:
-    """Resolve a run's limit: an explicit config value wins over the default.
-
-    ``config['recursion_limit'] = None`` keeps the compiled default, matching
-    upstream (probe-verified against langgraph 1.2.9).
-    """
-    limit = default
-    if config:
-        raw = config.get("recursion_limit")
-        if raw is not None:
-            limit = raw
-    return _validate_recursion_limit(limit)
-
-
-def _run_exhausted(state: Any) -> bool:
-    """Whether a finished run spent its whole budget without stopping in time.
-
-    Two independent signals, because the two paths notice exhaustion in
-    different places: a task that was *refused* mid-run records
-    ``_EXHAUSTED_KEY``; a run that converged normally still owes the
-    terminating super-step upstream charges while discovering there is no more
-    work (``count + 1``).
-    """
-    if not isinstance(state, dict):
-        return False
-    if state.get(_EXHAUSTED_KEY):
-        return True
-    limit = state.get(_RECURSION_LIMIT_KEY)
-    if limit is None:
-        return False
-    count = int(state.get(_STEP_COUNT_KEY) or 0)
-    return count + 1 > limit
-
-
-def _graph_recursion_error(limit: Any) -> Exception:
-    """Upstream's exact exhaustion message, troubleshooting link included."""
-    error_type = cast("type[Exception]", GraphRecursionError)
-    return error_type(
-        create_error_message(
-            message=(
-                f"Recursion limit of {limit} reached without hitting a stop "
-                "condition. You can increase the limit by setting the "
-                "`recursion_limit` config key."
-            ),
-            error_code=ErrorCode.GRAPH_RECURSION_LIMIT,
-        )
-    )
-
-
-class _RecursionBudgetExceeded(Exception):
-    """Internal control flow: this run spent more super-steps than allowed.
-
-    It is deliberately *not* :class:`GraphRecursionError`: the node that would
-    have run must not run, but the nodes that already ran have to keep their
-    writes, because LangGraph commits every super-step before it notices the
-    limit. The task catches this, returns a stopping outcome, and the
-    compatibility layer raises the real error once the graph has stopped.
-    """
-
-    def __init__(self, node: str, limit: Any) -> None:
-        super().__init__(node)
-        self.node = node
-        self.limit = limit
-        # Filled in by :meth:`AgentGraph._compile._run_hook` when the refusal
-        # lands part-way through a middleware chain: upstream compiles one node
-        # per middleware instance, so the instances that already ran keep their
-        # writes. Empty when the very first node was refused.
-        self.partial: dict[str, Any] = {}
-
-
-class _StepBudget:
-    """LangGraph-compatible super-step accounting for one run.
-
-    ``recursion_limit`` counts *super-steps*, not turns. Upstream advances its
-    step counter once per loop iteration — including the final iteration that
-    finds no runnable task — and refuses to prepare tasks once the counter
-    exceeds the limit, so a graph that executes exactly ``limit`` nodes still
-    raises. Exhaustion is only observable *after* those nodes committed.
-
-    The engine runs one task per node, so this reproduces that arithmetic:
-    every node is charged in upstream's order, and the terminating super-step
-    is charged once the graph has stopped (``finish``). The spent count rides
-    the graph state, because a task re-entry starts from committed values and
-    would otherwise restart the count on every round.
-    """
-
-    def __init__(self, state: dict, default_limit: Any) -> None:
-        raw = state.get(_RECURSION_LIMIT_KEY)
-        self.limit = default_limit if raw is None else raw
-        # ``count`` is the *tick index* upstream is currently on. The first
-        # tick (index 0) is the one that seeds the input and prepares the
-        # entry node, so an untouched run is at 0 and each node advances it.
-        raw_count = state.get(_STEP_COUNT_KEY)
-        self.count = 0 if raw_count is None else int(raw_count)
-
-    def charge(self, node: str) -> None:
-        """Advance one tick to prepare *node*, refusing if the budget is spent.
-
-        ``SyncPregelLoop.tick`` runs while ``self.step <= self.stop`` where
-        ``stop = recursion_limit`` for a fresh run, so tick *n* prepares a node
-        iff ``n <= limit``. The node prepared at tick ``limit`` therefore still
-        executes; only the tick after it is refused.
-        """
-        self.count += 1
-        if self.count > self.limit:
-            raise _RecursionBudgetExceeded(node, self.limit)
-
-    def exhausted_update(self) -> dict[str, Any]:
-        """The bookkeeping patch a task returns when its budget ran out."""
-        return {_STEP_COUNT_KEY: self.count, _EXHAUSTED_KEY: True}
-
-    def spent_update(self) -> dict[str, Any]:
-        """The bookkeeping patch every completed task commits."""
-        return {_STEP_COUNT_KEY: self.count}
-
-
-class _BoundModel:
-    """Wraps a caller-supplied chat model with the bind/bind_tools surface.
-
-    Only the calls the agent loop actually makes are forwarded, so a fake model
-    in tests needs the same two methods a real chat model exposes.
-    """
-
-    def __init__(self, model: Any, tools: Sequence[Any]) -> None:
-        self._model = model
-        self._tools = list(tools)
-        self._bound: Any = None
-
-    def bind(self) -> Any:
-        if self._tools and hasattr(self._model, "bind_tools"):
-            self._bound = self._model.bind_tools(self._tools)
-        elif hasattr(self._model, "bind"):
-            self._bound = self._model.bind()
-        else:  # pragma: no cover - defensive; fakes implement one of the two
-            self._bound = self._model
-        return self._bound
-
-    def invoke(self, messages: list[AnyMessage]) -> AIMessage:
-        bound = self._bound if self._bound is not None else self.bind()
-        # The model belongs to the host's world (e.g. a real LangChain chat
-        # model), and its message coercion rejects our classes outright.
-        # ``convert_to_messages`` accepts the flat ``{type, **dump}`` shape,
-        # and adopting the reply keeps our reducers' isinstance checks valid.
-        payload = [message_to_foreign_dict(message) for message in messages]
-        return convert_to_messages([bound.invoke(payload)])[0]
 
 
 def _adopt_messages(update: dict[str, Any]) -> dict[str, Any]:
@@ -409,6 +231,7 @@ def _coerce_tool(tool: Any) -> Any:
         func: Callable[..., Any]
 
         def invoke(self, args: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+            """Run *event* (or the graph) synchronously and return the result."""
             return _invoke(args, **kwargs)
 
     return _CallableTool(name=_tool_name(tool), func=tool)
@@ -420,23 +243,6 @@ def _resolve_jump(jump: Any) -> str | None:
     return None
 
 
-def _get_can_jump_to(middleware: Any, hook_name: str) -> list[str]:
-    """Read ``hook_config(can_jump_to=...)`` from either side of the pair.
-
-    Upstream's ``_get_can_jump_to`` checks the sync hook first, then the async
-    hook, and only trusts metadata on a method that actually overrides the
-    framework base. The identity check matters for host middleware: a bare
-    subclass must not inherit a declaration from the base stub.
-    """
-    middleware_type = type(middleware)
-    for hook in (hook_name, f"a{hook_name}"):
-        if not _overrides_hook(middleware_type, hook):
-            continue
-        resolved = getattr(middleware_type, hook, None)
-        declared = getattr(resolved, "__can_jump_to__", None)
-        if declared:
-            return list(declared)
-    return []
 
 
 def _fetch_last_ai_and_tool_messages(
@@ -459,79 +265,37 @@ def _fetch_last_ai_and_tool_messages(
     return None, []
 
 
-@dataclass
-class _SchemaView:
-    """``.builder.schemas`` — dict keyed by the resolved state schema classes."""
-
-    schemas: dict[type, type] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
-class _GraphNode:
-    """One node in the ``get_graph()`` view (upstream-compatible shape)."""
-
-    name: str
 
 
-@dataclass(frozen=True)
-class _GraphEdge:
-    """One edge in the ``get_graph()`` view."""
-
-    source: str
-    target: str
-    conditional: bool = False
 
 
-@dataclass(frozen=True)
-class _GraphTopology:
-    """The compiled node/edge shape shared by ``get_graph()`` and the tasks.
-
-    ``get_graph()`` is not decorative for the hosts we target: DeerFlow and
-    LangChain-compatibility tests inspect it to reason about routing and
-    recursion.  Building it independently from the task graph had already let
-    the two drift once (middleware hooks existed at runtime but not in the
-    view).  Keeping one immutable value as the source for both prevents that
-    class of bug.
-    """
-
-    nodes: tuple[str, ...]
-    edges: tuple[_GraphEdge, ...]
 
 
-class _GraphView:
-    """``get_graph()`` — the node/edge surface DeerFlow and its tests read.
-
-    Upstream returns a LangGraph ``DrawableGraph``; callers only rely on
-    ``.nodes`` (mapping keyed by node name) and ``.edges``. We expose the same
-    two attributes with the same node set and edge topology so graph-shape
-    assertions hold, without pretending to be a LangGraph object.
-    """
-
-    def __init__(self, topology: _GraphTopology) -> None:
-        self._topology = topology
-
-    @property
-    def nodes(self) -> dict[str, _GraphNode]:
-        return {name: _GraphNode(name=name) for name in self._topology.nodes}
-
-    @property
-    def edges(self) -> list[_GraphEdge]:
-        return list(self._topology.edges)
 
 
-class _GraphBuilderView:
-    """``.builder`` — the resolved schema table hosts read back.
-
-    Upstream's ``StateGraph.builder`` also exposes ``channels``; DeerFlow's
-    checkpoint-mutation path and its factory tests read it.
-    """
-
-    def __init__(self, schemas: dict[type, type], channels: dict[str, Any]) -> None:
-        self.schemas = schemas
-        self.channels = channels
 
 
-class AgentGraph:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+class AgentGraph(*_runnable_base()):  # type: ignore[misc]
     """The compiled agent graph returned by :func:`create_agent`."""
 
     def __init__(
@@ -648,52 +412,20 @@ class AgentGraph:
 
         # LangChain's factory compiles one node per middleware *hook pair*, so
         # every hook is a real super-step and therefore produces its own values
-        # frame.  Precompute the four chains once and derive both the graph and
+        # frame. Precompute the four chains once and derive both the graph and
         # get_graph() from the same topology.
-        before_agent_chain = [
-            mw
-            for mw in middleware
-            if _implements_hook_pair(mw, _HOOK_PAIRS["before_agent"])
-        ]
-        before_model_chain = [
-            mw
-            for mw in middleware
-            if _implements_hook_pair(mw, _HOOK_PAIRS["before_model"])
-        ]
-        after_model_chain = [
-            mw
-            for mw in middleware
-            if _implements_hook_pair(mw, _HOOK_PAIRS["after_model"])
-        ]
-        after_agent_chain = [
-            mw
-            for mw in middleware
-            if _implements_hook_pair(mw, _HOOK_PAIRS["after_agent"])
-        ]
-
-        def _node_name(hook: str, mw: Any) -> str:
-            return f"{getattr(mw, 'name', None) or type(mw).__name__}.{hook}"
-
-        before_agent_nodes = [
-            _node_name("before_agent", mw) for mw in before_agent_chain
-        ]
-        before_model_nodes = [
-            _node_name("before_model", mw) for mw in before_model_chain
-        ]
-        after_model_nodes = [
-            _node_name("after_model", mw) for mw in after_model_chain
-        ]
-        after_agent_nodes = [
-            _node_name("after_agent", mw) for mw in after_agent_chain
-        ]
-
-        entry = before_agent_nodes[0] if before_agent_nodes else (
-            before_model_nodes[0] if before_model_nodes else "model"
-        )
-        loop_entry = before_model_nodes[0] if before_model_nodes else "model"
-        # Upstream's ``exit_node`` is the *last* registered after_agent node;
-        # the chain itself then walks backwards to the first one.
-        exit_node = after_agent_nodes[-1] if after_agent_nodes else "__end__"
+        layout = _hook_layout(middleware)
+        before_agent_chain = layout.chains["before_agent"]
+        before_model_chain = layout.chains["before_model"]
+        after_model_chain = layout.chains["after_model"]
+        after_agent_chain = layout.chains["after_agent"]
+        before_agent_nodes = layout.nodes["before_agent"]
+        before_model_nodes = layout.nodes["before_model"]
+        after_model_nodes = layout.nodes["after_model"]
+        after_agent_nodes = layout.nodes["after_agent"]
+        entry = layout.entry
+        loop_entry = layout.loop_entry
+        exit_node = layout.exit_node
 
         def _enter(node_id: str) -> str:
             return f"enter:{node_id}"
@@ -993,6 +725,7 @@ class AgentGraph:
         }
 
         def default_destination(node_id: str) -> str:
+            """Next node on the default path when no jump applies."""
             return _default_destination(node_id)
 
         # Build the public graph topology from the same chains that drive the
@@ -1001,126 +734,22 @@ class AgentGraph:
         # hosts and compatibility tests, so a cosmetic approximation is not
         # enough -- notably ``after_model`` chains are registered in reverse
         # and ``after_agent`` routes to its *last* registered node first.
-        nodes: list[str] = ["__start__", "model"]
-        if tools:
-            nodes.append("tools")
-        for mw in middleware:
-            for hook, chain in (
-                ("before_agent", before_agent_chain),
-                ("before_model", before_model_chain),
-                ("after_model", after_model_chain),
-                ("after_agent", after_agent_chain),
-            ):
-                if any(candidate is mw for candidate in chain):
-                    nodes.append(_node_name(hook, mw))
-        nodes.append("__end__")
-
-        edges: list[_GraphEdge] = []
-
-        def _append_edge(source: str, target: str, *, conditional: bool = False) -> None:
-            edge = _GraphEdge(source=source, target=target, conditional=conditional)
-            if edge not in edges:
-                edges.append(edge)
-
-        def _add_middleware_edge(
-            source: str,
-            *,
-            default: str,
-            can_jump_to: Sequence[str],
-        ) -> None:
-            """Mirror upstream ``_add_middleware_edge`` in the public view."""
-            if not can_jump_to:
-                _append_edge(source, default)
-                return
-            targets = [default]
-            if "end" in can_jump_to:
-                targets.append(exit_node)
-            if "tools" in can_jump_to:
-                targets.append("tools")
-            if "model" in can_jump_to and source != loop_entry:
-                targets.append(loop_entry)
-            for target in targets:
-                _append_edge(source, target, conditional=True)
-
-        _append_edge("__start__", entry)
-        if tools:
-            tools_to_model_destinations = [loop_entry]
-            if any(
-                bool(getattr(tool, "return_direct", False))
-                for tool in tools.values()
-            ):
-                tools_to_model_destinations.append(exit_node)
-            for target in tools_to_model_destinations:
-                _append_edge("tools", target, conditional=True)
-
-            model_to_tools_destinations = ["tools", exit_node]
-            if after_model_nodes:
-                model_to_tools_destinations.append(loop_entry)
-            loop_exit = after_model_nodes[0] if after_model_nodes else "model"
-            for target in model_to_tools_destinations:
-                _append_edge(loop_exit, target, conditional=True)
-        elif after_model_nodes:
-            _add_middleware_edge(
-                after_model_nodes[0],
-                default=exit_node,
-                can_jump_to=_get_can_jump_to(
-                    hook_by_node[after_model_nodes[0]], "after_model"
-                ),
-            )
-        else:
-            # No tools and no after_model: upstream adds a plain edge here.
-            _append_edge("model", exit_node)
-
-        for index, node_id in enumerate(before_agent_nodes):
-            default = (
-                before_agent_nodes[index + 1]
-                if index + 1 < len(before_agent_nodes)
-                else loop_entry
-            )
-            _add_middleware_edge(
-                node_id,
-                default=default,
-                can_jump_to=_get_can_jump_to(hook_by_node[node_id], "before_agent"),
-            )
-
-        for index, node_id in enumerate(before_model_nodes):
-            default = (
-                before_model_nodes[index + 1]
-                if index + 1 < len(before_model_nodes)
-                else "model"
-            )
-            _add_middleware_edge(
-                node_id,
-                default=default,
-                can_jump_to=_get_can_jump_to(hook_by_node[node_id], "before_model"),
-            )
-
-        if after_model_nodes:
-            _append_edge("model", after_model_nodes[-1])
-            for index in range(len(after_model_nodes) - 1, 0, -1):
-                node_id = after_model_nodes[index]
-                _add_middleware_edge(
-                    node_id,
-                    default=after_model_nodes[index - 1],
-                    can_jump_to=_get_can_jump_to(
-                        hook_by_node[node_id], "after_model"
-                    ),
-                )
-
-        for index in range(len(after_agent_nodes) - 1, 0, -1):
-            node_id = after_agent_nodes[index]
-            _add_middleware_edge(
-                node_id,
-                default=after_agent_nodes[index - 1],
-                can_jump_to=_get_can_jump_to(hook_by_node[node_id], "after_agent"),
-            )
-        if after_agent_nodes:
-            node_id = after_agent_nodes[0]
-            _add_middleware_edge(
-                node_id,
-                default="__end__",
-                can_jump_to=_get_can_jump_to(hook_by_node[node_id], "after_agent"),
-            )
+        nodes, edges = _build_graph_view(
+            tools=tools,
+            middleware=middleware,
+            before_agent_chain=before_agent_chain,
+            before_model_chain=before_model_chain,
+            after_model_chain=after_model_chain,
+            after_agent_chain=after_agent_chain,
+            before_agent_nodes=before_agent_nodes,
+            before_model_nodes=before_model_nodes,
+            after_model_nodes=after_model_nodes,
+            after_agent_nodes=after_agent_nodes,
+            entry=entry,
+            loop_entry=loop_entry,
+            exit_node=exit_node,
+            hook_by_node=hook_by_node,
+        )
 
         def build(b: GraphBuilder) -> None:
             # ``max_runs`` is the engine's own re-entry budget, distinct from
@@ -1129,6 +758,7 @@ class AgentGraph:
             # to be large enough not to truncate a legal run first. A limit
             # above the compiled ceiling is rejected in ``_seed_budget`` rather
             # than silently truncated here.
+            """Materialise the declared graph definition."""
             compiled_budget = _MAX_RECURSION_LIMIT + 2
             all_hook_nodes = [
                 *before_agent_nodes,
@@ -1141,6 +771,7 @@ class AgentGraph:
                 name: str,
             ) -> Callable[[dict], TaskOutcome]:
                 def run_hook_task(state: dict) -> TaskOutcome:
+                    """Task wrapper charging the recursion budget for one hook."""
                     return _run_hook(
                         node_id,
                         name,
@@ -1354,6 +985,7 @@ class AgentGraph:
     # -- public surface -----------------------------------------------------
 
     def invoke(self, input: Any, config: dict | None = None, **kwargs: Any) -> dict[str, Any]:
+        """Run *event* (or the graph) synchronously and return the result."""
         self._reject_inherited_checkpointer()
         payload = _normalize_input(input)
         head = None
@@ -1374,9 +1006,30 @@ class AgentGraph:
         self._raise_if_exhausted(state)
         return _public_state(state)
 
+    def batch(self, inputs: Sequence[Any], config: dict | None = None,
+              **kwargs: Any) -> list[dict[str, Any]]:
+        """Run several inputs, returning one result each, in order.
+
+        LangChain's ``Runnable`` contract: ``batch`` preserves input order and
+        is what lets this graph be composed into an existing LangChain
+        pipeline. Each input is an independent run; ``config`` is shared.
+        """
+        return [self.invoke(item, config, **kwargs) for item in inputs]
+
+    async def abatch(self, inputs: Sequence[Any], config: dict | None = None,
+                     **kwargs: Any) -> list[dict[str, Any]]:
+        """Async twin of :meth:`batch`.
+
+        Runs sequentially so a shared checkpointer/thread sees deterministic
+        ordering; the engine's own concurrency controls govern parallelism
+        inside each run.
+        """
+        return [await self.ainvoke(item, config, **kwargs) for item in inputs]
+
     async def ainvoke(
         self, input: Any, config: dict | None = None, **kwargs: Any
     ) -> dict[str, Any]:
+        """Async twin of :meth:`invoke`."""
         self._reject_inherited_checkpointer()
         payload = _normalize_input(input)
         head = None
@@ -1409,6 +1062,7 @@ class AgentGraph:
         return threads.snapshot(threads.get_head(config), config)
 
     async def aget_state(self, config: dict | None = None, **kwargs: Any) -> StateSnapshot:
+        """Async twin of :meth:`get_state`."""
         threads = self._threads_or_raise()
         return await threads.asnapshot(await threads.aget_head(config), config)
 
@@ -1434,6 +1088,7 @@ class AgentGraph:
         filter: dict | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[StateSnapshot]:
+        """Async twin of :meth:`get_state_history`."""
         threads = self._threads_or_raise()
         return threads.ahistory(config, before=before, limit=limit, filter=filter)
 
@@ -1475,6 +1130,7 @@ class AgentGraph:
         as_node: str | None = None,
         task_id: str | None = None,
     ) -> dict[str, Any]:
+        """Async twin of :meth:`update_state`."""
         threads = self._threads_or_raise()
         head = await threads.aget_head(config)
         update = _adopt_messages(dict(values or {}))
@@ -1571,6 +1227,7 @@ class AgentGraph:
             yield item
 
     def get_graph(self) -> Any:
+        """Return the compiled public node/edge view."""
         return _GraphView(self._topology)
 
     # -- stream machinery ---------------------------------------------------
@@ -1644,476 +1301,6 @@ class AgentGraph:
             for item in adapter.finish():
                 yield item
             self._raise_if_exhausted(adapter.previous)
-
-
-# ---------------------------------------------------------------------------
-# Stream-mode adapter (LangGraph mode language -> native frames)
-# ---------------------------------------------------------------------------
-
-# Modes the real product asks for. ``messages-tuple`` is DeerFlow's public
-# spelling of LangGraph's ``messages`` and is translated before we get here.
-_SUPPORTED_STREAM_MODES = ("values", "updates", "messages", "custom", "tasks", "debug")
-
-
-class UnsupportedStreamModeError(ValueError):
-    """Raised when a caller asks for a stream mode we cannot honor."""
-
-    def __init__(self, modes: Iterable[str]) -> None:
-        self.modes = tuple(dict.fromkeys(modes))
-        super().__init__(
-            "Unsupported stream mode(s): " + ", ".join(self.modes)
-        )
-
-
-class _StreamCommitter:
-    """Persist the run's supersteps while ``stream``/``astream`` is consumed.
-
-    LangGraph's Pregel loop checkpoints after every superstep. The compatible
-    streaming surface has to do the same even when the caller only asked for a
-    narrower mode — a worker that requests ``custom`` still expects the turn to
-    be recoverable — so the writer hangs off the *raw* ``values`` frames and is
-    independent of ``stream_mode``.
-
-    Writing as frames arrive (rather than in a ``finally``) matters because the
-    host stops consuming on abort and leaves the generator open; a deferred
-    write at that point never happens. Each write is chained onto the previous
-    one via ``aget_head(stored)``, so the thread's lineage stays a chain rather
-    than a set of orphaned roots.
-    """
-
-    def __init__(
-        self,
-        *,
-        threads: Any,
-        channels: Mapping,
-        config: Mapping | None,
-        head: Any,
-        written: Sequence[str],
-    ) -> None:
-        self._threads = threads
-        self._channels = channels
-        self._config = config
-        self._head = head
-        self._written = list(written)
-        self._first_commit = True
-
-    @staticmethod
-    def _state(frame: Any) -> dict[str, Any] | None:
-        if not isinstance(frame, Mapping) or frame.get("eventType") != "values":
-            return None
-        state = (frame.get("payload") or {}).get("state")
-        return state if isinstance(state, dict) and state else None
-
-    def _touched(self, committed: Mapping) -> list[str]:
-        """Channels to re-version for this superstep.
-
-        The seeded input channels count only on the first commit: afterwards
-        the adapter hands over the *full* state and the checkpointer derives
-        what actually changed against its parent. Naming them again would
-        re-version untouched channels on every frame.
-        """
-        if self._first_commit and self._written:
-            return self._written
-        return [key for key in committed if key in self._channels]
-
-    def commit_frame(self, frame: Any) -> None:
-        threads = self._threads
-        state = self._state(frame)
-        if threads is None or state is None:
-            return
-        committed = _public_state(state)
-        stored = threads.commit(
-            self._config,
-            self._head,
-            committed,
-            written=self._touched(committed),
-            metadata={"source": "loop", "step": 1, "parents": {}},
-        )
-        self._advance(stored, threads.get_head)
-
-    async def acommit_frame(self, frame: Any) -> None:
-        threads = self._threads
-        state = self._state(frame)
-        if threads is None or state is None:
-            return
-        committed = _public_state(state)
-        stored = await threads.acommit(
-            self._config,
-            self._head,
-            committed,
-            written=self._touched(committed),
-            metadata={"source": "loop", "step": 1, "parents": {}},
-        )
-        await self._aadvance(stored, threads.aget_head)
-
-    def _advance(self, stored: Any, read: Any) -> None:
-        self._first_commit = False
-        if stored is not None:
-            self._head = read(stored)
-
-    async def _aadvance(self, stored: Any, read: Any) -> None:
-        self._first_commit = False
-        if stored is not None:
-            self._head = await read(stored)
-
-
-def _normalize_stream_modes(
-    stream_mode: str | Sequence[str] | None,
-) -> tuple[tuple[str, ...], bool]:
-    """Return ``(modes, as_list)``.
-
-    ``as_list`` mirrors upstream's *shape* rule: a bare string (or ``None``)
-    yields bare chunks, a list yields ``(mode, chunk)`` tuples — even when the
-    list holds a single mode.
-    """
-    if stream_mode is None:
-        return ("updates",), False
-    if isinstance(stream_mode, str):
-        raw = [stream_mode]
-        as_list = False
-    else:
-        raw = list(stream_mode)
-        as_list = True
-    normalized = ["messages" if m == "messages-tuple" else str(m) for m in raw]
-    unsupported = [m for m in normalized if m not in _SUPPORTED_STREAM_MODES]
-    if unsupported:
-        raise UnsupportedStreamModeError(unsupported)
-    # Upstream de-duplicates while preserving first-seen order.
-    return tuple(dict.fromkeys(normalized)), as_list
-
-
-def _update_metadata(as_node: str | None) -> dict[str, Any]:
-    """Upstream's ``update_state`` provenance metadata, plus the write node."""
-    metadata: dict[str, Any] = {"source": "update", "step": 1, "parents": {}}
-    if as_node:
-        metadata["as_node"] = as_node
-    return metadata
-
-
-def _public_state(state: Any) -> dict[str, Any]:
-    """Strip run-private bookkeeping keys from a returned state."""
-    if not isinstance(state, dict):
-        return state
-    return {k: v for k, v in state.items() if k not in _PRIVATE_STATE_KEYS}
-
-
-def _messages_delta(previous: Any, current: Any) -> list[Any]:
-    """New messages appended between two ``values`` snapshots."""
-    prev = previous.get("messages") if isinstance(previous, dict) else None
-    cur = current.get("messages") if isinstance(current, dict) else None
-    if not isinstance(cur, list):
-        return []
-    if not isinstance(prev, list):
-        return list(cur)
-    return list(cur[len(prev) :])
-
-
-def _node_update(node: str, new_messages: list[Any], state: dict[str, Any]) -> dict[str, Any]:
-    """Build one ``updates`` frame for *node* from its message delta."""
-    update: dict[str, Any] = {}
-    if new_messages:
-        update["messages"] = new_messages
-    for key, value in state.items():
-        if key == "messages" or key in _PRIVATE_STATE_KEYS:
-            continue
-        update[key] = value
-    return {node: update}
-
-
-def _adapt_stream(
-    raw: Iterator[dict],
-    modes: tuple[str, ...],
-    *,
-    as_list: bool,
-    integration: str,
-) -> Iterator[Any]:
-    """Translate native frames into the requested LangGraph stream modes.
-
-    The fallback path reports ``task_end`` frames (authoritative task identity),
-    the Driver path reports only ``values`` snapshots plus ``custom`` span
-    frames. Both are handled here so a run yields the same mode chunks on
-    either backend.
-    """
-    yield from _AdaptState(modes, as_list=as_list, integration=integration).feed(raw)
-
-
-async def _aadapt_stream(
-    raw: AsyncIterator[dict],
-    modes: tuple[str, ...],
-    *,
-    as_list: bool,
-    integration: str,
-) -> AsyncIterator[Any]:
-    """Async twin of :func:`_adapt_stream` — same semantics, no thread bridge."""
-    state = _AdaptState(modes, as_list=as_list, integration=integration)
-    async for frame in raw:
-        for item in state.push(frame):
-            yield item
-    for item in state.finish():
-        yield item
-
-
-class _AdaptState:
-    """Shared frame -> mode translation state for sync and async adapters."""
-
-    def __init__(
-        self, modes: tuple[str, ...], *, as_list: bool, integration: str
-    ) -> None:
-        self.modes = modes
-        self.as_list = as_list
-        self.integration = integration
-        self.previous: dict[str, Any] = {}
-        self.step = 0
-        self.pending_task: str | None = None
-        self.custom: list[Any] = []
-
-    def feed(self, raw: Iterator[dict]) -> Iterator[Any]:
-        for frame in raw:
-            yield from self.push(frame)
-        yield from self.finish()
-
-    def finish(self) -> Iterator[Any]:
-        if "custom" in self.modes:
-            for chunk in self.custom:
-                yield _wrap("custom", chunk, self.as_list)
-        self.custom = []
-
-    def push(self, frame: dict) -> Iterator[Any]:
-        kind = frame.get("eventType")
-        if kind == "values":
-            state = ((frame.get("payload") or {}).get("state")) or {}
-            delta = _messages_delta(self.previous, state)
-            first = not self.previous
-            self.previous = state
-            if "values" in self.modes:
-                yield _wrap("values", _public_state(state), self.as_list)
-            if not delta:
-                return
-            if "messages" in self.modes:
-                for message in delta:
-                    self.step += 1
-                    yield _wrap(
-                        "messages",
-                        (message, self._metadata(message)),
-                        self.as_list,
-                    )
-            if "updates" in self.modes and not first:
-                self.step += 1
-                # ``task_end`` (fallback) gives the authoritative node; the
-                # Driver path has no task frames, so fall back to the message
-                # class — exact for this graph's model/tools split. Either
-                # way the payload is the *delta*, matching upstream, whose
-                # messages channel is reducer-appended.
-                node = self.pending_task or (
-                    "model" if _looks_like_model_message(delta) else "tools"
-                )
-                self.pending_task = None
-                yield _wrap(
-                    "updates", _node_update(node, delta, state), self.as_list
-                )
-        elif kind == "task_start":
-            # Fallback path: the ``values`` frame for this task follows
-            # immediately (fallback order is task_start → values → task_end),
-            # so this is the authoritative attribution point.
-            self.pending_task = str(frame.get("task") or "") or None
-        elif kind == "task_end":
-            self.pending_task = None
-        elif kind == "custom":
-            payload = frame.get("payload") or {}
-            if str(payload.get("event", "")).startswith("span:"):
-                return  # internal tracing frame, not a user custom chunk
-            self.custom.append(payload.get("payload"))
-        elif kind == "messages":
-            if "messages" in self.modes:
-                payload = frame.get("payload") or {}
-                yield _wrap("messages", (payload.get("message"), {}), self.as_list)
-
-    def _metadata(self, message: Any) -> dict[str, Any]:
-        return {
-            "ls_integration": self.integration,
-            "langgraph_step": self.step,
-            "langgraph_node": "model"
-            if message.__class__.__name__.startswith("AI")
-            else "tools",
-        }
-
-
-def _wrap(mode: str, chunk: Any, as_list: bool) -> Any:
-    return (mode, chunk) if as_list else chunk
-
-
-def _looks_like_model_message(delta: list[Any]) -> bool:
-    """Heuristic used only when the native frame carries no task identity."""
-    return any(m.__class__.__name__.startswith("AI") for m in delta)
-
-
-def _compose_tool_wrappers(middleware: Sequence[Any], method: str) -> Any:
-    """Compose ``wrap_tool_call``/``awrap_tool_call`` middleware, outermost first.
-
-    Mirrors upstream's participation rule: a middleware joins the chain when
-    either its sync or async tool wrapper is overridden, so an async-only
-    middleware still raises in a sync run instead of being silently dropped.
-    """
-    handlers = []
-    for mw in middleware:
-        sync_wrap = _middleware_method(mw, "wrap_tool_call")
-        async_wrap = _middleware_method(mw, "awrap_tool_call")
-        if _is_unimplemented_stub(sync_wrap, "wrap_tool_call") and (
-            _is_unimplemented_stub(async_wrap, "awrap_tool_call")
-        ):
-            continue
-        handlers.append(getattr(mw, method))
-
-    if not handlers:
-        return None
-
-    def composed(request: Any, handler: Any) -> Any:
-        inner = handler
-        for wrapper in reversed(handlers):
-            nxt = inner
-
-            def call(req: Any, _w: Any = wrapper, _n: Any = nxt) -> Any:
-                return _w(req, _n)
-
-            inner = call
-        return inner(request)
-
-    return composed
-
-
-def _is_unimplemented_stub(fn: Any, method: str) -> bool:
-    """Return whether *fn* is an engine base-class stub, not a real override.
-
-    Upstream decides participation by identity against *its own*
-    ``AgentMiddleware``. Host middleware subclasses a different base class, so
-    identity cannot cross the boundary; the stub is recognised structurally
-    instead — a function that only raises ``NotImplementedError`` carrying the
-    canonical "``<method>`` is not available" message.
-    """
-    code = getattr(fn, "__code__", None)
-    if code is None or "NotImplementedError" not in code.co_names:
-        return False
-    marker = f"implementation of {method} is not available"
-    return any(isinstance(const, str) and marker in const for const in code.co_consts)
-
-
-def _middleware_method(mw: Any, method: str) -> Any:
-    """Resolve a middleware hook, failing closed for duck-typed objects.
-
-    Upstream rejects non-``AgentMiddleware`` objects with a bare
-    ``AttributeError``. Keep the exception type (observable contract) but say
-    what to do about it.
-    """
-    fn = getattr(type(mw), method, None)
-    if fn is None:
-        raise AttributeError(
-            f"{type(mw).__name__!r} middleware does not define {method!r}; "
-            f"subclass reactivegraph.middleware.AgentMiddleware to implement it."
-        )
-    return fn
-
-
-def _assert_no_duplicate_middleware(middleware: Sequence[Any]) -> None:
-    """Upstream rejects the same middleware instance twice, keyed on ``.name``."""
-    seen: set[str] = set()
-    for mw in middleware:
-        name = getattr(mw, "name", None) or type(mw).__name__
-        if name in seen:
-            raise AssertionError("Please remove duplicate middleware instances.")
-        seen.add(name)
-
-
-def _call_get(call: Any, key: str, default: Any = None) -> Any:
-    """Read a tool-call field from either a dict (our ToolCall) or an object."""
-    if isinstance(call, dict):
-        return call.get(key, default)
-    return getattr(call, key, default)
-
-
-def _call_name(call: Any) -> str:
-    return str(_call_get(call, "name", "") or "")
-
-
-def _call_args(call: Any) -> dict[str, Any]:
-    args = _call_get(call, "args", None)
-    return dict(args) if isinstance(args, dict) else {}
-
-
-def _call_id(call: Any) -> str | None:
-    value = _call_get(call, "id", None)
-    return value if isinstance(value, str) else None
-
-
-_PREGEL_RUNTIME_KEY = "__pregel_runtime"
-
-
-def _resolve_runtime(config: dict | None, context: Any = None) -> Runtime:
-    """Resolve the run-scoped runtime exactly the way upstream does.
-
-    Probe-verified precedence (langgraph 1.2.9):
-
-    1. ``config['configurable']['__pregel_runtime']`` wins when present -- this
-       is how DeerFlow's run worker installs a ``Runtime`` whose ``context`` is
-       the very dict it later reads ``stop_reason`` back from.
-    2. otherwise an explicit ``context=`` argument builds a fresh runtime;
-    3. otherwise the ambient runtime (``get_runtime()``) is reused, so nesting
-       a run inside an outer run keeps the outer context.
-
-    The returned ``Runtime`` is never ``None``: middleware hooks dereference
-    ``runtime.context`` unconditionally (35 DeerFlow modules do).
-    """
-    if isinstance(config, dict):
-        configurable = config.get("configurable")
-        if isinstance(configurable, dict):
-            pinned = configurable.get(_PREGEL_RUNTIME_KEY)
-            if pinned is not None:
-                return pinned
-    if context is not None:
-        return Runtime(context=context)
-    try:
-        return get_runtime()
-    except RuntimeError:
-        return Runtime()
-
-
-def _normalize_input(input: Any) -> dict[str, Any]:
-    if isinstance(input, dict):
-        messages = input.get("messages")
-        if messages is not None:
-            return {**input, "messages": _adopt_input_messages(messages)}
-        return dict(input)
-    return {"messages": _adopt_input_messages(input)}
-
-
-def _adopt_input_messages(messages: Any) -> list[Any]:
-    """Coerce *messages* and assign ids, exactly as LangGraph initializes state.
-
-    ``add_messages`` treats a same-id write as a replacement. Upstream assigns
-    the missing ids while building the input channel — *before* the first node
-    runs — so a middleware that rebuilds the last message under its existing id
-    replaces it instead of appending a duplicate. Assigning the ids only inside
-    the reducer is too late: the middleware has already read ``None``.
-    """
-    adopted = list(convert_to_messages(messages))
-    for message in adopted:
-        if getattr(message, "id", None) is None:
-            message.id = str(uuid.uuid4())
-    return adopted
-
-
-def _reject_unimplemented(kwargs: dict[str, Any]) -> None:
-    for key in ("response_format", "interrupt_before", "interrupt_after", "transformers", "cache"):
-        value = kwargs.get(key)
-        # Only ``None`` (and the explicit ``False`` for flags) means "not
-        # requested". An empty sequence still counts as a caller passing the
-        # argument, and we must not silently ignore it.
-        if value is None or value is False:
-            continue
-        raise NotImplementedError(
-            f"create_agent({key}=...) is not implemented by ReactiveGraph yet. "
-            f"Refusing to silently ignore it — remove the argument or use "
-            f"langchain.agents.create_agent until parity lands."
-        )
 
 
 def create_agent(

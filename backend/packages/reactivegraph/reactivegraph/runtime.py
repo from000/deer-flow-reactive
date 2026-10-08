@@ -63,12 +63,15 @@ class _PinnedIterator(Generic[T]):
         return self._context.run(next, self._generator)
 
     def send(self, value: Any) -> T:
+        """Send a value into the channel."""
         return self._context.run(self._generator.send, value)
 
     def throw(self, *args: Any) -> T:
+        """Raise an exception inside the channel."""
         return self._context.run(self._generator.throw, *args)
 
     def close(self) -> None:
+        """Close the channel / backing resource."""
         self._context.run(self._generator.close)
 
     def __del__(self) -> None:
@@ -138,10 +141,12 @@ class Runtime(Generic[ContextT]):
 
     @property
     def drain_requested(self) -> bool:
+        """Whether the stream was asked to drain and stop."""
         return bool(getattr(self.control, "drain_requested", False))
 
     @property
     def drain_reason(self) -> str | None:
+        """Why the stream is draining (or ``None``)."""
         return getattr(self.control, "drain_reason", None)
 
 

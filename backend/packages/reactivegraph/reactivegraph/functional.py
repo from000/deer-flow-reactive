@@ -17,6 +17,7 @@ from reactivegraph.graph import GraphBuilder
 
 @dataclass(frozen=True)
 class FunctionTask:
+    """A task declared in the functional API style."""
     id: str
     fn: Callable[[Any], Any]
     kind: str = "pure"
@@ -26,6 +27,7 @@ class FunctionTask:
 
 @dataclass(frozen=True)
 class EntrypointPlan:
+    """Declared entrypoint wiring for a functional graph."""
     graph_id: str
     task_ids: tuple[str, ...]
     routes: tuple[tuple[str, str], ...] = ()

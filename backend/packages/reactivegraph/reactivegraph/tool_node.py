@@ -625,6 +625,7 @@ class ToolNode:
             return self._execute_tool_sync(tool_request, input_type, config)
 
         def execute(req: ToolCallRequest) -> ToolMessage | Command:
+            """Execute this tool with the given arguments."""
             return cast(
                 "ToolMessage | Command",
                 self._execute_tool_sync(req, input_type, config),
@@ -662,6 +663,7 @@ class ToolNode:
             return await self._execute_tool_async(tool_request, input_type, config)
 
         async def execute(req: ToolCallRequest) -> ToolMessage | Command:
+            """Execute this tool with the given arguments."""
             return cast(
                 "ToolMessage | Command",
                 await self._execute_tool_async(req, input_type, config),
@@ -768,42 +770,11 @@ class ToolNode:
         injected_args: dict[str, Any] = {}
 
         if injected.state:
-            state = tool_runtime.state
-            if isinstance(state, list):
-                required_fields = list(injected.state.values())
-                if (
-                    len(required_fields) == 1
-                    and required_fields[0] == self._messages_key
-                ) or required_fields[0] is None:
-                    state = {self._messages_key: state}
-                else:
-                    err_msg = (
-                        f"Invalid input to ToolNode. Tool {tool_call['name']} requires "
-                        f"graph state dict as input."
-                    )
-                    if any(state_field for state_field in injected.state.values()):
-                        required_fields_str = ", ".join(f for f in required_fields if f)
-                        err_msg += (
-                            f" State should contain fields {required_fields_str}."
-                        )
-                    raise ValueError(err_msg)
-
-            if isinstance(state, dict):
-                for tool_arg, state_field in injected.state.items():
-                    if not state_field:
-                        injected_args[tool_arg] = state
-                    elif state_field in state:
-                        injected_args[tool_arg] = cast("dict[str, Any]", state)[state_field]
-                    elif tool_arg not in injected._optional_state_args:
-                        raise KeyError(state_field)
-            else:
-                for tool_arg, state_field in injected.state.items():
-                    if not state_field:
-                        injected_args[tool_arg] = state
-                    elif hasattr(state, state_field):
-                        injected_args[tool_arg] = getattr(state, state_field)
-                    elif tool_arg not in injected._optional_state_args:
-                        raise AttributeError(state_field)
+            injected_args.update(
+                self._inject_state_args(
+                    injected, tool_runtime.state, tool_call["name"]
+                )
+            )
 
         if injected.store:
             if tool_runtime.store is None:
@@ -826,6 +797,48 @@ class ToolNode:
         }
         tool_call_copy["args"] = {**stripped_args, **injected_args}
         return tool_call_copy
+
+    def _inject_state_args(
+        self, injected: Any, state: Any, tool_name: str
+    ) -> dict[str, Any]:
+        """Resolve ``InjectedState`` annotations against the supplied state.
+
+        A list state is only accepted when it either *is* the messages channel
+        or the annotation does not name a field; anything else is a caller
+        error and fails with the upstream message shape.
+        """
+        if isinstance(state, list):
+            state = self._coerce_list_state(injected, state, tool_name)
+        resolved: dict[str, Any] = {}
+        for tool_arg, state_field in injected.state.items():
+            if not state_field:
+                resolved[tool_arg] = state
+            elif isinstance(state, dict):
+                if state_field in state:
+                    resolved[tool_arg] = cast("dict[str, Any]", state)[state_field]
+                elif tool_arg not in injected._optional_state_args:
+                    raise KeyError(state_field)
+            elif hasattr(state, state_field):
+                resolved[tool_arg] = getattr(state, state_field)
+            elif tool_arg not in injected._optional_state_args:
+                raise AttributeError(state_field)
+        return resolved
+
+    def _coerce_list_state(self, injected: Any, state: list, tool_name: str) -> Any:
+        """Wrap a bare message list as state, or raise the upstream error."""
+        required_fields = list(injected.state.values())
+        if (
+            len(required_fields) == 1 and required_fields[0] == self._messages_key
+        ) or required_fields[0] is None:
+            return {self._messages_key: state}
+        err_msg = (
+            f"Invalid input to ToolNode. Tool {tool_name} requires "
+            f"graph state dict as input."
+        )
+        if any(state_field for state_field in injected.state.values()):
+            required_fields_str = ", ".join(f for f in required_fields if f)
+            err_msg += f" State should contain fields {required_fields_str}."
+        raise ValueError(err_msg)
 
     def _normalize_tool_response(
         self,

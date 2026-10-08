@@ -106,6 +106,62 @@ def _get_annotation_description(arg_type: Any) -> str | None:
     return None
 
 
+_DOCSTRING_BREAKERS = ("Returns:", "Example:")
+_DOCSTRING_IGNORED_ARGS = {"run_manager", "callbacks", "runtime", "return"}
+
+
+def _split_google_docstring(
+    docstring: str, args: list[str], *, error_on_invalid_docstring: bool
+) -> tuple[str, str | None]:
+    """Return ``(description, args_block)`` from a Google-style docstring."""
+    blocks = docstring.split("\n\n")
+    if error_on_invalid_docstring:
+        filtered = {arg for arg in args if arg not in _DOCSTRING_IGNORED_ARGS}
+        if filtered and (
+            len(blocks) < 2
+            or not any(block.startswith("Args:") for block in blocks[1:])
+        ):
+            raise ValueError("Found invalid Google-Style docstring.")
+    descriptors: list[str] = []
+    args_block: str | None = None
+    past_descriptors = False
+    for block in blocks:
+        if block.startswith("Args:"):
+            args_block = block
+            break
+        if block.startswith(_DOCSTRING_BREAKERS):
+            past_descriptors = True
+        elif not past_descriptors:
+            descriptors.append(block)
+    return " ".join(descriptors).strip(), args_block
+
+
+def _parse_google_arg_block(args_block: str) -> dict[str, str]:
+    """Parse the ``Args:`` section into ``{arg_name: description}``."""
+    arg_descriptions: dict[str, str] = {}
+    arg: str | None = None
+    arg_indent: int | None = None
+    for line in args_block.split("\n")[1:]:
+        if not line.strip():
+            continue
+        current_indent = len(line) - len(line.lstrip())
+        if arg_indent is None and ":" in line:
+            arg_indent = current_indent
+        is_continuation = arg_indent is not None and current_indent > arg_indent
+        if arg is not None and is_continuation:
+            arg_descriptions[arg] += " " + line.strip()
+        elif ":" in line:
+            arg, desc = line.split(":", maxsplit=1)
+            arg = arg.strip()
+            arg_name, _, annotations = arg.partition(" ")
+            if annotations.startswith("(") and annotations.endswith(")"):
+                arg = arg_name
+            arg_descriptions[arg] = desc.strip()
+        elif arg:
+            arg_descriptions[arg] += " " + line.strip()
+    return arg_descriptions
+
+
 def _parse_google_docstring(
     docstring: str | None,
     args: list[str],
@@ -113,62 +169,14 @@ def _parse_google_docstring(
     error_on_invalid_docstring: bool = False,
 ) -> tuple[str, dict[str, str]]:
     """Parse a Google-style docstring into description + argument descriptions."""
-    if docstring:
-        docstring_blocks = docstring.split("\n\n")
+    if not docstring:
         if error_on_invalid_docstring:
-            filtered_annotations = {
-                arg
-                for arg in args
-                if arg not in {"run_manager", "callbacks", "runtime", "return"}
-            }
-            if filtered_annotations and (
-                len(docstring_blocks) < 2
-                or not any(block.startswith("Args:") for block in docstring_blocks[1:])
-            ):
-                msg = "Found invalid Google-Style docstring."
-                raise ValueError(msg)
-        descriptors = []
-        args_block = None
-        past_descriptors = False
-        for block in docstring_blocks:
-            if block.startswith("Args:"):
-                args_block = block
-                break
-            if block.startswith(("Returns:", "Example:")):
-                past_descriptors = True
-            elif not past_descriptors:
-                descriptors.append(block)
-        description = " ".join(descriptors).strip()
-    else:
-        if error_on_invalid_docstring:
-            msg = "Found invalid Google-Style docstring."
-            raise ValueError(msg)
-        description = ""
-        args_block = None
-
-    arg_descriptions: dict[str, str] = {}
-    if args_block:
-        arg: str | None = None
-        arg_indent: int | None = None
-        for line in args_block.split("\n")[1:]:
-            if not line.strip():
-                continue
-            current_indent = len(line) - len(line.lstrip())
-            if arg_indent is None and ":" in line:
-                arg_indent = current_indent
-            is_continuation = arg_indent is not None and current_indent > arg_indent
-            if arg is not None and is_continuation:
-                arg_descriptions[arg] += " " + line.strip()
-            elif ":" in line:
-                arg, desc = line.split(":", maxsplit=1)
-                arg = arg.strip()
-                arg_name, _, annotations_ = arg.partition(" ")
-                if annotations_.startswith("(") and annotations_.endswith(")"):
-                    arg = arg_name
-                arg_descriptions[arg] = desc.strip()
-            elif arg:
-                arg_descriptions[arg] += " " + line.strip()
-    return description, arg_descriptions
+            raise ValueError("Found invalid Google-Style docstring.")
+        return "", {}
+    description, args_block = _split_google_docstring(
+        docstring, args, error_on_invalid_docstring=error_on_invalid_docstring
+    )
+    return description, _parse_google_arg_block(args_block) if args_block else {}
 
 
 def _infer_arg_descriptions(
@@ -520,51 +528,67 @@ def _convert_pydantic_to_openai_function(
     )
 
 
+_OPENAI_FUNCTION_KEYS = {"name", "description", "parameters", "strict"}
+
+
+def _dict_to_openai_function(function: dict[str, Any]) -> dict[str, Any]:
+    """Convert the supported dict shorthands to an OpenAI function."""
+    if all(key in function for key in ("name", "input_schema")):
+        oai_function: dict[str, Any] = {
+            "name": function["name"],
+            "parameters": function["input_schema"],
+        }
+        if "description" in function:
+            oai_function["description"] = function["description"]
+        return oai_function
+    if "toolSpec" in function:
+        spec = function["toolSpec"]
+        oai_function = {
+            "name": spec["name"],
+            "parameters": spec["inputSchema"]["json"],
+        }
+        if "description" in spec:
+            oai_function["description"] = spec["description"]
+        return oai_function
+    if "name" in function:
+        return {
+            key: value
+            for key, value in function.items()
+            if key in _OPENAI_FUNCTION_KEYS
+        }
+    if "title" in function:
+        remainder = function.copy()
+        oai_function = {"name": remainder.pop("title")}
+        if "description" in remainder:
+            oai_function["description"] = remainder.pop("description")
+        if remainder and "properties" in remainder:
+            oai_function["parameters"] = remainder
+        return oai_function
+    raise ValueError(
+        f"Unsupported function\n\n{function}\n\nTo use a JSON schema as a "
+        "function, it must have a top-level 'title' key to be used as the "
+        "function name."
+    )
+
+
 def convert_to_openai_function(
     function: Any, *, strict: bool | None = None
 ) -> dict[str, Any]:
-    """Convert a tool-like object to the inner OpenAI function description."""
+    """Convert a tool-like object to the inner OpenAI function description.
+
+    Accepts an OpenAI/Anthropic dict shorthand, a pydantic model, a
+    ``TypedDict``, a :class:`BaseTool`, or a plain callable.
+    """
     if isinstance(function, dict):
-        if all(key in function for key in ("name", "input_schema")):
-            oai_function: dict[str, Any] = {
-                "name": function["name"],
-                "parameters": function["input_schema"],
-            }
-            if "description" in function:
-                oai_function["description"] = function["description"]
-        elif "toolSpec" in function:
-            oai_function = {
-                "name": function["toolSpec"]["name"],
-                "parameters": function["toolSpec"]["inputSchema"]["json"],
-            }
-            if "description" in function["toolSpec"]:
-                oai_function["description"] = function["toolSpec"]["description"]
-        elif "name" in function:
-            oai_function = {
-                key: value
-                for key, value in function.items()
-                if key in {"name", "description", "parameters", "strict"}
-            }
-        elif "title" in function:
-            function_copy = function.copy()
-            oai_function = {"name": function_copy.pop("title")}
-            if "description" in function_copy:
-                oai_function["description"] = function_copy.pop("description")
-            if function_copy and "properties" in function_copy:
-                oai_function["parameters"] = function_copy
-        else:
-            msg = (
-                f"Unsupported function\n\n{function}\n\nTo use a JSON schema as a "
-                "function, it must have a top-level 'title' key to be used as the "
-                "function name."
-            )
-            raise ValueError(msg)
+        oai_function = _dict_to_openai_function(function)
     elif isinstance(function, type) and issubclass(function, BaseModel):
         oai_function = _convert_pydantic_to_openai_function(function)
     elif is_typeddict(function):
-        oai_function = _convert_pydantic_to_openai_function(
-            create_model("schema", **{k: (v, ...) for k, v in function.__annotations__.items()})
+        schema = create_model(
+            "schema",
+            **{k: (v, ...) for k, v in function.__annotations__.items()},
         )
+        oai_function = _convert_pydantic_to_openai_function(schema)
     elif isinstance(function, BaseTool):
         oai_function = _format_tool_to_openai_function(function)
     elif callable(function):
@@ -580,12 +604,11 @@ def convert_to_openai_function(
             model, name=function.__name__, description=model.__doc__
         )
     else:
-        msg = (
+        raise ValueError(
             f"Unsupported function\n\n{function}\n\nFunctions must be passed in as "
             "Dict, pydantic.BaseModel, or Callable. If they're a dict they must either "
             "be in OpenAI function format or valid JSON schema with top-level 'title' key."
         )
-        raise ValueError(msg)
 
     if strict is not None:
         if "strict" in oai_function and oai_function["strict"] != strict:

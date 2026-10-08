@@ -323,19 +323,23 @@ class BinaryOperatorAggregate(
 
     @property
     def ValueType(self) -> type[Value]:  # noqa: N802 - LangGraph API name
+        """Type of a channel's stored value."""
         return self.typ
 
     @property
     def UpdateType(self) -> type[Value]:  # noqa: N802 - LangGraph API name
+        """Type accepted by a channel's update rule."""
         return self.typ
 
     def copy(self) -> BinaryOperatorAggregate[Value]:
+        """Return a deep-enough copy for checkpoint round trips."""
         empty = self.__class__(self.typ, self.operator)
         empty.key = self.key
         empty.value = self.value
         return empty
 
     def from_checkpoint(self, checkpoint: Value) -> BinaryOperatorAggregate[Value]:
+        """Reconstruct this channel from a serialized checkpoint."""
         empty = self.__class__(self.typ, self.operator)
         empty.key = self.key
         if checkpoint is not _MISSING:
@@ -343,6 +347,7 @@ class BinaryOperatorAggregate(
         return empty
 
     def update(self, values: Sequence[Value]) -> bool:
+        """Fold *values* into the channel, returning the new value."""
         if not values:
             return False
         seen_overwrite = False
@@ -375,14 +380,17 @@ class BinaryOperatorAggregate(
         return True
 
     def get(self) -> Value:
+        """Return the current channel value."""
         if self.value is _MISSING:
             raise EmptyChannelError()
         return self.value
 
     def is_available(self) -> bool:
+        """Whether the channel currently holds a value."""
         return self.value is not _MISSING
 
     def checkpoint(self) -> Value:
+        """Return the JSON-serializable checkpoint payload."""
         return self.value
 
 
@@ -489,13 +497,16 @@ class DeltaChannel(Generic[Value], BaseChannel[Any, Any, Any], metaclass=_DeltaC
 
     @property
     def ValueType(self) -> Any:  # noqa: N802 - LangGraph API name
+        """Type of a channel's stored value."""
         return self.typ
 
     @property
     def UpdateType(self) -> Any:  # noqa: N802 - LangGraph API name
+        """Type accepted by a channel's update rule."""
         return self.typ
 
     def copy(self) -> DeltaChannel[Value]:
+        """Return a deep-enough copy for checkpoint round trips."""
         new = self.__class__(
             self.reducer, self.typ, snapshot_frequency=self.snapshot_frequency
         )
@@ -544,6 +555,7 @@ class DeltaChannel(Generic[Value], BaseChannel[Any, Any, Any], metaclass=_DeltaC
         self.value = self.reducer(base, remaining) if remaining else base
 
     def update(self, values: Sequence[Any]) -> bool:
+        """Fold *values* into the channel, returning the new value."""
         if not values:
             return False
         overwrite_idx: int | None = None
@@ -568,11 +580,13 @@ class DeltaChannel(Generic[Value], BaseChannel[Any, Any, Any], metaclass=_DeltaC
         return True
 
     def get(self) -> Any:
+        """Return the current channel value."""
         if self.value is _MISSING:
             raise EmptyChannelError()
         return self.value
 
     def is_available(self) -> bool:
+        """Whether the channel currently holds a value."""
         return self.value is not _MISSING
 
     def checkpoint(self) -> Any:
@@ -746,6 +760,7 @@ def _delta_fold(channel: Any) -> Callable[[Any, Any], Any]:
     reducer = channel.reducer
 
     def fold_delta(current: Any, write: Any) -> Any:
+        """Fold one delta-mode update into the accumulated value."""
         return reducer(current, [write])
 
     return fold_delta

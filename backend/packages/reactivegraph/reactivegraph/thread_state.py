@@ -278,10 +278,12 @@ class ThreadCheckpointer:
 
     @staticmethod
     def resolve_thread_id(config: Mapping[str, Any] | None) -> str | None:
+        """Return the effective thread id for a config."""
         thread_id = _configurable(config).get("thread_id")
         return str(thread_id) if thread_id else None
 
     def require_thread_id(self, config: Mapping[str, Any] | None) -> str:
+        """Return the thread id, raising when it is absent."""
         thread_id = self.resolve_thread_id(config)
         if thread_id is None:
             raise ValueError(THREAD_ID_REQUIRED_MESSAGE)
@@ -330,6 +332,7 @@ class ThreadCheckpointer:
         return self._to_head(record, read_config)
 
     async def aget_head(self, config: Mapping[str, Any] | None) -> _Head | None:
+        """Async twin of :meth:`head`."""
         if not self._supports_async():
             # A sync-only saver is still drivable from async callers; the graph
             # body already runs in an executor thread.
@@ -441,6 +444,7 @@ class ThreadCheckpointer:
         limit: int | None = None,
         filter: Mapping[str, Any] | None = None,
     ) -> Iterator[StateSnapshot]:
+        """Iterate checkpoint history, newest first."""
         lister = getattr(self._saver, "list", None)
         if not callable(lister):
             raise CheckpointStateError(
@@ -477,6 +481,7 @@ class ThreadCheckpointer:
         limit: int | None = None,
         filter: Mapping[str, Any] | None = None,
     ) -> AsyncIterator[StateSnapshot]:
+        """Async twin of :meth:`history`."""
         if not self._supports_async() or not callable(getattr(self._saver, "alist", None)):
             for snapshot in self.history(config, before=before, limit=limit, filter=filter):
                 yield snapshot
@@ -647,9 +652,30 @@ class ThreadCheckpointer:
             # A fresh thread has no parent to carry pending writes; upstream
             # therefore snapshots the folded value into this first checkpoint.
             return head_snapshots, {}, {}, True
-        counters: dict[str, Any] = {}
         previous = dict(head.metadata.get("counters_since_delta_snapshot") or {})
+        snapshots, counters = self._advance_delta_counters(
+            delta_channels, previous, touched, values
+        )
+        metadata = {"counters_since_delta_snapshot": counters} if counters else {}
+        return snapshots, metadata, raw, True
+
+    @staticmethod
+    def _advance_delta_counters(
+        delta_channels: Mapping[str, DeltaChannel],
+        previous: Mapping[str, Any],
+        touched: set[str],
+        values: Mapping[str, Any],
+    ) -> tuple[set[str], dict[str, Any]]:
+        """Advance per-channel counters and pick which channels to snapshot.
+
+        Upstream advances counters for every delta channel but snapshots only
+        channels whose current value is available. A never-written channel can
+        reach its cadence while still absent from ``values``; adding it here
+        would make the checkpoint builder index a missing value. Keep its
+        counters so a later real write snapshots promptly.
+        """
         snapshots: set[str] = set()
+        counters: dict[str, Any] = {}
         for name, channel in delta_channels.items():
             current = previous.get(name, (0, 0))
             updates, supersteps = int(current[0]), int(current[1])
@@ -660,21 +686,13 @@ class ThreadCheckpointer:
                 updates >= channel.snapshot_frequency
                 or supersteps >= DELTA_MAX_SUPERSTEPS_SINCE_SNAPSHOT
             )
-            # Upstream advances counters for every delta channel but snapshots
-            # only channels whose current value is available. A never-written
-            # channel can reach its cadence while still absent from ``values``;
-            # adding it here would make the checkpoint builder index a missing
-            # value. Keep its counters so a later real write snapshots promptly.
             if due and name in values:
                 snapshots.add(name)
                 counters[name] = (0, 0)
             else:
                 counters[name] = (updates, supersteps)
         counters = {name: value for name, value in counters.items() if value != (0, 0)}
-        metadata = (
-            {"counters_since_delta_snapshot": counters} if counters else {}
-        )
-        return snapshots, metadata, raw, True
+        return snapshots, counters
 
     @staticmethod
     def _delta_write_task_id(checkpoint_id: str) -> str:

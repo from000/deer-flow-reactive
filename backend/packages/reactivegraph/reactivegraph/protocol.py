@@ -66,6 +66,7 @@ class Envelope:
     trace: dict | None = None
 
     def with_trace(self, **ctx: str) -> Envelope:
+        """Return a copy carrying trace/telemetry metadata."""
         merged = dict(self.trace or {})
         merged.update(ctx)
         return Envelope(
@@ -79,6 +80,7 @@ class Envelope:
 
 
 def is_method(value: Any) -> bool:
+    """Whether *value* names a known protocol method."""
     return isinstance(value, str) and value in METHODS
 
 
@@ -90,6 +92,7 @@ def make_id() -> str:
 
 
 def is_envelope(value: Any) -> bool:
+    """Whether *value* has the RGP/1 envelope shape."""
     if not isinstance(value, dict):
         return False
     if value.get("version") != PROTOCOL_VERSION:
@@ -181,6 +184,7 @@ def _ext_hook(code: int, data: bytes) -> Any:
 
 
 def encode_value(value: Any) -> bytes:
+    """Encode a Python value into the wire representation."""
     _assert_canonical(value)
     return msgpack.packb(
         value,
@@ -191,6 +195,7 @@ def encode_value(value: Any) -> bytes:
 
 
 def decode_value(data: bytes) -> Any:
+    """Decode a wire value into the Python representation."""
     return msgpack.unpackb(
         data,
         raw=False,
@@ -233,6 +238,7 @@ class FrameDecoder:
         self._buffer = bytearray()
 
     def push(self, chunk: bytes) -> list[bytes]:
+        """Accept one more response frame for matching."""
         self._buffer.extend(chunk)
         frames: list[bytes] = []
         while True:
@@ -252,4 +258,5 @@ class FrameDecoder:
         return frames
 
     def reset(self) -> None:
+        """Discard buffered frames and start a fresh stream."""
         self._buffer.clear()

@@ -36,6 +36,7 @@ _DRIVER_ENTRY_ENV = "REACTIVEGRAPH_DRIVER_ENTRY"
 
 
 def default_driver_entry() -> str:
+    """Resolve the bundled Driver entry script path."""
     env = os.environ.get(_DRIVER_ENTRY_ENV)
     if env:
         return env
@@ -54,6 +55,7 @@ def default_driver_entry() -> str:
 
 
 def default_node_bin() -> str:
+    """Resolve the Node executable used to spawn the Driver."""
     env = os.environ.get("REACTIVEGRAPH_NODE_BIN")
     if env:
         return env
@@ -157,6 +159,7 @@ class DriverHost:
     # -- lifecycle ----------------------------------------------------------
 
     def start(self) -> None:
+        """Spawn the Driver process and complete the handshake."""
         if self._process is not None:
             return
         self._process = subprocess.Popen(
@@ -438,6 +441,7 @@ class DriverHost:
             self._process.stdin.flush()
 
     def request(self, method: str, payload: Any, timeout_ms: int = 30000) -> Any:
+        """Send one request and await its matching response frame."""
         if self._closed or self._process is None:
             raise DriverError("driver host is closed")
         from reactivegraph.protocol import make_id
@@ -487,6 +491,7 @@ class DriverHost:
         return result_holder["value"]
 
     def handshake(self, sdk_version: str = "0.1.0", timeout_ms: int = 10000) -> dict:
+        """Exchange protocol versions and capabilities."""
         result = self.request(
             "DRIVER_HELLO",
             {"sdkVersion": sdk_version, "protocolVersions": [1], "featureFlags": []},
@@ -499,6 +504,7 @@ class DriverHost:
         # ``runId`` must reach the Driver: it is the key the Driver echoes back
         # on every TASK_INVOKE, and therefore what ties a callback worker back
         # to the caller's run-scoped context.
+        """Invoke a graph by id and return the run result."""
         payload = {"graphId": kwargs.get("graph_id"), "input": input_value,
                    "threadId": kwargs.get("thread_id"), "callbackId": callback_id,
                    "event": kwargs.get("event"), "config": kwargs.get("config"),
@@ -587,9 +593,11 @@ class DriverHost:
         return result["graphId"]
 
     def release_graph(self, graph_id: str, timeout_ms: int = 30000) -> dict:
+        """Drop the cached graph id for this session."""
         return self.request("RELEASE_GRAPH", {"graphId": graph_id}, timeout_ms=timeout_ms)
 
     def get_state(self, thread_id: str = "default", timeout_ms: int = 30000) -> dict:
+        """Read thread state from the Driver."""
         result = self.request("GET_STATE", {"config": {"threadId": thread_id}},
                               timeout_ms=timeout_ms)
         return result.get("values", {})
@@ -679,6 +687,7 @@ class DriverHost:
 
     def resume(self, run_id: str, interrupt_response: Any, thread_id: str | None = None,
                timeout_ms: int = 30000) -> dict:
+        """Resume an interrupted run with new values."""
         result = self.request("RESUME", {
             "runId": run_id,
             "threadId": thread_id,
@@ -693,6 +702,7 @@ class DriverHost:
         return state
 
     def register_callback(self, callback_id: str, callback: Callback) -> None:
+        """Register a Python callable invoked by the Driver."""
         self._callbacks[callback_id] = callback
 
     # -- teardown -----------------------------------------------------------
@@ -718,6 +728,20 @@ class DriverHost:
                     self._process.kill()
                 except Exception:  # noqa: BLE001
                     pass
+            # Close the three pipes explicitly. ``Popen`` keeps them alive
+            # until GC otherwise, which surfaces as ``PytestUnraisableException
+            # Warning: Exception ignored in: <_io.FileIO ...>`` under
+            # ``-W error`` and leaks descriptors in long-lived hosts.
+            for stream in (
+                self._process.stdin,
+                self._process.stdout,
+                self._process.stderr,
+            ):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:  # noqa: BLE001 - best-effort close
+                        pass
             self._process = None
         # 在途回调不等待（与 async 回调线程同语义）：进程已终止，后续
         # 响应无人消费；wait=False 防止 close 被慢回调阻塞。

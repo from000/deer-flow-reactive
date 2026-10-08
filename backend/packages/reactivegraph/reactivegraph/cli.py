@@ -52,6 +52,7 @@ uv run python main.py        # 输出 state: {{'msg': 'hi Ada'}}
 
 
 def scaffold(app: str, dest: Path) -> None:
+    """Write a minimal runnable project into *directory*."""
     root = dest / app
     if root.exists() and any(root.iterdir()):
         raise SystemExit(f"目标已存在且非空: {root}")
@@ -63,6 +64,7 @@ def scaffold(app: str, dest: Path) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI entry point."""
     parser = argparse.ArgumentParser(prog="reactivegraph", description="ReactiveGraph 脚手架")
     sub = parser.add_subparsers(dest="command", required=True)
     new = sub.add_parser("new", help="生成一个新的最小可跑工程")

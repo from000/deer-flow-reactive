@@ -91,6 +91,24 @@ def _run_scope(config: dict | None) -> Iterator[None]:
         yield
 
 
+def _thread_id_from_config(config: dict | None) -> str | None:
+    """Return ``config.configurable.thread_id`` when the caller set one.
+
+    The Driver keys its per-thread store by ``threadId``; without it every run
+    falls back to the ``"default"`` store, so two concurrent invokes under
+    different thread ids would share (and corrupt) one state. LangGraph's own
+    contract is that ``config`` carries the thread id, and ``stream`` already
+    forwards it explicitly — ``invoke`` has to do the same.
+    """
+    if not config:
+        return None
+    configurable = config.get("configurable")
+    if not isinstance(configurable, dict):
+        return None
+    thread_id = configurable.get("thread_id")
+    return str(thread_id) if thread_id else None
+
+
 def _wire_config(config: dict | None) -> dict:
     """Return *config* as an RGP/1-encodable value.
 
@@ -113,6 +131,15 @@ def _wire_config(config: dict | None) -> dict:
     return {**config, "configurable": trimmed}
 
 
+# Which task kind is executing on THIS thread. Set by the task callback
+# wrapper around the user function and read by ``store_*`` so a pure task that
+# reaches for the long-term store fails loudly instead of silently producing
+# skip-invalid results (see ``ReactiveGraph.store_get``).
+_current_task_kind: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "reactivegraph_task_kind", default=None
+)
+
+
 def _is_public_state_key(key: Any) -> bool:
     """Whether a state key is observable in LangGraph's ``values`` stream.
 
@@ -125,16 +152,54 @@ def _is_public_state_key(key: Any) -> bool:
     )
 
 
-def _fallback_fingerprint(state: dict) -> str | None:
-    """in-process fallback 的 pure 任务输入指纹（JSON 序列化）。
+def _fallback_fingerprint(state: dict, reads: tuple[str, ...] = ()) -> str | None:
+    """in-process fallback 的 pure 任务输入指纹。
 
-    与 chain `_fingerprint` 同策：可 JSON 化才可缓存；不可序列化返回 None
-    （调用方不应缓存）。sort_keys 保证键序无关。
+    粒度是**该任务实际依赖的输入**，不是整个 state：``reads`` 声明了任务的
+    读集（支持 ``a.b`` 形式的下钻路径），只有这些路径上的值变化才让指纹失效。
+    用整个 state 会让"改一个字段"使所有任务指纹全变——1000 任务图改 1 个字段
+    要重跑 1000 次，与 Driver 路径的选择性执行行为不一致。
+
+    ``reads`` 为空表示任务不声明依赖（宽松模式），此时退回整个 state：
+    与旧的保守行为一致，不会误跳过。
+
+    与 chain ``_fingerprint`` 同策：可 JSON 化才可缓存；不可序列化返回 None
+    （调用方不应缓存）。``sort_keys`` 保证键序无关。
+    """
+    payload: Any = state
+    if reads:
+        payload = {
+            read: ComputedDef._get(state, read)
+            for read in reads
+        }
+    try:
+        return json.dumps(payload, sort_keys=True)
+    except (TypeError, ValueError):
+        # Not JSON-serialisable: the callable cannot be reliably compared, so
+        # the task must run (never cache on a lossy ``str()`` fingerprint).
+        return None
+
+
+def _runnable_base() -> tuple[type, ...]:
+    """Return langchain-core's ``Runnable`` as an extra base, if installed.
+
+    LangChain's composition (`a | b`) and its ``batch``/``astream`` helpers
+    dispatch on ``isinstance(obj, Runnable)``, not on duck typing (see
+    ``langchain_core.runnables.base.coerce_to_runnable``). Without the real base
+    class our graph is rejected with "Expected a Runnable, callable or dict",
+    so a host could not place a ReactiveGraph inside an existing LangChain
+    pipeline.
+
+    This mirrors the established pattern in ``reactivegraph.messages``:
+    inherit upstream when it is importable, stay self-contained otherwise.
+    The engine keeps its own ``invoke``/``stream``/``batch`` implementations —
+    only the identity that LangChain checks comes from upstream.
     """
     try:
-        return json.dumps(state, sort_keys=True)
-    except (TypeError, ValueError):
-        return None
+        from langchain_core.runnables import Runnable as _HostRunnable
+    except ImportError:  # pragma: no cover - langchain-core is an optional dep
+        return ()
+    return (_HostRunnable,)
 
 
 class GraphBuildError(Exception):
@@ -160,6 +225,7 @@ class TaskOutcome:
 
 @dataclass(frozen=True)
 class TaskDef:
+    """One declared task: function, triggers, reads, writes, kind."""
     id: str
     kind: str = "effect"  # "pure" | "effect" | "opaque"
     fn: Callable[[Any], Any] | None = None
@@ -177,6 +243,7 @@ class TaskDef:
 
 @dataclass(frozen=True)
 class ComputedDef:
+    """One declared computed value and its read set."""
     id: str
     selector: Callable[[dict], Any]
     reads: tuple[str, ...] = ()
@@ -210,6 +277,7 @@ class ComputedDef:
 
 @dataclass
 class GraphDef:
+    """Immutable graph definition produced by :class:`GraphBuilder`."""
     id: str
     tasks: list[TaskDef] = field(default_factory=list)
     computeds: list[ComputedDef] = field(default_factory=list)
@@ -218,6 +286,7 @@ class GraphDef:
     _computed_by_id: dict = field(default_factory=dict)
 
     def task(self, td: TaskDef) -> None:
+        """Declare a task function with its routing, reads and writes."""
         if td.id in self._task_by_id:
             hint = " — Hint: 每个任务 id 必须唯一,请检查重复的 task() 声明"
             raise GraphBuildError(f"duplicate task id: {td.id}{hint}")
@@ -225,6 +294,7 @@ class GraphDef:
         self.tasks.append(td)
 
     def computed(self, cd: ComputedDef) -> None:
+        """Declare a lazily evaluated derived value."""
         if cd.id in self._task_by_id or cd.id in self._computed_by_id:
             hint = " — Hint: 每个 computed id 必须唯一,请检查重复的 computed() 声明"
             raise GraphBuildError(f"duplicate node id: {cd.id}{hint}")
@@ -232,6 +302,7 @@ class GraphDef:
         self.computeds.append(cd)
 
     def route_for(self, event: str) -> list[str]:
+        """Return the task ids routed by *event*."""
         return [t.id for t in self.tasks if event in t.on]
 
 
@@ -258,6 +329,7 @@ class GraphBuilder:
         estimated_tokens_out: int = 0,
         estimated_usd: float = 0.0,
     ) -> GraphBuilder:
+        """Declare a task function with its routing, reads and writes."""
         if not isinstance(max_runs, int) or isinstance(max_runs, bool) or max_runs < 1:
             raise GraphBuildError(
                 f"task {task_id}: max_runs must be an integer >= 1 (got {max_runs!r})"
@@ -284,10 +356,12 @@ class GraphBuilder:
     def computed(
         self, computed_id: str, selector: Callable[[dict], Any], reads: tuple[str, ...] = ()
     ) -> GraphBuilder:
+        """Declare a lazily evaluated derived value."""
         self._def.computed(ComputedDef(id=computed_id, selector=selector, reads=reads))
         return self
 
     def on(self, event: str, task_id: str) -> GraphBuilder:
+        """Subscribe this task to one or more trigger events."""
         td = self._def._task_by_id.get(task_id)
         if td is None:
             hint = " — Hint: 先 b.task(id, ...) 声明任务,再 b.on(event, id) 路由"
@@ -311,14 +385,16 @@ class GraphBuilder:
         return self
 
     def scope(self, name: str) -> GraphBuilder:
+        """Restrict this task to a named sub-state namespace."""
         self._def.scopes.append(name)
         return self
 
     def build(self) -> GraphDef:
+        """Materialise the declared graph definition."""
         return self._def
 
 
-class ReactiveGraph:
+class ReactiveGraph(*_runnable_base()):  # type: ignore[misc]
     """Native graph handle: compile + invoke through the Driver host.
 
     When a `DriverHost` is attached the graph is compiled to the Driver
@@ -366,6 +442,7 @@ class ReactiveGraph:
         host: DriverHost | None = None,
         graph_id: str = "graph",
     ) -> ReactiveGraph:
+        """Materialise the declared graph definition."""
         builder = GraphBuilder(graph_id)
         build_fn(builder)
         return ReactiveGraph(builder.build(), host=host)
@@ -404,6 +481,11 @@ class ReactiveGraph:
                 "timeoutMs": td.timeout_ms,
                 "callbackId": td.id,
             }
+            if td.reads:
+                # Declared read set: the Driver uses it to scope the pure-task
+                # fingerprint, so changing one unrelated field does not
+                # invalidate every task (mirrors the in-process fallback).
+                task["reads"] = list(td.reads)
             if td.writes:
                 task["writes"] = list(td.writes)
             if td.retry:
@@ -472,7 +554,11 @@ class ReactiveGraph:
 
         def callback(input_: Any) -> dict:
             model = TrackedStateProxy(input_ or {})
-            raw = td.fn(model) if td.fn is not None else {}
+            token = _current_task_kind.set(td.kind)
+            try:
+                raw = td.fn(model) if td.fn is not None else {}
+            finally:
+                _current_task_kind.reset(token)
             # Streaming callback: sync/async generators are passed through to
             # the host layer, which consumes them, streams each token/chunk as
             # `stream_chunks`, and uses the generator's return value as the
@@ -532,6 +618,172 @@ class ReactiveGraph:
 
         return callback
 
+    def _execute_fallback(
+        self, event: str, payload: Any, on_event: Callable[[dict], None] | None
+    ) -> dict:
+        """In-process fallback execution (no Driver host attached).
+
+        事件传播执行：从触发 ``event`` 开始，任务执行后按约定发出
+        ``f"{tid}:written"`` 事件，``route_for`` 找到订阅者继续（注册顺序=
+        传播顺序、串行；真实 Driver 为并行/反应式调度）。``fn`` 契约与
+        Driver 一致（收到普通 dict 浅拷贝）；pure 任务按输入指纹跳过（对齐
+        Driver 选择性）、effect/opaque 不跳过；缓存跨 invoke 共享（同图对
+        象）、deepcopy 防调用方污染。computeds 在执行结束后按读路径哈希惰
+        性求值（值以 computed id 写入 state）。
+        """
+        # in-process fallback：事件传播执行（方案 C P1）。
+        # 从触发 `event` 队列开始：任务执行后按约定发出 f"{tid}:written"
+        # 事件，route_for 找到订阅者继续（注册顺序=传播顺序、串行；真实
+        # Driver 为并行/反应式调度，差异见 docs/plans/*-strengthening.md）。
+        # fn 契约与 Driver 一致（收到普通 dict 浅拷贝）；pure 任务按输入
+        # 指纹跳过（对齐 Driver 选择性）、effect/opaque 不跳过；缓存跨
+        # invoke 共享（同图对象）、deepcopy 防调用方污染。computeds 在
+        # 执行结束后按读路径哈希惰性求值（值以 computed id 写入 state）。
+        with self._fallback_lock:
+            state: dict = dict(payload or {})
+            if on_event is not None:
+                # P3-1 Task 3：初始帧对齐 Driver（runtime.ts emitValues 首帧）
+                on_event(
+                    {
+                        "eventType": "values",
+                        "payload": {"state": copy.deepcopy(state)},
+                    }
+                )
+            self._propagate_fallback(event, state, on_event)
+            self._evaluate_computeds(state, on_event)
+        return state
+
+    def _run_fallback_task(
+        self,
+        tid: str,
+        state: dict,
+        on_event: Callable[[dict], None] | None,
+    ) -> tuple[Any, list[str] | None]:
+        """Execute one fallback task, returning ``(update, emits)``.
+
+        Pure tasks consult the cross-invoke fingerprint cache; effect/opaque
+        tasks always run. Trace/task_start/task_error framing stays here so the
+        propagation loop only has to deal with control flow.
+        """
+        td = self.definition._task_by_id[tid]
+        self._trace.append({"event": f"task:{tid}:start", "task": tid})
+        if on_event is not None:
+            on_event({"eventType": "task_start", "task": tid})
+        try:
+            update: Any = None
+            emits: list[str] | None = None
+            if td.kind == "pure":
+                fp = _fallback_fingerprint(state, td.reads)
+                cached = self._fallback_cache.get(tid)
+                if fp is not None and cached is not None and cached[0] == fp:
+                    update = cached[1]
+                    self._trace.append({"event": "cache_hit", "task": tid})
+                    if self._skip_callback is not None:
+                        self._skip_callback(tid)
+                else:
+                    update, _, emits = ReactiveGraph._split_task_result(
+                        td.fn(dict(state)) or {}
+                    )
+                    if isinstance(update, dict) and fp is not None:
+                        self._fallback_cache[tid] = (fp, copy.deepcopy(update))
+            else:
+                update, _, emits = ReactiveGraph._split_task_result(
+                    td.fn(dict(state)) or {}
+                )
+        except BaseException:
+            if on_event is not None:
+                on_event({"eventType": "task_error", "task": tid})
+            self._trace.append({"event": f"task:{tid}", "task": tid, "error": True})
+            raise
+        self._trace.append({"event": f"task:{tid}", "task": tid})
+        if isinstance(update, dict):
+            state.update(update)
+        return update, emits
+
+    def _emit_task_result(
+        self,
+        tid: str,
+        update: Any,
+        state: dict,
+        on_event: Callable[[dict], None] | None,
+    ) -> None:
+        """Emit the values/task_end frames for a completed fallback task."""
+        if on_event is None:
+            return
+        has_public_write = isinstance(update, dict) and any(
+            _is_public_state_key(key) for key in update
+        )
+        if has_public_write:
+            # LangGraph emits at most one values frame per super-step that
+            # committed public channel state. Empty/private-only updates remain
+            # observable as task_start/task_end but must not masquerade as a
+            # public state transition.
+            on_event(
+                {
+                    "eventType": "values",
+                    "payload": {"state": copy.deepcopy(state)},
+                }
+            )
+        on_event(
+            {
+                "eventType": "task_end",
+                "task": tid,
+                "writes": dict(update) if isinstance(update, dict) else {},
+            }
+        )
+
+    def _propagate_fallback(
+        self,
+        event: str,
+        state: dict,
+        on_event: Callable[[dict], None] | None,
+    ) -> None:
+        """Run the fallback event-propagation loop until the queue drains."""
+        # 重入预算：每个任务每次 invoke 至多执行 max_runs 次（默认 1，
+        # 与 Driver 的 at-most-once 环截断一致）。显式声明 max_runs>1
+        # 的任务允许在事件环中重入（model→tools→model）。
+        runs: dict[str, int] = {}
+        pending: deque[str] = deque([event])
+        guard = 0
+        while pending:
+            ev = pending.popleft()
+            for tid in self.definition.route_for(ev):
+                budget = self.definition._task_by_id[tid].max_runs
+                if runs.get(tid, 0) >= max(1, budget):
+                    continue
+                runs[tid] = runs.get(tid, 0) + 1
+                guard += 1
+                if guard > 10000:
+                    raise GraphBuildError(
+                        "fallback event propagation exceeded 10000 steps "
+                        "(cycle?) — Hint: 检查 on() 订阅是否成环"
+                    )
+                if not self.definition._task_by_id[tid].fn:
+                    continue
+                update, emits = self._run_fallback_task(tid, state, on_event)
+                self._emit_task_result(tid, update, state, on_event)
+                # 约定事件：任务写入后触发下游订阅；任务可用
+                # TaskOutcome.emits 覆盖（含空元组 = 终止本分支）。
+                if emits is None:
+                    pending.append(f"{tid}:written")
+                else:
+                    pending.extend(emits)
+
+    def _evaluate_computeds(
+        self, state: dict, on_event: Callable[[dict], None] | None
+    ) -> None:
+        """Evaluate every computed after propagation, recording invalidations."""
+        for cd in self.definition.computeds:
+            previous_hash = cd._cache.get("hash")
+            current_hash = cd._read_hash(state)
+            self._trace.append({"event": f"computed:{cd.id}:hit", "computed_id": cd.id})
+            if on_event is not None:
+                on_event({"eventType": "computed", "computed_id": cd.id})
+            state[cd.id] = cd.evaluate(state)
+            if previous_hash != current_hash and cd.reads:
+                self._computed_invalidations[cd.id] = cd.reads
+
+
     def _execute(
         self, event: str, payload: Any, on_event: Callable[[dict], None] | None = None
     ) -> dict:
@@ -549,131 +801,7 @@ class ReactiveGraph:
             hint = " — Hint: 用 b.on(event, task_id) 或 task(..., on=(event,)) 声明路由"
             raise GraphBuildError(f"no task routes for event {event}{hint}")
         if self.host is None:
-            # in-process fallback：事件传播执行（方案 C P1）。
-            # 从触发 `event` 队列开始：任务执行后按约定发出 f"{tid}:written"
-            # 事件，route_for 找到订阅者继续（注册顺序=传播顺序、串行；真实
-            # Driver 为并行/反应式调度，差异见 docs/plans/*-strengthening.md）。
-            # fn 契约与 Driver 一致（收到普通 dict 浅拷贝）；pure 任务按输入
-            # 指纹跳过（对齐 Driver 选择性）、effect/opaque 不跳过；缓存跨
-            # invoke 共享（同图对象）、deepcopy 防调用方污染。computeds 在
-            # 执行结束后按读路径哈希惰性求值（值以 computed id 写入 state）。
-            with self._fallback_lock:
-                state: dict = dict(payload or {})
-                if on_event is not None:
-                    # P3-1 Task 3：初始帧对齐 Driver（runtime.ts emitValues 首帧）
-                    on_event(
-                        {
-                            "eventType": "values",
-                            "payload": {"state": copy.deepcopy(state)},
-                        }
-                    )
-                # 重入预算：每个任务每次 invoke 至多执行 max_runs 次（默认 1，
-                # 与 Driver 的 at-most-once 环截断一致）。显式声明 max_runs>1
-                # 的任务允许在事件环中重入（model→tools→model）。
-                runs: dict[str, int] = {}
-                pending: deque[str] = deque([event])
-                guard = 0
-                while pending:
-                    ev = pending.popleft()
-                    for tid in self.definition.route_for(ev):
-                        budget = self.definition._task_by_id[tid].max_runs
-                        if runs.get(tid, 0) >= max(1, budget):
-                            continue
-                        runs[tid] = runs.get(tid, 0) + 1
-                        guard += 1
-                        if guard > 10000:
-                            raise GraphBuildError(
-                                "fallback event propagation exceeded 10000 steps "
-                                "(cycle?) — Hint: 检查 on() 订阅是否成环"
-                            )
-                        td = self.definition._task_by_id[tid]
-                        if not td.fn:
-                            continue
-                        update: Any = None
-                        emits: list[str] | None = None
-                        self._trace.append({"event": f"task:{tid}:start", "task": tid})
-                        if on_event is not None:
-                            on_event({"eventType": "task_start", "task": tid})
-                        try:
-                            if td.kind == "pure":
-                                fp = _fallback_fingerprint(state)
-                                cached = self._fallback_cache.get(tid)
-                                if fp is not None and cached is not None and cached[0] == fp:
-                                    update = cached[1]
-                                    self._trace.append({"event": "cache_hit", "task": tid})
-                                    if self._skip_callback is not None:
-                                        self._skip_callback(tid)
-                                else:
-                                    update, _, emits = ReactiveGraph._split_task_result(
-                                        td.fn(dict(state)) or {}
-                                    )
-                                    if isinstance(update, dict) and fp is not None:
-                                        self._fallback_cache[tid] = (
-                                            fp,
-                                            copy.deepcopy(update),
-                                        )
-                            else:
-                                update, _, emits = ReactiveGraph._split_task_result(
-                                    td.fn(dict(state)) or {}
-                                )
-                            if isinstance(update, dict):
-                                state.update(update)
-                        except BaseException:
-                            if on_event is not None:
-                                on_event({"eventType": "task_error", "task": tid})
-                            self._trace.append(
-                                {
-                                    "event": f"task:{tid}",
-                                    "task": tid,
-                                    "error": True,
-                                }
-                            )
-                            raise
-                        self._trace.append({"event": f"task:{tid}", "task": tid})
-                        has_public_write = isinstance(update, dict) and any(
-                            _is_public_state_key(key) for key in update
-                        )
-                        if on_event is not None and has_public_write:
-                            # LangGraph emits at most one values frame per
-                            # super-step that committed public channel state.
-                            # Empty/private-only updates remain observable as
-                            # task_start/task_end but must not masquerade as a
-                            # public state transition.
-                            on_event(
-                                {
-                                    "eventType": "values",
-                                    "payload": {"state": copy.deepcopy(state)},
-                                }
-                            )
-                        if on_event is not None:
-                            on_event(
-                                {
-                                    "eventType": "task_end",
-                                    "task": tid,
-                                    "writes": dict(update) if isinstance(update, dict) else {},
-                                }
-                            )
-                        # 约定事件：任务写入后触发下游订阅；任务可用
-                        # TaskOutcome.emits 覆盖（含空元组 = 终止本分支）。
-                        if emits is None:
-                            pending.append(f"{tid}:written")
-                        else:
-                            pending.extend(emits)
-                for cd in self.definition.computeds:
-                    previous_hash = cd._cache.get("hash")
-                    current_hash = cd._read_hash(state)
-                    self._trace.append(
-                        {
-                            "event": f"computed:{cd.id}:hit",
-                            "computed_id": cd.id,
-                        }
-                    )
-                    if on_event is not None:
-                        on_event({"eventType": "computed", "computed_id": cd.id})
-                    state[cd.id] = cd.evaluate(state)
-                    if previous_hash != current_hash and cd.reads:
-                        self._computed_invalidations[cd.id] = cd.reads
-            return state
+            return self._execute_fallback(event, payload, on_event)
         graph_id = self._ensure_compiled()
         self._trace = [{"event": "run:start"}]
         result = self.host.run(payload, graph_id=graph_id, event=event)
@@ -690,6 +818,7 @@ class ReactiveGraph:
         return self._last_run.get("state", {})
 
     def invoke(self, event: str, payload: Any, *, config: dict | None = None) -> dict:
+        """Run *event* (or the graph) synchronously and return the result."""
         if self.host is not None:
             from reactivegraph.protocol import make_id
 
@@ -705,6 +834,7 @@ class ReactiveGraph:
                     graph_id=graph_id,
                     event=event,
                     run_id=run_id,
+                    thread_id=_thread_id_from_config(config),
                     config=_wire_config(config),
                 )
             # ``_last_run`` is graph-wide observability state for ``resume``.
@@ -743,6 +873,22 @@ class ReactiveGraph:
         return await loop.run_in_executor(
             None, ctx.run, functools.partial(self.invoke, event, payload, config=config)
         )
+
+    def batch(
+        self, event: str, payloads: Sequence[Any], *, config: dict | None = None
+    ) -> list[dict]:
+        """Run one event against several payloads, one result each, in order.
+
+        LangChain's ``Runnable`` contract. Order is preserved, and each payload
+        is an independent run so a batch cannot leak state between items.
+        """
+        return [self.invoke(event, payload, config=config) for payload in payloads]
+
+    async def abatch(
+        self, event: str, payloads: Sequence[Any], *, config: dict | None = None
+    ) -> list[dict]:
+        """Async twin of :meth:`batch` (sequential, deterministic ordering)."""
+        return [await self.ainvoke(event, payload, config=config) for payload in payloads]
 
     async def astream(
         self, event: str, payload: Any, *, config: dict | None = None
@@ -835,30 +981,7 @@ class ReactiveGraph:
             hint = " — Hint: 用 b.on(event, task_id) 或 task(..., on=(event,)) 声明路由"
             raise GraphBuildError(f"no task routes for event {event}{hint}")
         if self.host is None:
-            # P3-1：fallback 经 _execute 的 on_event 钩子产出段边界事件
-            # （task_start/end/error + values/computed），terminal 收尾——
-            # 与 Driver（host.run_stream）事件流对齐（design §3）。
-            fallback_q: queue.Queue[dict | None] = queue.Queue()
-
-            def _fallback_feed(ev: dict) -> None:
-                fallback_q.put(ev)
-
-            exc: BaseException | None = None
-            try:
-                self._execute(event, payload, on_event=_fallback_feed)
-            except BaseException as err:
-                exc = err
-            finally:
-                fallback_q.put(None)
-            while True:
-                fb_ev = fallback_q.get()
-                if fb_ev is None:
-                    break
-                yield fb_ev
-            if exc is not None:
-                # 先让调用方消费到已入队的 task_error 事件，再原样上抛
-                raise exc
-            yield {"eventType": "terminal"}
+            yield from self._stream_fallback(event, payload)
             return
         graph_id = self._ensure_compiled()
         run_id = run_id or make_id()
@@ -911,48 +1034,75 @@ class ReactiveGraph:
                     if isinstance(conflict, dict):
                         self._conflict = conflict
                 raise ev
-            # P3-3 Task 3：custom span 帧（payload.event="span:{kind}"）消费
-            # 为 _trace（span 级事件，不阻断、custom 帧仍透传）。
-            if ev.get("eventType") == "custom":
-                cpayload = ev.get("payload") or {}
-                cname = cpayload.get("event") or ""
-                if cname.startswith("span:"):
-                    sp = cpayload.get("payload") or {}
-                    sname = sp.get("name") or ""
-                    attrs = sp.get("attributes") or {}
-                    tid = attrs.get("taskId", "")
-                    cid = attrs.get("computedId", "")
-                    if sname.startswith("task:") and tid:
-                        if sname.endswith(":skip"):
-                            reason = str(attrs.get("reason", "unknown"))
-                            event = "cache_hit" if reason == "fingerprint_unchanged" else "skip"
-                            self._trace.append({"event": event, "task": tid, "reason": reason})
-                        else:
-                            self._trace.append({"event": f"{sname}:start", "task": tid})
-                            end: dict = {"event": sname, "task": tid}
-                            if sp.get("status") == "error":
-                                end["error"] = True
-                            self._trace.append(end)
-                    elif sname.startswith("computed:") and cid and sname.endswith(":invalidate"):
-                        self._computed_invalidations[cid] = tuple(attrs.get("reads") or [])
-                    elif sname.startswith("computed:") and cid:
-                        # computed 求值/缓存命中 → 对齐 fallback trace
-                        # （computed:{id}:hit 命中、computed:{id} 求值）
-                        if sname.endswith(":hit"):
-                            self._trace.append(
-                                {
-                                    "event": sname,
-                                    "computed_id": cid,
-                                }
-                            )
-                        else:
-                            self._trace.append(
-                                {
-                                    "event": f"{sname}:hit",
-                                    "computed_id": cid,
-                                }
-                            )
+            self._consume_custom_span(ev)
             yield ev
+
+    def _stream_fallback(self, event: str, payload: Any) -> Iterator[dict]:
+        """Yield fallback segment events, replaying queue order, then terminal.
+
+        P3-1：fallback 经 ``_execute`` 的 on_event 钩子产出段边界事件
+        （task_start/end/error + values/computed），terminal 收尾——与 Driver
+        （host.run_stream）事件流对齐（design §3）。异常先让调用方消费已入队
+        的 task_error 事件，再原样上抛。
+        """
+        import queue
+
+        fallback_q: queue.Queue[dict | None] = queue.Queue()
+
+        def _fallback_feed(ev: dict) -> None:
+            fallback_q.put(ev)
+
+        exc: BaseException | None = None
+        try:
+            self._execute(event, payload, on_event=_fallback_feed)
+        except BaseException as err:
+            exc = err
+        finally:
+            fallback_q.put(None)
+        while True:
+            fb_ev = fallback_q.get()
+            if fb_ev is None:
+                break
+            yield fb_ev
+        if exc is not None:
+            raise exc
+        yield {"eventType": "terminal"}
+
+    def _consume_custom_span(self, ev: dict) -> None:
+        """Translate a Driver custom span frame into ``_trace`` entries.
+
+        P3-3 Task 3：custom span 帧（payload.event="span:{kind}"）消费为
+        ``_trace``（span 级事件，不阻断；custom 帧本身仍透传给调用方）。
+        """
+        if ev.get("eventType") != "custom":
+            return
+        cpayload = ev.get("payload") or {}
+        cname = cpayload.get("event") or ""
+        if not cname.startswith("span:"):
+            return
+        sp = cpayload.get("payload") or {}
+        sname = sp.get("name") or ""
+        attrs = sp.get("attributes") or {}
+        tid = attrs.get("taskId", "")
+        cid = attrs.get("computedId", "")
+        if sname.startswith("task:") and tid:
+            if sname.endswith(":skip"):
+                reason = str(attrs.get("reason", "unknown"))
+                event = "cache_hit" if reason == "fingerprint_unchanged" else "skip"
+                self._trace.append({"event": event, "task": tid, "reason": reason})
+            else:
+                self._trace.append({"event": f"{sname}:start", "task": tid})
+                end: dict = {"event": sname, "task": tid}
+                if sp.get("status") == "error":
+                    end["error"] = True
+                self._trace.append(end)
+        elif sname.startswith("computed:") and cid and sname.endswith(":invalidate"):
+            self._computed_invalidations[cid] = tuple(attrs.get("reads") or [])
+        elif sname.startswith("computed:") and cid:
+            # computed 求值/缓存命中 → 对齐 fallback trace
+            # （computed:{id}:hit 命中、computed:{id} 求值）
+            suffix = "" if sname.endswith(":hit") else ":hit"
+            self._trace.append({"event": f"{sname}{suffix}", "computed_id": cid})
 
     @staticmethod
     def _causal_trace_event(item: dict) -> dict[str, Any]:
@@ -1213,13 +1363,35 @@ class ReactiveGraph:
             "restore", thread_id=thread_id, checkpoint_id=checkpoint_id
         )
 
+    def _reject_store_access_from_pure_task(self, operation: str) -> None:
+        """Fail loudly when a ``pure`` task touches the long-term store.
+
+        A pure task is skipped when its declared ``reads`` are unchanged, and
+        those reads can only name *state* keys. The store lives outside the
+        state graph, so its contents are invisible to that fingerprint: a pure
+        task that reads it can be skipped even though an earlier run wrote new
+        data, silently returning stale results (this happened in the DeerFlow
+        memory port). Declaring the task ``opaque`` is the correct fix —
+        opaque tasks are never skipped and never receipt-gated.
+        """
+        if _current_task_kind.get() == "pure":
+            raise GraphBuildError(
+                f"store_{operation} called from a task declared kind='pure'. "
+                "A pure task is skipped when its declared reads are unchanged, "
+                "and the long-term store is not part of that fingerprint — so "
+                "the task could silently observe stale data. Declare the task "
+                "kind='opaque' instead."
+            )
+
     def store_get(self, namespace: Sequence[str], key: str) -> Any:
         """Read one item's value from the long-term store (None if absent)."""
+        self._reject_store_access_from_pure_task("get")
         result = self._require_host().store_op("get", namespace=namespace, key=key)
         return result.get("value") if isinstance(result, dict) else result
 
     def store_put(self, namespace: Sequence[str], key: str, value: Any) -> None:
         """Write one item to the long-term store."""
+        self._reject_store_access_from_pure_task("put")
         self._require_host().store_op("put", namespace=namespace, key=key, value=value)
 
     def store_search(
@@ -1236,6 +1408,7 @@ class ReactiveGraph:
 
     def store_delete(self, namespace: Sequence[str], key: str) -> None:
         """Delete one item from the long-term store."""
+        self._reject_store_access_from_pure_task("delete")
         self._require_host().store_op("delete", namespace=namespace, key=key)
 
     def list_namespaces(self) -> list:
