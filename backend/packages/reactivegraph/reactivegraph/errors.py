@@ -21,6 +21,7 @@ from reactivegraph.types import Command
 __all__ = (
     "EmptyChannelError",
     "ErrorCode",
+    "GraphBuildError",
     "GraphBubbleUp",
     "GraphInterrupt",
     "GraphRecursionError",
@@ -28,6 +29,14 @@ __all__ = (
     "ParentCommand",
     "create_error_message",
 )
+
+
+class GraphBuildError(Exception):
+    """Raised when a graph definition is invalid (duplicate/unknown ids).
+
+    Lives here rather than in ``graph.py`` so call-shape helpers (which the
+    graph module imports) can raise it without an import cycle.
+    """
 
 
 class ErrorCode(Enum):

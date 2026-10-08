@@ -36,6 +36,7 @@ from collections.abc import (
     Generator,
     Iterable,
     Iterator,
+    Mapping,
     Sequence,
 )
 from dataclasses import dataclass
@@ -235,6 +236,31 @@ def _coerce_tool(tool: Any) -> Any:
             return _invoke(args, **kwargs)
 
     return _CallableTool(name=_tool_name(tool), func=tool)
+
+
+def _batch_configs(
+    config: dict | Sequence[dict] | None, length: int
+) -> list[dict | None]:
+    """Expand a batch's config argument to one config per input.
+
+    ``RunnableSequence.batch`` hands each step a *list* of per-input configs.
+    A single mapping keeps its "shared by every input" meaning.
+    """
+    if config is None:
+        return [None] * length
+    if isinstance(config, Mapping):
+        return [dict(config) for _ in range(length)]
+    if isinstance(config, (str, bytes, bytearray)) or not isinstance(config, Sequence):
+        raise TypeError(
+            "config must be a mapping or a list of mappings, "
+            f"got {type(config).__name__}"
+        )
+    if len(config) != length:
+        raise ValueError(
+            "config must be a list of the same length as inputs, "
+            f"but got {len(config)} configs for {length} inputs"
+        )
+    return [dict(item) if isinstance(item, Mapping) else None for item in config]
 
 
 def _resolve_jump(jump: Any) -> str | None:
@@ -1006,25 +1032,60 @@ class AgentGraph(*_runnable_base()):  # type: ignore[misc]
         self._raise_if_exhausted(state)
         return _public_state(state)
 
-    def batch(self, inputs: Sequence[Any], config: dict | None = None,
-              **kwargs: Any) -> list[dict[str, Any]]:
+    def batch(
+        self,
+        inputs: Sequence[Any],
+        config: dict | Sequence[dict] | None = None,
+        *,
+        return_exceptions: bool = False,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
         """Run several inputs, returning one result each, in order.
 
         LangChain's ``Runnable`` contract: ``batch`` preserves input order and
         is what lets this graph be composed into an existing LangChain
-        pipeline. Each input is an independent run; ``config`` is shared.
+        pipeline. Each input is an independent run. ``config`` may be a single
+        mapping (shared) or the per-input list LangChain's sequence batching
+        passes; treating the list as a mapping raised
+        ``AttributeError: 'list' object has no attribute 'get'`` before.
         """
-        return [self.invoke(item, config, **kwargs) for item in inputs]
+        results: list[Any] = []
+        for item, item_config in zip(
+            inputs, _batch_configs(config, len(inputs)), strict=True
+        ):
+            try:
+                results.append(self.invoke(item, item_config, **kwargs))
+            except Exception as exc:  # noqa: BLE001 - reported per item
+                if not return_exceptions:
+                    raise
+                results.append(exc)
+        return results
 
-    async def abatch(self, inputs: Sequence[Any], config: dict | None = None,
-                     **kwargs: Any) -> list[dict[str, Any]]:
+    async def abatch(
+        self,
+        inputs: Sequence[Any],
+        config: dict | Sequence[dict] | None = None,
+        *,
+        return_exceptions: bool = False,
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
         """Async twin of :meth:`batch`.
 
         Runs sequentially so a shared checkpointer/thread sees deterministic
         ordering; the engine's own concurrency controls govern parallelism
         inside each run.
         """
-        return [await self.ainvoke(item, config, **kwargs) for item in inputs]
+        results: list[Any] = []
+        for item, item_config in zip(
+            inputs, _batch_configs(config, len(inputs)), strict=True
+        ):
+            try:
+                results.append(await self.ainvoke(item, item_config, **kwargs))
+            except Exception as exc:  # noqa: BLE001 - reported per item
+                if not return_exceptions:
+                    raise
+                results.append(exc)
+        return results
 
     async def ainvoke(
         self, input: Any, config: dict | None = None, **kwargs: Any

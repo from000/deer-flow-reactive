@@ -24,6 +24,13 @@ from collections.abc import AsyncIterator, Callable, Generator, Iterator, Sequen
 from dataclasses import dataclass, field
 from typing import Any
 
+from reactivegraph.errors import GraphBuildError  # re-exported for importers
+from reactivegraph.graph_calls import (
+    MISSING,
+    configs_for,
+    resolve_batch_call,
+    resolve_call,
+)
 from reactivegraph.host import DriverError, DriverHost
 from reactivegraph.runtime import (
     Runtime,
@@ -202,10 +209,6 @@ def _runnable_base() -> tuple[type, ...]:
     return (_HostRunnable,)
 
 
-class GraphBuildError(Exception):
-    """Raised when a graph definition is invalid (duplicate/unknown ids)."""
-
-
 @dataclass(frozen=True)
 class TaskOutcome:
     """A task result that also controls event routing.
@@ -282,6 +285,9 @@ class GraphDef:
     tasks: list[TaskDef] = field(default_factory=list)
     computeds: list[ComputedDef] = field(default_factory=list)
     scopes: list[str] = field(default_factory=list)
+    # Explicit entry event for the LangChain Runnable call form. ``None``
+    # infers the event when the graph declares exactly one.
+    entry_event: str | None = None
     _task_by_id: dict = field(default_factory=dict)
     _computed_by_id: dict = field(default_factory=dict)
 
@@ -382,6 +388,21 @@ class GraphBuilder:
         )
         idx = next(i for i, t in enumerate(self._def.tasks) if t.id == task_id)
         self._def.tasks[idx] = self._def._task_by_id[task_id]
+        return self
+
+    def entry(self, event: str) -> GraphBuilder:
+        """Declare the default entry event for the Runnable call form.
+
+        ``graph.invoke(payload)`` (the shape LangChain's composition uses) has
+        no place to name an event. When the graph routes exactly one event that
+        one is used automatically; with several, this declaration picks one and
+        the two-argument native form keeps working unchanged.
+        """
+        if not isinstance(event, str) or not event:
+            raise GraphBuildError(
+                f"entry event must be a non-empty string (got {event!r})"
+            )
+        self._def.entry_event = event
         return self
 
     def scope(self, name: str) -> GraphBuilder:
@@ -817,8 +838,27 @@ class ReactiveGraph(*_runnable_base()):  # type: ignore[misc]
         )
         return self._last_run.get("state", {})
 
-    def invoke(self, event: str, payload: Any, *, config: dict | None = None) -> dict:
-        """Run *event* (or the graph) synchronously and return the result."""
+    def invoke(
+        self,
+        event: Any,
+        payload: Any = MISSING,
+        *,
+        config: dict | None = None,
+    ) -> dict:
+        """Run the graph synchronously.
+
+        Two call shapes are accepted on one object:
+
+        * native — ``invoke(event, payload, config=...)`` names the entry event;
+        * Runnable — ``invoke(input, config)`` is what LangChain's composition
+          helpers call positionally (``a | graph``, ``.with_retry()``, ...).
+
+        A graph that routes a single event infers it for the Runnable shape;
+        with several events declare ``b.entry(event)``.
+        """
+        event, payload, config = resolve_call(
+            self.definition, event, payload, config=config
+        )
         if self.host is not None:
             from reactivegraph.protocol import make_id
 
@@ -856,7 +896,11 @@ class ReactiveGraph(*_runnable_base()):  # type: ignore[misc]
     # 让调用方的事件循环不被阻塞(并发 invoke 由线程池承载)。
 
     async def ainvoke(
-        self, event: str, payload: Any, *, config: dict | None = None
+        self,
+        event: Any,
+        payload: Any = MISSING,
+        *,
+        config: dict | None = None,
     ) -> dict:
         """异步 invoke:在 executor 线程执行同步内核,不阻塞当前 event loop。
 
@@ -868,6 +912,9 @@ class ReactiveGraph(*_runnable_base()):  # type: ignore[misc]
         `get_config()["configurable"]` 会是空的，中间件读不到调用方传入的
         `thread_id`（DeerFlow 的 ThreadDataMiddleware 正是这样读的）。
         """
+        event, payload, config = resolve_call(
+            self.definition, event, payload, config=config
+        )
         loop = asyncio.get_running_loop()
         ctx = contextvars.copy_context()
         return await loop.run_in_executor(
@@ -875,28 +922,71 @@ class ReactiveGraph(*_runnable_base()):  # type: ignore[misc]
         )
 
     def batch(
-        self, event: str, payloads: Sequence[Any], *, config: dict | None = None
+        self,
+        event: Any,
+        payloads: Any = MISSING,
+        *,
+        config: dict | Sequence[dict] | None = None,
+        return_exceptions: bool = False,
     ) -> list[dict]:
         """Run one event against several payloads, one result each, in order.
 
-        LangChain's ``Runnable`` contract. Order is preserved, and each payload
-        is an independent run so a batch cannot leak state between items.
+        LangChain's ``Runnable`` contract (``batch(inputs, configs)``) and the
+        native ``batch(event, payloads)`` shape both work. Order is preserved
+        and each payload is an independent run, so a batch cannot leak state
+        between items.
         """
-        return [self.invoke(event, payload, config=config) for payload in payloads]
+        event, payloads, config = resolve_batch_call(
+            self.definition, event, payloads, config=config
+        )
+        configs = configs_for(config, len(payloads))
+        results: list[Any] = []
+        for payload, item_config in zip(payloads, configs, strict=True):
+            try:
+                results.append(self.invoke(event, payload, config=item_config))
+            except Exception as exc:  # noqa: BLE001 - reported per item
+                if not return_exceptions:
+                    raise
+                results.append(exc)
+        return results
 
     async def abatch(
-        self, event: str, payloads: Sequence[Any], *, config: dict | None = None
+        self,
+        event: Any,
+        payloads: Any = MISSING,
+        *,
+        config: dict | Sequence[dict] | None = None,
+        return_exceptions: bool = False,
     ) -> list[dict]:
         """Async twin of :meth:`batch` (sequential, deterministic ordering)."""
-        return [await self.ainvoke(event, payload, config=config) for payload in payloads]
+        event, payloads, config = resolve_batch_call(
+            self.definition, event, payloads, config=config
+        )
+        configs = configs_for(config, len(payloads))
+        results: list[Any] = []
+        for payload, item_config in zip(payloads, configs, strict=True):
+            try:
+                results.append(await self.ainvoke(event, payload, config=item_config))
+            except Exception as exc:  # noqa: BLE001 - reported per item
+                if not return_exceptions:
+                    raise
+                results.append(exc)
+        return results
 
     async def astream(
-        self, event: str, payload: Any, *, config: dict | None = None
+        self,
+        event: Any,
+        payload: Any = MISSING,
+        *,
+        config: dict | None = None,
     ) -> AsyncIterator[dict]:
         """异步 stream:同步生成器在 executor 线程迭代,事件经 asyncio.Queue 传出。
 
         `config` 与同步 `stream` 同义透传(Driver 侧 trace/concurrency 等)。
         """
+        event, payload, config = resolve_call(
+            self.definition, event, payload, config=config
+        )
         loop = asyncio.get_running_loop()
         q: asyncio.Queue[Any] = asyncio.Queue()
         sentinel = object()
@@ -925,8 +1015,8 @@ class ReactiveGraph(*_runnable_base()):  # type: ignore[misc]
 
     def stream(
         self,
-        event: str,
-        payload: Any,
+        event: Any,
+        payload: Any = MISSING,
         *,
         thread_id: str | None = None,
         trace: bool = False,
@@ -936,7 +1026,16 @@ class ReactiveGraph(*_runnable_base()):  # type: ignore[misc]
         """Run the event route with streaming, publishing ``config`` for the
         duration of the run (upstream sets the child-runnable config for
         ``stream`` just like it does for ``invoke``).
+
+        ``stream(input, config)`` (the ``Runnable`` shape) and the native
+        ``stream(event, payload, ...)`` both work. Resolution is eager so a
+        graph with an ambiguous entry event fails at the call, not on the
+        first ``next()``.
         """
+        event, payload, config = resolve_call(
+            self.definition, event, payload, config=config
+        )
+
         def _generate() -> Generator[dict, Any, Any]:
             with _run_scope(config):
                 yield from self._stream_impl(
