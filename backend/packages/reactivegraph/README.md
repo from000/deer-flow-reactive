@@ -41,12 +41,16 @@ LangGraph 的 Pregel 在每次 `invoke` 时全量执行所有节点；ReactiveGr
 
 ## 快速开始
 
-```bash
-# Python 原生 API
-pip install reactivegraph
+> 尚未发布到 PyPI。上架前请从 GitHub 安装：
 
-# CLI（单独发行）
-pip install reactivegraph-cli
+```bash
+# Python 原生 API（核心引擎）
+pip install "git+https://github.com/from000/reactive-graph.git#subdirectory=python/reactivegraph"
+
+# CLI（单独发行；必须与核心一起装，它依赖 reactivegraph>=0.1.0）
+pip install \
+  "git+https://github.com/from000/reactive-graph.git#subdirectory=python/reactivegraph" \
+  "git+https://github.com/from000/reactive-graph.git#subdirectory=python/reactivegraph_cli"
 ```
 
 ```python
