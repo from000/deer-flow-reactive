@@ -35,6 +35,9 @@ on:
       - 'backend/uv.lock'
       - 'examples/deerflow-extension-bookmarks/**'
       - '.github/workflows/e2e-tests.yml'
+  # Allow a maintainer to re-run the browser suite on demand (e.g. after an
+  # engine resync that only touched files outside the path filters).
+  workflow_dispatch:
 
 concurrency:
   group: e2e-tests-${{ github.event.pull_request.number || github.ref }}
