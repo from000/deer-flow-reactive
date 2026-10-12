@@ -49,8 +49,8 @@ working on the ReactiveGraph engine. Reference versions:
 | `langgraph` | 1.2.11 |
 | `langgraph-checkpoint` | 4.2.0 |
 | `langgraph-prebuilt` | 1.1.0 |
-| `langchain-core` | 1.6.4 |
-| `langchain` | 1.3.14 |
+| `langchain-core` | 1.6.9 |
+| `langchain` | 1.4.4 |
 
 ### MIT License
 
