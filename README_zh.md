@@ -9,6 +9,13 @@
 <a href="https://trendshift.io/repositories/14699" target="_blank"><img src="https://trendshift.io/api/badge/repositories/14699" alt="bytedance%2Fdeer-flow | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 > 2026 年 2 月 28 日，DeerFlow 2 发布后登上 GitHub Trending 第 1 名。非常感谢社区的支持，这是大家一起做到的。
 
+> [!IMPORTANT]
+> **这是 [bytedance/deer-flow](https://github.com/bytedance/deer-flow) 的非官方 fork**，由
+> [from000](https://github.com/from000) 维护。它把后端执行层迁移到了
+> [ReactiveGraph](https://github.com/from000/reactive-graph) —— 一个自带 LangGraph 兼容接口的
+> 原生响应式引擎。已验证的范围、测试证据与仍然存在的边界见
+> [`REACTIVEGRAPH_zh.md`](./REACTIVEGRAPH_zh.md)。本项目与 ByteDance 无隶属或背书关系。
+
 DeerFlow（**D**eep **E**xploration and **E**fficient **R**esearch **Flow**）是一个开源的 **super agent harness**。它把 **sub-agents**、**memory** 和 **sandbox** 组织在一起，再配合可扩展的 **skills**，让 agent 可以完成几乎任何事情。
 
 https://github.com/user-attachments/assets/a8bcadc4-e040-4cf2-8fda-dd768b999c18
