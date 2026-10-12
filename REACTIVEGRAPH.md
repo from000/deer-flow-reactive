@@ -57,6 +57,16 @@ A real full-factory comparison against upstream produced normalized output parit
 | repeated invoke | 3.765 ms | 0.466 ms |
 | observed speed-up | — | 7.19x / 8.07x |
 
+> **Measurement scope.** The `ReactiveGraph` column runs
+> `create_agent(...).AgentGraph` **in process**: `create_agent` builds its
+> `ReactiveGraph` with no `DriverHost`, so this table covers the Python fallback
+> executor, not the native TypeScript Driver, RGP/1, or the Node child-process
+> boundary that a Driver-backed deployment pays. Treat 7.19x/8.07x as a
+> Python-executor comparison against the complete LangGraph stack, and see
+> [`reactive-graph` competitive proof §1b](https://github.com/from000/reactive-graph/blob/main/docs/competitive-proof.md)
+> for the Driver-backed end-to-end numbers (a single-digit multiple, and after
+> a 2026-10-12 fix to an O(n^2) input-merge cost).
+
 The upstream fixture used for comparison is:
 
 ```text

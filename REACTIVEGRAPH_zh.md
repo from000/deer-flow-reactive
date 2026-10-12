@@ -35,6 +35,14 @@ live-model tests:         之前失败的四个用例重试，4 passed
 | 重复 invoke | 3.765 ms | 0.466 ms |
 | 实测加速 | — | 7.19x / 8.07x |
 
+> **测量口径说明**：`ReactiveGraph` 列跑的是 `create_agent(...).AgentGraph`
+> 的**进程内**执行——`create_agent` 构建的 `ReactiveGraph` 没有 `DriverHost`，
+> 因此本表对比的是 Python fallback 执行器与完整 LangGraph 栈，不含原生
+> TypeScript Driver、RGP/1 往返与 Node 子进程边界。7.19x/8.07x 应理解为
+> 「Python 执行器 vs 完整 LangGraph 栈」；Driver 端到端数字见
+> [reactive-graph 的 competitive proof §1b](https://github.com/from000/reactive-graph/blob/main/docs/competitive-proof.md)
+> （单位数倍数；且 2026-10-12 修复了一处 O(n²) 输入合并开销）。
+
 用于对比的 upstream fixture 为：
 
 ```text
