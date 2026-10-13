@@ -98,6 +98,13 @@ In short:
 This is analogous to using OpenAI-compatible HTTP while owning the execution
 engine and state model.
 
+A smaller set of `langgraph` **types** (not execution code) remains for wire and
+storage compatibility: `empty_checkpoint`/`Command`/`Overwrite` from
+`langgraph.checkpoint.base` and `langgraph.types` when the gateway constructs a
+checkpoint payload or an update, plus `TYPE_CHECKING`-only annotations. These
+are data structures accepted by the native savers; they never instantiate a
+`langgraph` graph, scheduler, or prebuilt agent.
+
 ## What was replaced
 
 - `create_deerflow_agent`

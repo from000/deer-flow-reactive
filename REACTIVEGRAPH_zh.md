@@ -71,6 +71,8 @@ ReactiveGraph 替换的是**编排运行时**：图执行、依赖追踪、选�
 
 这类似于使用 OpenAI 兼容的 HTTP 接口，同时自己拥有执行引擎和状态模型。
 
+仍有一小组 `langgraph` **类型**（不是执行代码）保留用于 wire 与存储兼容：网关构造 checkpoint payload 或 update 时会用到来自 `langgraph.checkpoint.base` 与 `langgraph.types` 的 `empty_checkpoint`/`Command`/`Overwrite`，另有仅用于 `TYPE_CHECKING` 的注解。这些只是 native saver 接受的数据结构，不会实例化任何 `langgraph` graph、调度器或 prebuilt agent。
+
 ## 已替换的部分
 
 - `create_deerflow_agent`
