@@ -144,3 +144,10 @@ make test
 
 The upstream comparison and benchmark methodology live in the ReactiveGraph
 repository under `benchmarks/deerflow_real/`.
+
+## Pilot with us
+
+ReactiveGraph is recruiting a small group of external pilots. Read the
+[pilot invitation](https://github.com/from000/reactive-graph/blob/main/.github/PILOT_INVITATION.md)
+and [open a Pilot user issue](https://github.com/from000/reactive-graph/issues/new?template=pilot_user.md)
+to run one real workload with direct maintainer support.

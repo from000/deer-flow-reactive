@@ -112,3 +112,10 @@ make test
 
 upstream 对比与基准方法论位于 ReactiveGraph 仓库的
 `benchmarks/deerflow_real/`。
+
+## 试点招募
+
+ReactiveGraph 正在招募少量外部试点用户。请阅读
+[试点邀请](https://github.com/from000/reactive-graph/blob/main/.github/PILOT_INVITATION.md)，
+并通过 [Pilot user issue](https://github.com/from000/reactive-graph/issues/new?template=pilot_user.md)
+提交一个真实工作负载，与维护者一起完成试点。

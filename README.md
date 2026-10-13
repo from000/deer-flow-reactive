@@ -15,6 +15,10 @@ English | [中文](./README_zh.md) | [日本語](./README_ja.md) | [Français](.
 > onto [ReactiveGraph](https://github.com/from000/reactive-graph) — a native reactive engine with a
 > LangGraph-compatible surface. See [`REACTIVEGRAPH.md`](./REACTIVEGRAPH.md) for the verified scope,
 > test evidence and remaining boundaries. Not affiliated with or endorsed by ByteDance.
+>
+> We are also recruiting a small group of external pilots to run one real workload on ReactiveGraph:
+> see the [pilot invitation](https://github.com/from000/reactive-graph/blob/main/.github/PILOT_INVITATION.md)
+> and [open a Pilot user issue](https://github.com/from000/reactive-graph/issues/new?template=pilot_user.md).
 
 DeerFlow (**D**eep **E**xploration and **E**fficient **R**esearch **Flow**) is an open-source **super agent harness** that orchestrates **sub-agents**, **memory**, and **sandboxes** to do almost anything — powered by **extensible skills**.
 
