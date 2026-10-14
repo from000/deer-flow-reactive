@@ -134,6 +134,28 @@ Postgres 17 service (`TEST_POSTGRES_URI` in
 
 These are documented boundaries, not hidden limitations.
 
+## Dependency security (2026-10-14)
+
+The fork publishes Dependabot data. As of the final dependency sweep the
+repository is down to **one** open advisory, and it is one this repository
+cannot fix:
+
+- `braces <= 3.0.3` (high) is reachable only through `micromatch@4.0.8`, which
+  is the newest 4.x release and declares `braces: ^3.0.3`. The advisory has no
+  patched 3.x release, so the fix requires an upstream micromatch major. The
+  remaining advisory is tracked, not silenced.
+
+Everything else was remediated in-tree: `pnpm.overrides` pin the patched
+transitive versions (sharp, dompurify, source-map-js, brace-expansion,
+image-size, js-yaml, fflate, `@humanfs/node`, mermaid, katex, uuid, langsmith,
+lodash-es, minimatch, flatted), the unused `nuxt-og-image` dependency was
+removed (which eliminated its vite/unhead/esbuild chains), and the backend
+lockfile pins `langchain-anthropic>=1.4.6,<1.5`, `oauthlib>=4.0.0` and
+`soupsieve>=2.9.0`. `langchain-anthropic` is deliberately capped below 1.5:
+1.5+ pulls `anthropic` 1.x, whose `_format_messages` signature drops the
+no-model call form this gateway relies on (`tests/test_tool_call_args.py` pins
+that contract).
+
 ## Reproduction
 
 ```bash

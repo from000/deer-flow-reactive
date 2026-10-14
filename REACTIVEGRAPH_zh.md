@@ -102,6 +102,25 @@ Postgres checkpoint/store 路径**不在此列**：harness 会把
 
 这些是已记录的边界，不是隐藏的缺陷。
 
+## 依赖安全（2026-10-14）
+
+本 fork 公开 Dependabot 数据。在最后一轮依赖清理后，仓库只剩 **1 条**未关闭
+的安全公告，而且它在本仓库内无法修复：
+
+- `braces <= 3.0.3`（high）只能通过 `micromatch@4.0.8` 引入，而 4.0.8 是
+  最新的 4.x 版本，其声明为 `braces: ^3.0.3`。该公告没有 3.x 的修复版本，
+  修复必须依赖 micromatch 上游的大版本升级。该公告被如实记录，而非被屏蔽。
+
+其余告警均已在仓库内处理：用 `pnpm.overrides` 锁定已修复的传递依赖版本
+（sharp、dompurify、source-map-js、brace-expansion、image-size、js-yaml、
+fflate、`@humanfs/node`、mermaid、katex、uuid、langsmith、lodash-es、
+minimatch、flatted）；移除了未使用的 `nuxt-og-image` 依赖（同时消除了它带来的
+vite/unhead/esbuild 链路）；后端 lockfile 固定为
+`langchain-anthropic>=1.4.6,<1.5`、`oauthlib>=4.0.0`、`soupsieve>=2.9.0`。
+`langchain-anthropic` 被刻意限制在 1.5 以下：1.5+ 会引入 `anthropic` 1.x，
+其 `_format_messages` 签名不再支持本 gateway 依赖的无 model 调用形式
+（`tests/test_tool_call_args.py` 固定了该契约）。
+
 ## 复现
 
 ```bash
