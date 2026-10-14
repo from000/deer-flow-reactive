@@ -1,0 +1,82 @@
+{
+  "reactivegraph": [
+    {
+      "sessions": 64,
+      "workers": 8,
+      "wall_ms": 528.415,
+      "throughput_sessions_per_s": 121.1,
+      "median_ms": 43.053,
+      "p95_ms": 70.256,
+      "load1_at_run": 4.29
+    },
+    {
+      "sessions": 64,
+      "workers": 8,
+      "wall_ms": 545.835,
+      "throughput_sessions_per_s": 117.3,
+      "median_ms": 47.366,
+      "p95_ms": 82.3,
+      "load1_at_run": 4.16
+    },
+    {
+      "sessions": 64,
+      "workers": 8,
+      "wall_ms": 574.345,
+      "throughput_sessions_per_s": 111.4,
+      "median_ms": 50.281,
+      "p95_ms": 72.216,
+      "load1_at_run": 4.53
+    }
+  ],
+  "langgraph_upstream": [
+    {
+      "sessions": 64,
+      "workers": 8,
+      "wall_ms": 1961.269,
+      "throughput_sessions_per_s": 32.6,
+      "median_ms": 158.446,
+      "p95_ms": 227.152,
+      "load1_at_run": 4.35
+    },
+    {
+      "sessions": 64,
+      "workers": 8,
+      "wall_ms": 2259.096,
+      "throughput_sessions_per_s": 28.3,
+      "median_ms": 158.507,
+      "p95_ms": 242.983,
+      "load1_at_run": 4.23
+    },
+    {
+      "sessions": 64,
+      "workers": 8,
+      "wall_ms": 2188.159,
+      "throughput_sessions_per_s": 29.2,
+      "median_ms": 131.952,
+      "p95_ms": 221.553,
+      "load1_at_run": 4.33
+    }
+  ],
+  "reactivegraph_summary": {
+    "throughput_min": 111.4,
+    "throughput_median": 117.3,
+    "throughput_max": 121.1,
+    "runs": 3,
+    "load1_runs": [
+      4.29,
+      4.16,
+      4.53
+    ]
+  },
+  "langgraph_upstream_summary": {
+    "throughput_min": 28.3,
+    "throughput_median": 29.2,
+    "throughput_max": 32.6,
+    "runs": 3,
+    "load1_runs": [
+      4.35,
+      4.23,
+      4.33
+    ]
+  }
+}

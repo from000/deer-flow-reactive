@@ -1,0 +1,24 @@
+{
+  "reactivegraph": {
+    "message_counts": [
+      10,
+      10,
+      10,
+      10,
+      10,
+      10
+    ],
+    "total_model_calls": 30
+  },
+  "langgraph_upstream": {
+    "message_counts": [
+      10,
+      2,
+      2,
+      2,
+      2,
+      2
+    ],
+    "total_model_calls": 10
+  }
+}

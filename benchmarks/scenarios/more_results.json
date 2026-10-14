@@ -1,0 +1,90 @@
+{
+  "reactivegraph": [
+    {
+      "multi_turn": {
+        "median_ms": 2.313,
+        "p95_ms": 3.075,
+        "message_count_last": 2
+      },
+      "big_state": {
+        "median_ms": 1.849,
+        "p95_ms": 2.3,
+        "message_count": 2,
+        "doc_kb": 64
+      },
+      "load1_at_run": 4.75
+    },
+    {
+      "multi_turn": {
+        "median_ms": 2.48,
+        "p95_ms": 3.897,
+        "message_count_last": 2
+      },
+      "big_state": {
+        "median_ms": 1.953,
+        "p95_ms": 3.025,
+        "message_count": 2,
+        "doc_kb": 64
+      },
+      "load1_at_run": 4.95
+    },
+    {
+      "multi_turn": {
+        "median_ms": 2.74,
+        "p95_ms": 4.427,
+        "message_count_last": 2
+      },
+      "big_state": {
+        "median_ms": 2.141,
+        "p95_ms": 3.747,
+        "message_count": 2,
+        "doc_kb": 64
+      },
+      "load1_at_run": 4.88
+    }
+  ],
+  "langgraph_upstream": [
+    {
+      "multi_turn": {
+        "median_ms": 5.749,
+        "p95_ms": 6.576,
+        "message_count_last": 2
+      },
+      "big_state": {
+        "median_ms": 5.737,
+        "p95_ms": 7.223,
+        "message_count": 2,
+        "doc_kb": 64
+      },
+      "load1_at_run": 4.69
+    },
+    {
+      "multi_turn": {
+        "median_ms": 5.145,
+        "p95_ms": 7.492,
+        "message_count_last": 2
+      },
+      "big_state": {
+        "median_ms": 5.094,
+        "p95_ms": 6.987,
+        "message_count": 2,
+        "doc_kb": 64
+      },
+      "load1_at_run": 4.95
+    },
+    {
+      "multi_turn": {
+        "median_ms": 6.221,
+        "p95_ms": 6.894,
+        "message_count_last": 2
+      },
+      "big_state": {
+        "median_ms": 5.609,
+        "p95_ms": 7.439,
+        "message_count": 2,
+        "doc_kb": 64
+      },
+      "load1_at_run": 4.97
+    }
+  ]
+}

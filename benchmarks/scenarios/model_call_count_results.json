@@ -1,0 +1,12 @@
+{
+  "reactivegraph": {
+    "turns": 30,
+    "model_calls": 30,
+    "skipped": 0
+  },
+  "langgraph_upstream": {
+    "turns": 30,
+    "model_calls": 30,
+    "skipped": 0
+  }
+}

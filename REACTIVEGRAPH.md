@@ -67,6 +67,16 @@ A real full-factory comparison against upstream produced normalized output parit
 > for the Driver-backed end-to-end numbers (a single-digit multiple, and after
 > a 2026-10-12 fix to an O(n^2) input-merge cost).
 
+### Full-factory scenario benchmark (2026-10-15)
+
+The table above measures `create_agent(...)` directly. [`REAL_SCENARIOS.md`](./REAL_SCENARIOS.md)
+measures the **full DeerFlow agent factory end to end** (`create_deerflow_agent`, middleware
+chain included) across five scenarios — model-only, tool-call round trip, multi-turn
+accumulation, 64KB state, and 64-session concurrency — with output parity asserted before
+any timing. Summary: **~2x lower latency and ~3-4x higher concurrency throughput**;
+the report also documents where ReactiveGraph does *not* win, including that the agent path
+does not skip repeated model calls (no cross-run fingerprinting with `kind="effect"`).
+
 The upstream fixture used for comparison is:
 
 ```text

@@ -1,0 +1,36 @@
+{
+  "reactivegraph": [
+    {
+      "model_only": 3.757,
+      "tool_call": 6.186,
+      "load1_at_run": 3.83
+    },
+    {
+      "model_only": 3.014,
+      "tool_call": 6.046,
+      "load1_at_run": 4.03
+    },
+    {
+      "model_only": 3.011,
+      "tool_call": 6.151,
+      "load1_at_run": 4.33
+    }
+  ],
+  "langgraph_upstream": [
+    {
+      "model_only": 7.243,
+      "tool_call": 12.369,
+      "load1_at_run": 3.69
+    },
+    {
+      "model_only": 7.052,
+      "tool_call": 11.805,
+      "load1_at_run": 4.19
+    },
+    {
+      "model_only": 7.087,
+      "tool_call": 11.495,
+      "load1_at_run": 4.47
+    }
+  ]
+}
