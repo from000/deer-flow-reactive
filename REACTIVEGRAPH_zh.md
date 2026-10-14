@@ -107,9 +107,12 @@ Postgres checkpoint/store 路径**不在此列**：harness 会把
 本 fork 公开 Dependabot 数据。在最后一轮依赖清理后，仓库只剩 **1 条**未关闭
 的安全公告，而且它在本仓库内无法修复：
 
-- `braces <= 3.0.3`（high）只能通过 `micromatch@4.0.8` 引入，而 4.0.8 是
-  最新的 4.x 版本，其声明为 `braces: ^3.0.3`。该公告没有 3.x 的修复版本，
-  修复必须依赖 micromatch 上游的大版本升级。该公告被如实记录，而非被屏蔽。
+- `braces <= 3.0.3`（high，深层嵌套模式导致的栈耗尽 DoS）通过
+  `micromatch@4.0.8` 引入（`fast-glob` -> `micromatch`），而 4.0.8 是最新的
+  4.x 版本，其声明为 `braces: ^3.0.3`。已对照 npm registry 核实：`braces`
+  当前最新发布版本**就是** 3.0.3，且该公告的 `first_patched_version` 为空
+  —— 目前任何大版本线都还没有修复版本。没有可升级的目标，因此这条公告按
+  上游阻塞如实记录，而不是屏蔽或强行做违反 semver 的升级。
 
 其余告警均已在仓库内处理：用 `pnpm.overrides` 锁定已修复的传递依赖版本
 （sharp、dompurify、source-map-js、brace-expansion、image-size、js-yaml、

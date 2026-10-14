@@ -140,10 +140,13 @@ The fork publishes Dependabot data. As of the final dependency sweep the
 repository is down to **one** open advisory, and it is one this repository
 cannot fix:
 
-- `braces <= 3.0.3` (high) is reachable only through `micromatch@4.0.8`, which
-  is the newest 4.x release and declares `braces: ^3.0.3`. The advisory has no
-  patched 3.x release, so the fix requires an upstream micromatch major. The
-  remaining advisory is tracked, not silenced.
+- `braces <= 3.0.3` (high, stack-exhaustion DoS in deeply nested patterns) is
+  reachable through `micromatch@4.0.8` (`fast-glob` -> `micromatch`), which is
+  the newest 4.x release and declares `braces: ^3.0.3`. Verified against the
+  npm registry: `braces`' newest published version **is** 3.0.3, and the
+  advisory's `first_patched_version` is empty — no patched release exists yet
+  for any major line. There is nothing to upgrade to, so this one is tracked
+  upstream rather than silenced or force-fixed with a semver-violating bump.
 
 Everything else was remediated in-tree: `pnpm.overrides` pin the patched
 transitive versions (sharp, dompurify, source-map-js, brace-expansion,
