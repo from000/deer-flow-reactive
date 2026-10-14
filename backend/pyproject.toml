@@ -103,7 +103,22 @@ default-groups = ["dev", "extensions"]
 # it before. Remove once langgraph-sdk relaxes the pin upstream. Note: enabling
 # the `openai[realtime]` or `slack-sdk[optional]` extras would conflict (they
 # also cap websockets<16).
-override-dependencies = ["websockets==16.0"]
+override-dependencies = [
+    "websockets==16.0",
+    # Dependabot GHSA-j436-9m5w-7w5v: langchain-anthropic <=1.4.5 is vulnerable;
+    # 1.4.6 is the first patched release and deliberately still caps
+    # anthropic<1.0.0 (1.5+ pulls anthropic 1.x, whose `_format_messages`
+    # signature drops the no-model call form this gateway relies on).
+    "langchain-anthropic>=1.4.6,<1.5",
+    # Dependabot GHSA-xpv3-w29h-x7cv / GHSA-hj66-6f7g-4r5v: oauthlib
+    # <4.0.0 is vulnerable. requests-oauthlib only requires >=3.0.0, so
+    # enforce the patched major through uv's resolver.
+    "oauthlib>=4.0.0",
+    # Dependabot GHSA-gjv8-xp57-g29c / GHSA-j934-xhv5-fg8f: soupsieve
+    # <2.9.0 is vulnerable. beautifulsoup4's >=1.6.1 bound picks the old
+    # version, so enforce the patched floor here.
+    "soupsieve>=2.9.0",
+]
 
 [tool.uv.workspace]
 members = ["packages/harness", "packages/extension-api", "packages/reactivegraph"]
