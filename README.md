@@ -11,10 +11,22 @@ English | [中文](./README_zh.md) | [日本語](./README_ja.md) | [Français](.
 
 > [!IMPORTANT]
 > **This is an unofficial fork** of [bytedance/deer-flow](https://github.com/bytedance/deer-flow),
-> maintained by [from000](https://github.com/from000). It migrates the backend execution layer
-> onto [ReactiveGraph](https://github.com/from000/reactive-graph) — a native reactive engine with a
-> LangGraph-compatible surface. See [`REACTIVEGRAPH.md`](./REACTIVEGRAPH.md) for the verified scope,
-> test evidence and remaining boundaries. Not affiliated with or endorsed by ByteDance.
+> maintained by [from000](https://github.com/from000). The backend **execution layer runs on
+> [ReactiveGraph](https://github.com/from000/reactive-graph)** — a native reactive engine with a
+> LangGraph-compatible surface — while DeerFlow's product logic is unchanged.
+>
+> **What is actually different** (measured, output parity asserted first):
+>
+> | | upstream LangGraph | this fork |
+> |---|---:|---:|
+> | engine latency, full factory (fake model) | 7.09 ms | **3.01 ms** (~2.3x) |
+> | concurrency throughput (64 sessions / 8 workers) | 29 /s | **117 /s** (~4x) |
+> | engine residual CPU, **real LLM** (Agnes) | 24.6 ms | **16.9 ms** (~1.45x) |
+> | end-to-end wall time, real LLM | — | **no advantage** (network/inference dominate) |
+>
+> Full method, controls, no-gain cases and boundaries: [`REAL_SCENARIOS.md`](./REAL_SCENARIOS.md).
+> Verified scope and remaining limits: [`REACTIVEGRAPH.md`](./REACTIVEGRAPH.md).
+> Not affiliated with or endorsed by ByteDance.
 >
 > We are also recruiting a small group of external pilots to run one real workload on ReactiveGraph:
 > see the [pilot invitation](https://github.com/from000/reactive-graph/blob/main/.github/PILOT_INVITATION.md)
@@ -2328,6 +2340,34 @@ This checkout is the real DeerFlow backend migration onto ReactiveGraph.
   measured 7.19x/8.07x — that run does **not** include the middleware chain and is not a
   production figure
 - Durable SQLite recovery: checkpoint and store both supported
+
+### Try it
+
+```bash
+# backend
+cd backend && uv sync --group dev   # then use any supported model provider
+# quick smoke: factory builds and runs an agent
+python - <<'PY'
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from langchain_core.messages import AIMessage, HumanMessage
+from deerflow.agents.factory import create_deerflow_agent
+
+# the factory always binds tools, so the fake model must implement bind_tools
+class Model(FakeMessagesListChatModel):
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+graph = create_deerflow_agent(Model(responses=[AIMessage(content="hi")]))
+out = graph.invoke({"messages": [HumanMessage(content="hello")]},
+                   {"configurable": {"thread_id": "smoke"}})
+print(out["messages"][-1].content)   # hi
+PY
+```
+
+Full reproduction of every number above (fake-model engine cost, concurrency,
+real-LLM A/B, control experiments, coverage matrix, fairness audit):
+[`benchmarks/scenarios/`](./benchmarks/scenarios/), entry point
+[`REAL_SCENARIOS.md`](./REAL_SCENARIOS.md).
 
 Read [`REACTIVEGRAPH.md`](./REACTIVEGRAPH.md) for the exact scope, evidence,
 remaining boundaries, and the explanation of why `langchain_core` remains as a

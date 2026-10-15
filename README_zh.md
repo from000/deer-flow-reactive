@@ -11,10 +11,22 @@
 
 > [!IMPORTANT]
 > **这是 [bytedance/deer-flow](https://github.com/bytedance/deer-flow) 的非官方 fork**，由
-> [from000](https://github.com/from000) 维护。它把后端执行层迁移到了
-> [ReactiveGraph](https://github.com/from000/reactive-graph) —— 一个自带 LangGraph 兼容接口的
-> 原生响应式引擎。已验证的范围、测试证据与仍然存在的边界见
-> [`REACTIVEGRAPH_zh.md`](./REACTIVEGRAPH_zh.md)。本项目与 ByteDance 无隶属或背书关系。
+> [from000](https://github.com/from000) 维护。后端**执行层跑在
+> [ReactiveGraph](https://github.com/from000/reactive-graph) 上**——一个自带 LangGraph 兼容
+> 接口的原生响应式引擎；DeerFlow 的产品逻辑保持不变。
+>
+> **实际差异是什么**（实测，先断言输出一致）：
+>
+> | | 上游 LangGraph | 本 fork |
+> |---|---:|---:|
+> | 完整 factory 引擎延迟（fake model） | 7.09 ms | **3.01 ms**（约 2.3x） |
+> | 并发吞吐（64 会话 / 8 workers） | 29 /s | **117 /s**（约 4x） |
+> | 引擎 residual CPU，**真实 LLM**（Agnes） | 24.6 ms | **16.9 ms**（约 1.45x） |
+> | 端到端墙钟，真实 LLM | — | **无优势**（网络与推理主导） |
+>
+> 完整方法、控制实验、no-gain 场景与边界见 [`REAL_SCENARIOS.md`](./REAL_SCENARIOS.md)；
+> 已验证范围与仍存在的限制见 [`REACTIVEGRAPH_zh.md`](./REACTIVEGRAPH_zh.md)。
+> 本项目与 ByteDance 无隶属或背书关系。
 
 DeerFlow（**D**eep **E**xploration and **E**fficient **R**esearch **Flow**）是一个开源的 **super agent harness**。它把 **sub-agents**、**memory** 和 **sandbox** 组织在一起，再配合可扩展的 **skills**，让 agent 可以完成几乎任何事情。
 
@@ -1037,6 +1049,35 @@ DeerFlow 建立在开源社区大量优秀工作的基础上。所有让 DeerFlo
 - 最窄口径数字：`create_agent(...)` 进程内 vs 完整 LangGraph 栈测得 7.19x/8.07x——
   该口径**不含中间件链**，不是生产数字
 - SQLite 持久化恢复：checkpoint 与 store 均支持
+
+完整范围、证据、仍存在的边界，以及为什么 `langchain_core` 仍作为
+消息/模型/工具互操作协议保留，见
+### 上手
+
+```bash
+# 后端
+cd backend && uv sync --group dev   # 然后配置任意受支持的模型提供商
+# 冒烟：factory 构建并跑一个 agent
+python - <<'PY'
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from langchain_core.messages import AIMessage, HumanMessage
+from deerflow.agents.factory import create_deerflow_agent
+
+# the factory always binds tools, so the fake model must implement bind_tools
+class Model(FakeMessagesListChatModel):
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+graph = create_deerflow_agent(Model(responses=[AIMessage(content="hi")]))
+out = graph.invoke({"messages": [HumanMessage(content="hello")]},
+                   {"configurable": {"thread_id": "smoke"}})
+print(out["messages"][-1].content)   # hi
+PY
+```
+
+上述每个数字的完整复现（fake-model 引擎开销、并发、真实 LLM A/B、控制实验、
+覆盖矩阵、公平性审计）见 [`benchmarks/scenarios/`](./benchmarks/scenarios/)，
+入口是 [`REAL_SCENARIOS.md`](./REAL_SCENARIOS.md)。
 
 完整范围、证据、仍存在的边界，以及为什么 `langchain_core` 仍作为
 消息/模型/工具互操作协议保留，见
