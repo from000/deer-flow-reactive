@@ -64,6 +64,51 @@ langgraph_upstream: message_counts=[10,  2,  2,  2,  2,  2]   total_model_calls=
 **不是纯赢**：上游的累积语义省 model 调用（10 vs 30），对"防死循环 + 省钱"是优点；
 fork 的每-run 语义换来的是行为一致性。属于**语义 trade-off，需按业务场景判断**。
 
+## 真实 LLM 场景（Agnes，agnes-2.5-flash）
+
+前置说明：这部分与上面的 fake-model 结果**不可混用**。fake model 衡量引擎 CPU 开销（毫秒级）；
+真实 LLM 的墙钟由**网络 + 推理**主导（本次实测 1.6–7.5 s/次），引擎开销只是其中很小一部分。
+
+- **脚本**：`scripts/real_llm.py`（每侧新进程、单次 invoke、交替执行、记录 `load1_at_run`）
+- **约束**：Agnes 账号级限流 1 请求/分钟；脚本显式等待并**单独记账**，不混入 residual；
+  `max_retries=0`（429 直接暴露）；`REAL_LLM_MAX_LOAD` 负载门槛 + 等待。
+- **指标**：`residual_cpu_s = cpu_s − Σllm_cpu_s`，即扣除 LLM 调用后本进程真正消耗的 CPU 时间。
+  它比 `wall − llm` 的墙钟残差更抗调度噪声，但仍**不等于纯引擎耗时**。
+
+| 场景 | fork residual_cpu (median) | 上游 residual_cpu (median) | 比值 |
+|---|---:|---:|---:|
+| model_only（n=6） | **16.9 ms**（12.0–24.7） | **24.6 ms**（17.3–48.6） | **1.45×** |
+| tool_call（n=6，2 次 LLM 调用） | **23.6 ms**（19.4–31.4） | **34.9 ms**（24.6–49.4） | **1.48×** |
+
+**关键诚实结论：**
+
+1. **真实 LLM 端到端不会更快。** 墙钟由模型/网络主导：fork 中位 3.92 s / 4.09 s，
+   上游 1.83 s / 3.81 s，**样本内互有胜负**（fork 曾出现 19.3 s 的慢响应，上游也出现过 8.99 s），
+   差异远小于方差。任何"用 ReactiveGraph 让真实 LLM 应用快 1.5 倍"的说法都是错的。
+2. **引擎侧 CPU 开销仍然更低**：residual_cpu 中位数 1.45×（model_only）/ 1.48×（tool_call），
+   但幅度比 fake model 的 ~2–4× 明显收窄——真实调用链路引入的固定本地成本
+   （消息编解码、schema、工具执行、middleware hook）稀释了引擎差异。
+   绝对差只有 **8–11 ms**，在真实 LLM 场景中不可感知。
+3. **`tool_messages` 数量在真实 LLM 下不稳定**（fork 见过 1 和 2，上游也见过 1 和 2）。
+   确定性 fake model 下 `parity_check.py` 断言两边**逐条一致**
+   （`tool_call`: 4 条消息 / 1 个 ToolMessage，`identical=True`），
+   因此真实 LLM 的数量波动是**模型随机行为**（模型偶尔返回多个 tool_call），不是引擎差异。
+   故真实 LLM 数据不得用于比较"工具轨迹"，只能比较调用次数与 residual。
+
+### 控制实验：排除"冷启动造成的假象"
+
+`real_llm.py` 每侧都在新进程里只 invoke 一次；若 fork 的优势只是热路径缓存，该形态下应当消失。
+`scripts/fresh_process_control.py`（fake model，免费可复现）复刻同一形态：
+
+| 形态 | fork | 上游 | 比值 |
+|---|---:|---:|---:|
+| 冷启动（新进程 + 单次 invoke，wall） | 12.48 ms | 17.02 ms | 1.36× |
+| 冷启动（residual_cpu） | 9.55 ms | 14.31 ms | 1.50× |
+| 热路径（同进程 20 次，median of 后 15 次，wall） | 2.89 ms | 13.62 ms | 4.72× |
+
+结论：**冷启动不是原因**——同样新进程形态下 fork 仍更快；真实 LLM 中 residual 差异收窄，
+是因为真实调用链路引入了大量与引擎无关的固定本地开销。
+
 ## 诚实边界（必须读）
 
 1. **不是 token 省钱**：fork 的 `create_deerflow_agent` 把 model/tools 节点注册为默认
@@ -76,8 +121,9 @@ fork 的每-run 语义换来的是行为一致性。属于**语义 trade-off，�
    测量期间常有其它编译/测试进程（load1 3.7–4.5）。脚本用配对交替降低负载偏置并记录
    load1，但仍不能替代独占机器；跨机复现应以本机同环境同负载重跑为准。
    （反例：无配对、机器 load1≈26 时，上游 multi_turn 曾从 ~10ms 漂到 64ms。）
-4. **真实 LLM 未纳入**：DeepSeek 账户余额不足（HTTP 402），真实模型端到端未能跑；
-   真实网络/推理延迟会淹没引擎差异（通常 LLM 单次 >500ms，引擎差异 ~5ms）。
+4. **真实 LLM 已跑，但结论有限**：Agnes（agnes-2.5-flash）实测可用（DeepSeek 余额不足 402、
+   DashScope 欠费、SiliconFlow 未实名）。真实 LLM 下**端到端墙钟无优势**（模型/网络主导），
+   引擎侧 residual_cpu 优势收窄到 1.2–1.8×。详见上文"真实 LLM 场景"章节。
 5. **fake model 的局限**：fake model 零推理延迟，因此这里衡量的是**引擎/编排开销**，
    这正是框架层该比的量；但它不代表真实 LLM 场景的端到端加速比。
 
@@ -110,6 +156,13 @@ python3 loop_detection_repro.py
 
 # 6. 验证 agent 路径不做跨 run 跳过（反"省钱"夸大）
 python3 model_call_count.py
+
+# 7. 控制实验：冷启动 vs 热路径（fake model，免费）
+python3 fresh_process_control.py
+
+# 8. 真实 LLM（Agnes；受 1 req/min 限流，耗时长）
+export CUSTOM_LLM_URL=... CUSTOM_LLM_API_KEY=... CUSTOM_MODEL=agnes-2.5-flash
+REAL_LLM_REPEATS=2 REAL_LLM_SCENARIOS=model_only,tool_call python3 real_llm.py
 ```
 
 脚本依赖两个环境变量指向本地 checkout；结果 JSON 通过脚本自身路径定位写回
@@ -123,3 +176,6 @@ python3 model_call_count.py
 - `final_results2.json` — 早间非配对口径的历史存档（含 message_count），不用于本报告数字
 - `loop_detection_results.json` — 同一 thread 重复 tool_call 的 message 数量（决定性发现 2）
 - `model_call_count_results.json` — 30 轮重复输入下的真实模型调用次数（诚实边界 1）
+- `real_llm_results.json` — 真实 Agnes LLM 逐次测量（含 llm_events / message_sequence / load1）
+- `fresh_process_control_results.json` — 冷启动 vs 热路径控制实验
+- `FAIRNESS_AUDIT.md` / `REAL_LLM_DISCLOSURES.md` — 两边执行栈差异与解读边界审计

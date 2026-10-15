@@ -1,0 +1,18 @@
+{
+  "reactivegraph": {
+    "cold_wall_ms": 12.483,
+    "cold_cpu_ms": 9.702,
+    "cold_llm_cpu_ms": 0.155,
+    "cold_residual_cpu_ms": 9.547,
+    "warm_wall_ms": 2.886,
+    "warm_cpu_ms": 2.853
+  },
+  "langgraph_upstream": {
+    "cold_wall_ms": 17.019,
+    "cold_cpu_ms": 14.434,
+    "cold_llm_cpu_ms": 0.129,
+    "cold_residual_cpu_ms": 14.305,
+    "warm_wall_ms": 13.622,
+    "warm_cpu_ms": 12.892
+  }
+}

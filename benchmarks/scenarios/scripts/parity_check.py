@@ -29,7 +29,16 @@ def run(tool_call):
     graph = create_deerflow_agent(model, tools=[echo_tool] if tool_call else None)
     out = graph.invoke({"messages": [HumanMessage(content="same")]},
                        {"configurable": {"thread_id": "p-" + uuid.uuid4().hex}})
-    return [{"type": type(m).__name__, "content": getattr(m, "content", None)} for m in out["messages"]]
+    seq = []
+    for m in out["messages"]:
+        entry = {"type": type(m).__name__, "content": getattr(m, "content", None)}
+        tc = getattr(m, "tool_calls", None)
+        if tc:
+            entry["tool_calls"] = [{"name": c.get("name"), "args": c.get("args")} for c in tc]
+        if type(m).__name__ == "ToolMessage":
+            entry["name"] = getattr(m, "name", None)
+        seq.append(entry)
+    return seq
 print(json.dumps({"model_only": run(False), "tool_call": run(True)}))
 '''
 
@@ -37,8 +46,16 @@ if __name__ == "__main__":
     a = run_code(fork_root(), TEMPLATE)
     b = run_code(upstream_root(), TEMPLATE)
     for sc in ("model_only", "tool_call"):
-        same = a.get(sc) == b.get(sc)
+        fa, ub = a.get(sc), b.get(sc)
+        same = fa == ub
         print(f"{sc}: identical={same}")
+        # 单独报告"消息序列 + 工具轨迹"摘要：真实 LLM 下工具轨迹可能因模型随机性不同，
+        # 但 fake model（确定性）下两边必须逐条一致，这是计时比较的前提。
+        for side, seq in (("fork", fa), ("up ", ub)):
+            if isinstance(seq, list):
+                types = [e.get("type") for e in seq]
+                tool_msgs = sum(1 for e in seq if e.get("type") == "ToolMessage")
+                print(f"  {side} messages={len(seq)} tool_messages={tool_msgs} seq={types}")
         if not same:
-            print("  fork:", json.dumps(a.get(sc), ensure_ascii=False)[:300])
-            print("  up  :", json.dumps(b.get(sc), ensure_ascii=False)[:300])
+            print("  fork:", json.dumps(fa, ensure_ascii=False)[:300])
+            print("  up  :", json.dumps(ub, ensure_ascii=False)[:300])

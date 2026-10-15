@@ -1,0 +1,754 @@
+{
+  "reactivegraph": [
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 1.614,
+        "llm_s": 1.5855,
+        "rate_limit_wait_s": 0,
+        "cpu_s": 0.1204,
+        "llm_cpu_s": 0.0957,
+        "llm_calls": 1,
+        "final_text": "\n\npong",
+        "scenario": "model_only",
+        "residual_s": 0.0286,
+        "residual_cpu_s": 0.0247
+      },
+      "load1_at_run": 11.11
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 2.9099,
+        "llm_s": 2.8699,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.04,
+        "cpu_s": 0.1198,
+        "llm_cpu_s": 0.0902,
+        "residual_cpu_s": 0.0296,
+        "llm_calls": 2,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.894,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 0.9759,
+            "wait_s": 0.0
+          }
+        ],
+        "tool_messages": 1,
+        "tool_trace": [
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          }
+        ],
+        "final_text": "\n\nThe weather in Shanghai is 22\u00b0C and clear.",
+        "scenario": "tool_call"
+      },
+      "load1_at_run": 14.92
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 1.6126,
+        "llm_s": 1.5784,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0343,
+        "cpu_s": 0.1038,
+        "llm_cpu_s": 0.0809,
+        "residual_cpu_s": 0.0228,
+        "llm_calls": 1,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.5784,
+            "wait_s": 0.0
+          }
+        ],
+        "final_text": "\n\npong",
+        "scenario": "model_only"
+      },
+      "load1_at_run": 8.83
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 5.195,
+        "llm_s": 5.1722,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0229,
+        "cpu_s": 0.0895,
+        "llm_cpu_s": 0.0695,
+        "residual_cpu_s": 0.02,
+        "llm_calls": 1,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 5.1722,
+            "wait_s": 0.0
+          }
+        ],
+        "final_text": "\n\npong",
+        "scenario": "model_only"
+      },
+      "load1_at_run": 11.11
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 3.5324,
+        "llm_s": 3.5054,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.027,
+        "cpu_s": 0.0789,
+        "llm_cpu_s": 0.0552,
+        "residual_cpu_s": 0.0237,
+        "llm_calls": 2,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 2.4411,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.0643,
+            "wait_s": 0.0
+          }
+        ],
+        "tool_messages": 2,
+        "tool_trace": [
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          },
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          }
+        ],
+        "final_text": "\n\nThe weather in Shanghai is currently 22\u00b0C and clear.",
+        "scenario": "tool_call"
+      },
+      "load1_at_run": 4.4
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 7.5063,
+        "llm_s": 7.475,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0312,
+        "cpu_s": 0.0815,
+        "llm_cpu_s": 0.0603,
+        "residual_cpu_s": 0.0212,
+        "llm_calls": 2,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 6.0463,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.4288,
+            "wait_s": 0.0
+          }
+        ],
+        "tool_messages": 1,
+        "tool_trace": [
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          }
+        ],
+        "final_text": "\n\nThe weather in Shanghai is currently 22\u00b0C with clear skies",
+        "scenario": "tool_call"
+      },
+      "load1_at_run": 5.12
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 2.6442,
+        "llm_s": 2.63,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0142,
+        "cpu_s": 0.0647,
+        "llm_cpu_s": 0.0524,
+        "residual_cpu_s": 0.0123,
+        "llm_calls": 1,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 2.63,
+            "wait_s": 0.0
+          }
+        ],
+        "final_text": "\n\npong",
+        "scenario": "model_only"
+      },
+      "load1_at_run": 8.15
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 19.3093,
+        "llm_s": 19.2935,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0158,
+        "cpu_s": 0.0675,
+        "llm_cpu_s": 0.0555,
+        "residual_cpu_s": 0.012,
+        "llm_calls": 1,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 19.2935,
+            "wait_s": 0.0
+          }
+        ],
+        "final_text": "\n\npong",
+        "scenario": "model_only"
+      },
+      "load1_at_run": 6.17
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 6.1408,
+        "llm_s": 6.1236,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0172,
+        "cpu_s": 0.0777,
+        "llm_cpu_s": 0.0639,
+        "residual_cpu_s": 0.0139,
+        "llm_calls": 1,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 6.1236,
+            "wait_s": 0.0
+          }
+        ],
+        "final_text": "\n\npong",
+        "scenario": "model_only"
+      },
+      "load1_at_run": 18.72
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 4.6452,
+        "llm_s": 4.61,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0352,
+        "cpu_s": 0.1198,
+        "llm_cpu_s": 0.0884,
+        "residual_cpu_s": 0.0314,
+        "llm_calls": 2,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 3.4932,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.1167,
+            "wait_s": 0.0
+          }
+        ],
+        "tool_messages": 2,
+        "tool_trace": [
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          },
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          }
+        ],
+        "final_text": "\n\nThe weather in Shanghai is 22\u00b0C and clear.",
+        "scenario": "tool_call"
+      },
+      "load1_at_run": 8.56
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 9.7263,
+        "llm_s": 9.7069,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0194,
+        "cpu_s": 0.0867,
+        "llm_cpu_s": 0.0673,
+        "residual_cpu_s": 0.0194,
+        "llm_calls": 2,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 5.8732,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 3.8337,
+            "wait_s": 0.0
+          }
+        ],
+        "tool_messages": 2,
+        "tool_trace": [
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          },
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          }
+        ],
+        "final_text": "\n\nThe weather in Shanghai is currently 22\u00b0C and clear.",
+        "scenario": "tool_call"
+      },
+      "load1_at_run": 12.5
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 2.8707,
+        "llm_s": 2.847,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0238,
+        "cpu_s": 0.107,
+        "llm_cpu_s": 0.0835,
+        "residual_cpu_s": 0.0234,
+        "llm_calls": 2,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.8176,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.0294,
+            "wait_s": 0.0
+          }
+        ],
+        "tool_messages": 1,
+        "tool_trace": [
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          }
+        ],
+        "final_text": "\n\nThe weather in Shanghai is 22\u00b0C and clear.",
+        "scenario": "tool_call"
+      },
+      "load1_at_run": 7.22
+    }
+  ],
+  "langgraph_upstream": [
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 1.7108,
+        "llm_s": 1.5365,
+        "rate_limit_wait_s": 0,
+        "cpu_s": 0.1573,
+        "llm_cpu_s": 0.1086,
+        "llm_calls": 1,
+        "final_text": "\n\npong",
+        "scenario": "model_only",
+        "residual_s": 0.1743,
+        "residual_cpu_s": 0.0486
+      },
+      "load1_at_run": 19.5
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 4.0784,
+        "llm_s": 4.0322,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0462,
+        "cpu_s": 0.1102,
+        "llm_cpu_s": 0.0686,
+        "residual_cpu_s": 0.0416,
+        "llm_calls": 2,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 2.6915,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.3407,
+            "wait_s": 0.0
+          }
+        ],
+        "tool_messages": 2,
+        "tool_trace": [
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          },
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          }
+        ],
+        "final_text": "\n\nThe weather in Shanghai is currently 22\u00b0C and clear.",
+        "scenario": "tool_call"
+      },
+      "load1_at_run": 21.28
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 2.6161,
+        "llm_s": 2.5839,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0321,
+        "cpu_s": 0.0996,
+        "llm_cpu_s": 0.0724,
+        "residual_cpu_s": 0.0272,
+        "llm_calls": 1,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 2.5839,
+            "wait_s": 0.0
+          }
+        ],
+        "final_text": "\n\npong",
+        "scenario": "model_only"
+      },
+      "load1_at_run": 8.8
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 1.6929,
+        "llm_s": 1.6684,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0245,
+        "cpu_s": 0.0859,
+        "llm_cpu_s": 0.0646,
+        "residual_cpu_s": 0.0214,
+        "llm_calls": 1,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.6684,
+            "wait_s": 0.0
+          }
+        ],
+        "final_text": "\n\npong",
+        "scenario": "model_only"
+      },
+      "load1_at_run": 6.94
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 2.7472,
+        "llm_s": 2.7191,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0281,
+        "cpu_s": 0.078,
+        "llm_cpu_s": 0.0534,
+        "residual_cpu_s": 0.0246,
+        "llm_calls": 2,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.7625,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 0.9566,
+            "wait_s": 0.0
+          }
+        ],
+        "tool_messages": 1,
+        "tool_trace": [
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          }
+        ],
+        "final_text": "\n\nThe weather in Shanghai is currently 22\u00b0C with clear skies",
+        "scenario": "tool_call"
+      },
+      "load1_at_run": 4.13
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 3.7352,
+        "llm_s": 3.6802,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0549,
+        "cpu_s": 0.1279,
+        "llm_cpu_s": 0.0784,
+        "residual_cpu_s": 0.0494,
+        "llm_calls": 2,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 2.4768,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.2034,
+            "wait_s": 0.0
+          }
+        ],
+        "tool_messages": 2,
+        "tool_trace": [
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          },
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          }
+        ],
+        "final_text": "\n\nThe weather in Shanghai is 22\u00b0C and clear.",
+        "scenario": "tool_call"
+      },
+      "load1_at_run": 6.06
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 1.9471,
+        "llm_s": 1.9251,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0219,
+        "cpu_s": 0.0688,
+        "llm_cpu_s": 0.0515,
+        "residual_cpu_s": 0.0173,
+        "llm_calls": 1,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.9251,
+            "wait_s": 0.0
+          }
+        ],
+        "final_text": "\n\npong",
+        "scenario": "model_only"
+      },
+      "load1_at_run": 8.76
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 2.4516,
+        "llm_s": 2.4178,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0337,
+        "cpu_s": 0.1013,
+        "llm_cpu_s": 0.0737,
+        "residual_cpu_s": 0.0276,
+        "llm_calls": 1,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 2.4178,
+            "wait_s": 0.0
+          }
+        ],
+        "final_text": "\n\npong",
+        "scenario": "model_only"
+      },
+      "load1_at_run": 11.05
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 1.5985,
+        "llm_s": 1.5742,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0243,
+        "cpu_s": 0.0743,
+        "llm_cpu_s": 0.0522,
+        "residual_cpu_s": 0.0221,
+        "llm_calls": 1,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.5742,
+            "wait_s": 0.0
+          }
+        ],
+        "final_text": "\n\npong",
+        "scenario": "model_only"
+      },
+      "load1_at_run": 17.88
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 8.99,
+        "llm_s": 8.954,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0359,
+        "cpu_s": 0.0938,
+        "llm_cpu_s": 0.0626,
+        "residual_cpu_s": 0.0311,
+        "llm_calls": 2,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 6.4872,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 2.4668,
+            "wait_s": 0.0
+          }
+        ],
+        "tool_messages": 2,
+        "tool_trace": [
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          },
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          }
+        ],
+        "final_text": "\n\nThe weather in Shanghai is currently 22\u00b0C and clear.",
+        "scenario": "tool_call"
+      },
+      "load1_at_run": 11.5
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 3.2763,
+        "llm_s": 3.2253,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.051,
+        "cpu_s": 0.1043,
+        "llm_cpu_s": 0.0657,
+        "residual_cpu_s": 0.0386,
+        "llm_calls": 2,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.8974,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.3279,
+            "wait_s": 0.0
+          }
+        ],
+        "tool_messages": 2,
+        "tool_trace": [
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          },
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          }
+        ],
+        "final_text": "\n\nShanghai: 22\u00b0C, clear.",
+        "scenario": "tool_call"
+      },
+      "load1_at_run": 11.07
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 3.8778,
+        "llm_s": 3.8446,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0331,
+        "cpu_s": 0.0834,
+        "llm_cpu_s": 0.0544,
+        "residual_cpu_s": 0.0291,
+        "llm_calls": 2,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.8679,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.9767,
+            "wait_s": 0.0
+          }
+        ],
+        "tool_messages": 2,
+        "tool_trace": [
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          },
+          {
+            "name": "get_weather",
+            "content": "Weather in Shanghai: 22C, clear."
+          }
+        ],
+        "final_text": "\n\nThe weather in Shanghai is 22\u00b0C and clear.",
+        "scenario": "tool_call"
+      },
+      "load1_at_run": 13.44
+    }
+  ]
+}

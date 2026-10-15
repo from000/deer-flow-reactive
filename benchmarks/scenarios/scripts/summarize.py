@@ -85,3 +85,30 @@ if __name__ == "__main__":
     print("=== model_call_count (30 identical turns) ===")
     print("  fork    ", mcc["reactivegraph"])
     print("  upstream", mcc["langgraph_upstream"])
+
+    # 真实 LLM（若已跑）
+    rl_path = ROOT / "real_llm_results.json"
+    if rl_path.exists():
+        rl = json.loads(rl_path.read_text())
+        print("=== real LLM (Agnes, residual_cpu = 扣除 LLM 后的进程 CPU) ===")
+        for label in ("reactivegraph", "langgraph_upstream"):
+            rows = [r["result"] for r in rl.get(label, []) if r.get("ok")]
+            for sc in ("model_only", "tool_call"):
+                cpus = [r["residual_cpu_s"] for r in rows
+                        if r["scenario"] == sc and isinstance(r.get("residual_cpu_s"), (int, float))]
+                walls = [r["wall_s"] for r in rows if r["scenario"] == sc]
+                if cpus:
+                    print(f"  {label:20s} {sc:11s} n={len(cpus)} "
+                          f"residual_cpu_median={statistics.median(cpus)*1000:.1f} ms  "
+                          f"wall_median={statistics.median(walls):.2f} s")
+
+    fp_path = ROOT / "fresh_process_control_results.json"
+    if fp_path.exists():
+        fp = json.loads(fp_path.read_text())
+        print("=== fresh-process control (fake model) ===")
+        for label in ("reactivegraph", "langgraph_upstream"):
+            r = fp.get(label, {})
+            if r:
+                print(f"  {label:20s} cold_wall={r.get('cold_wall_ms')} ms  "
+                      f"cold_residual_cpu={r.get('cold_residual_cpu_ms')} ms  "
+                      f"warm_wall={r.get('warm_wall_ms')} ms")
