@@ -27,7 +27,10 @@ live-model tests:         之前失败的四个用例重试，4 passed
 不带外部服务的本地运行会跳过这些集成测试，报告 19,098 passed / 168 skipped；
 以 CI 数字为准。
 
-与 upstream 的真实 full-factory 对比产出了归一化输出一致性：
+**两个口径，两个数字——不要混为一谈。**
+
+**（a）窄口径：只测 `create_agent`（不是生产路径）。** 下表直接跑
+`create_agent(...).AgentGraph`，**不含中间件链**：
 
 | 指标 | upstream LangGraph | ReactiveGraph |
 |---|---:|---:|
@@ -35,13 +38,21 @@ live-model tests:         之前失败的四个用例重试，4 passed
 | 重复 invoke | 3.765 ms | 0.466 ms |
 | 实测加速 | — | 7.19x / 8.07x |
 
+**（b）生产路径：`create_deerflow_agent`，含中间件链。** 2026-10-15 配对 A/B 实测
+（先断言输出一致）：延迟 **约 2.3x** 更低（model-only 3.01 ms vs 7.09 ms；
+tool-call 往返 6.15 ms vs 11.81 ms），并发吞吐 **约 4x** 更高（64 会话 / 8 workers 下
+117 vs 29 sessions/s）。换成**真实 LLM** 后又是另一幅图景：端到端墙钟**没有优势**，
+引擎侧 residual CPU 开销**约 1.45x** 更低。这些才是 DeerFlow 生产路径该引用的数字。
+
 > **测量口径说明**：`ReactiveGraph` 列跑的是 `create_agent(...).AgentGraph`
 > 的**进程内**执行——`create_agent` 构建的 `ReactiveGraph` 没有 `DriverHost`，
 > 因此本表对比的是 Python fallback 执行器与完整 LangGraph 栈，不含原生
 > TypeScript Driver、RGP/1 往返与 Node 子进程边界。7.19x/8.07x 应理解为
 > 「Python 执行器 vs 完整 LangGraph 栈」；Driver 端到端数字见
 > [reactive-graph 的 competitive proof §1b](https://github.com/from000/reactive-graph/blob/main/docs/competitive-proof.md)
-> （单位数倍数；且 2026-10-12 修复了一处 O(n²) 输入合并开销）。
+> （单位数倍数；且 2026-10-12 修复了一处 O(n²) 输入合并开销）。上表的
+> 7.19x/8.07x **不含中间件链**，不得当作生产加速比引用；生产路径数字见
+> [`REAL_SCENARIOS.md`](./REAL_SCENARIOS.md)。
 
 用于对比的 upstream fixture 为：
 

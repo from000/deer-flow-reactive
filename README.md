@@ -2319,8 +2319,14 @@ This checkout is the real DeerFlow backend migration onto ReactiveGraph.
 - Production agent/runtime/checkpoint/store paths: ReactiveGraph-backed
 - Full backend suite: **19,101 passed, 0 failed** (CI, real Postgres 17 + Redis 7 services)
 - Real full-factory output parity with upstream: yes
-- Observed local latency advantage: **7-8x** (in-process Python executor vs full
-  LangGraph stack; the Driver-backed end-to-end path is a single-digit multiple)
+- Measured engine cost on the **production path** (`create_deerflow_agent`, middleware
+  chain included, fake model, parity asserted first): **~2.3x lower latency** and
+  **~4x higher concurrency throughput** than upstream LangGraph
+- With a **real LLM** (Agnes): end-to-end wall time shows **no advantage** (network and
+  inference dominate); the engine-side residual CPU cost is **~1.45x** lower
+- Narrowest scope figure: `create_agent(...)` in-process vs the full LangGraph stack
+  measured 7.19x/8.07x — that run does **not** include the middleware chain and is not a
+  production figure
 - Durable SQLite recovery: checkpoint and store both supported
 
 Read [`REACTIVEGRAPH.md`](./REACTIVEGRAPH.md) for the exact scope, evidence,

@@ -49,13 +49,24 @@ docker run -d --name rg-deerflow-redis -p 6379:6379 redis:7-alpine
 All four shards must report `0 failed`; the combined pass/skip counts are the
 ones quoted above.
 
-A real full-factory comparison against upstream produced normalized output parity:
+**Two different scopes, two different numbers — do not conflate them.**
+
+**(a) Narrow scope — `create_agent` only (not the production path).** This historical
+table runs `create_agent(...).AgentGraph` directly, with **no middleware chain**:
 
 | Metric | upstream LangGraph | ReactiveGraph |
 |---|---:|---:|
 | first invoke | 6.975 ms | 0.971 ms |
 | repeated invoke | 3.765 ms | 0.466 ms |
 | observed speed-up | — | 7.19x / 8.07x |
+
+**(b) Production path — `create_deerflow_agent`, middleware chain included.**
+Measured 2026-10-15 with paired A/B runs and output parity asserted first:
+**~2.3x lower latency** (3.01 ms vs 7.09 ms for model-only; 6.15 ms vs 11.81 ms for a
+tool-call round trip) and **~4x higher concurrency throughput** (117 vs 29 sessions/s at
+64 sessions / 8 workers). With a **real LLM** the picture changes again: end-to-end wall
+time has **no advantage**, while the engine-side residual CPU cost is **~1.45x** lower.
+Those numbers measure the production factory — they are the ones to quote for DeerFlow.
 
 > **Measurement scope.** The `ReactiveGraph` column runs
 > `create_agent(...).AgentGraph` **in process**: `create_agent` builds its
@@ -65,7 +76,9 @@ A real full-factory comparison against upstream produced normalized output parit
 > Python-executor comparison against the complete LangGraph stack, and see
 > [`reactive-graph` competitive proof §1b](https://github.com/from000/reactive-graph/blob/main/docs/competitive-proof.md)
 > for the Driver-backed end-to-end numbers (a single-digit multiple, and after
-> a 2026-10-12 fix to an O(n^2) input-merge cost).
+> a 2026-10-12 fix to an O(n^2) input-merge cost). The 7.19x/8.07x figures above
+> **exclude the middleware chain** and therefore must not be quoted as a production
+> speed-up; see [`REAL_SCENARIOS.md`](./REAL_SCENARIOS.md) for the production path.
 
 ### Full-factory scenario benchmark (2026-10-15)
 
