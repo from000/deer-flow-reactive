@@ -1,0 +1,128 @@
+{
+  "reactivegraph": {
+    "default": {
+      "median_ms": 6.111,
+      "n": 20,
+      "error": null
+    },
+    "no_sandbox": {
+      "median_ms": 2.919,
+      "n": 20,
+      "error": null
+    },
+    "with_subagent": {
+      "median_ms": 5.009,
+      "n": 20,
+      "error": null
+    },
+    "with_memory": {
+      "median_ms": 7.724,
+      "n": 20,
+      "error": null
+    },
+    "with_vision": {
+      "median_ms": 5.365,
+      "n": 20,
+      "error": null
+    },
+    "with_auto_title": {
+      "median_ms": 5.456,
+      "n": 20,
+      "error": null
+    },
+    "with_token_budget": {
+      "median_ms": 5.647,
+      "n": 20,
+      "error": null
+    },
+    "all_off": {
+      "median_ms": 2.238,
+      "n": 20,
+      "error": null
+    }
+  },
+  "langgraph_upstream": {
+    "default": {
+      "median_ms": 13.961,
+      "n": 20,
+      "error": null
+    },
+    "no_sandbox": {
+      "median_ms": 8.014,
+      "n": 20,
+      "error": null
+    },
+    "with_subagent": {
+      "median_ms": 17.396,
+      "n": 20,
+      "error": null
+    },
+    "with_memory": {
+      "median_ms": 13.663,
+      "n": 20,
+      "error": null
+    },
+    "with_vision": {
+      "median_ms": 15.438,
+      "n": 20,
+      "error": null
+    },
+    "with_auto_title": {
+      "median_ms": 12.769,
+      "n": 20,
+      "error": null
+    },
+    "with_token_budget": {
+      "median_ms": 16.22,
+      "n": 20,
+      "error": null
+    },
+    "all_off": {
+      "median_ms": 4.405,
+      "n": 20,
+      "error": null
+    }
+  },
+  "ratios": {
+    "default": {
+      "fork_ms": 6.111,
+      "upstream_ms": 13.961,
+      "ratio": 2.28
+    },
+    "no_sandbox": {
+      "fork_ms": 2.919,
+      "upstream_ms": 8.014,
+      "ratio": 2.75
+    },
+    "with_subagent": {
+      "fork_ms": 5.009,
+      "upstream_ms": 17.396,
+      "ratio": 3.47
+    },
+    "with_memory": {
+      "fork_ms": 7.724,
+      "upstream_ms": 13.663,
+      "ratio": 1.77
+    },
+    "with_vision": {
+      "fork_ms": 5.365,
+      "upstream_ms": 15.438,
+      "ratio": 2.88
+    },
+    "with_auto_title": {
+      "fork_ms": 5.456,
+      "upstream_ms": 12.769,
+      "ratio": 2.34
+    },
+    "with_token_budget": {
+      "fork_ms": 5.647,
+      "upstream_ms": 16.22,
+      "ratio": 2.87
+    },
+    "all_off": {
+      "fork_ms": 2.238,
+      "upstream_ms": 4.405,
+      "ratio": 1.97
+    }
+  }
+}

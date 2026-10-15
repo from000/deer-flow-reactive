@@ -64,6 +64,31 @@ langgraph_upstream: message_counts=[10,  2,  2,  2,  2,  2]   total_model_calls=
 **不是纯赢**：上游的累积语义省 model 调用（10 vs 30），对"防死循环 + 省钱"是优点；
 fork 的每-run 语义换来的是行为一致性。属于**语义 trade-off，需按业务场景判断**。
 
+## 覆盖矩阵：显式启停各 RuntimeFeatures（fake model，带有效 config.yaml）
+
+回答"DeerFlow 的能力是不是都试了"：SDK factory 层可独立启停的 feature 开关全部可构图、
+可 invoke（8 组合 × 20 次），数字来自 `scripts/feature_matrix.py`（**必须提供有效
+`config.yaml`**，否则 memory/auto_title/vision 会走 `FileNotFoundError` 失败路径，
+曾测出 6.7–7.8× 的假优势——那不代表功能更快）。
+
+| feature 组合 | fork | 上游 | 比值 |
+|---|---:|---:|---:|
+| default | 6.11 ms | 13.96 ms | 2.28× |
+| no_sandbox | 2.92 ms | 8.01 ms | 2.75× |
+| with_subagent | 5.01 ms | 17.40 ms | 3.47× |
+| with_memory | 7.72 ms | 13.66 ms | 1.77× |
+| with_vision | 5.37 ms | 15.44 ms | 2.88× |
+| with_auto_title | 5.46 ms | 12.77 ms | 2.34× |
+| with_token_budget | 5.65 ms | 16.22 ms | 2.87× |
+| all_off | 2.24 ms | 4.41 ms | 1.97× |
+
+**结论**：启用各 feature 后 fork 仍快 1.8–3.5×，与默认链口径一致，不是"只测了空壳"。
+
+**仍不在覆盖范围**（需要外部资源或真实 LLM，非 fake-model 可测）：
+- 真实 sandbox 容器 / MCP server / 文件上传 / Postgres·Redis 后端
+- summarization / guardrail 的真实抽取路径（需要真实 LLM）
+- 前端 / 网关 / TUI / CLI / 子代理编排（subagent 开关已覆盖 SDK 层，真实子代理链路未测）
+
 ## 真实 LLM 场景（Agnes，agnes-2.5-flash）
 
 前置说明：这部分与上面的 fake-model 结果**不可混用**。fake model 衡量引擎 CPU 开销（毫秒级）；
@@ -160,7 +185,10 @@ python3 model_call_count.py
 # 7. 控制实验：冷启动 vs 热路径（fake model，免费）
 python3 fresh_process_control.py
 
-# 8. 真实 LLM（Agnes；受 1 req/min 限流，耗时长）
+# 8. feature 覆盖矩阵（fake model；需有效 config.yaml）
+python3 feature_matrix.py
+
+# 9. 真实 LLM（Agnes；受 1 req/min 限流，耗时长）
 export CUSTOM_LLM_URL=... CUSTOM_LLM_API_KEY=... CUSTOM_MODEL=agnes-2.5-flash
 REAL_LLM_REPEATS=2 REAL_LLM_SCENARIOS=model_only,tool_call python3 real_llm.py
 ```
@@ -178,4 +206,5 @@ REAL_LLM_REPEATS=2 REAL_LLM_SCENARIOS=model_only,tool_call python3 real_llm.py
 - `model_call_count_results.json` — 30 轮重复输入下的真实模型调用次数（诚实边界 1）
 - `real_llm_results.json` — 真实 Agnes LLM 逐次测量（含 llm_events / message_sequence / load1）
 - `fresh_process_control_results.json` — 冷启动 vs 热路径控制实验
+- `feature_matrix_results.json` — 8 组 feature 开关 × 20 次的引擎开销
 - `FAIRNESS_AUDIT.md` / `REAL_LLM_DISCLOSURES.md` — 两边执行栈差异与解读边界审计

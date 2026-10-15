@@ -102,6 +102,13 @@ if __name__ == "__main__":
                           f"residual_cpu_median={statistics.median(cpus)*1000:.1f} ms  "
                           f"wall_median={statistics.median(walls):.2f} s")
 
+    fm_path = ROOT / "feature_matrix_results.json"
+    if fm_path.exists():
+        fm = json.loads(fm_path.read_text())
+        print("=== feature matrix (fake model, 20 rounds each) ===")
+        for name, r in fm.get("ratios", {}).items():
+            print(f"  {name:18s} fork={r['fork_ms']:>7} ms  upstream={r['upstream_ms']:>7} ms  ratio={r['ratio']}x")
+
     fp_path = ROOT / "fresh_process_control_results.json"
     if fp_path.exists():
         fp = json.loads(fp_path.read_text())
