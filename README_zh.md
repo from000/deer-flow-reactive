@@ -21,6 +21,7 @@
 > |---|---:|---:|
 > | 完整 factory 引擎延迟（fake model） | 7.09 ms | **3.01 ms**（约 2.3x） |
 > | 并发吞吐（64 会话 / 8 workers） | 29 /s | **117 /s**（约 4x） |
+> | 生产流式 `astream(values)`（fake model） | 47.52 ms | **13.02 ms**（约 3.7x） |
 > | 引擎 residual CPU，**真实 LLM**（Agnes，model_only n=6） | 24.6 ms | **16.9 ms**（约 1.45x） |
 > | 引擎 residual CPU，真实 LLM multi_turn（n=3，挂 checkpointer） | 172.1 ms | **73.8 ms**（约 2.33x） |
 > | 引擎 residual CPU，真实 LLM big_state（n=3，挂 checkpointer） | 97.6 ms | **41.7 ms**（约 2.34x） |
@@ -1046,6 +1047,8 @@ DeerFlow 建立在开源社区大量优秀工作的基础上。所有让 DeerFlo
 - 与上游的真实 full-factory 输出一致性：是
 - **生产路径**实测引擎开销（`create_deerflow_agent`，含中间件链，fake model，先断言输出一致）：
   延迟 **约 2.3x** 更低，并发吞吐 **约 4x** 更高
+- **生产流式路径**（`astream(values)`，DeerFlow runtime 真实驱动的方式）：
+  墙钟**低约 3.7x**（13.02 vs 47.52 ms），chunk 序列逐帧一致
 - **真实 LLM**（Agnes）：端到端墙钟**没有优势**（网络与推理时间主导）；
   引擎侧 residual CPU 开销在四个场景（model_only / tool_call / multi_turn / big_state，
   n=6/6/3/3）下**低约 1.45–2.34x**
