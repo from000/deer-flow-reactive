@@ -21,7 +21,9 @@
 > |---|---:|---:|
 > | 完整 factory 引擎延迟（fake model） | 7.09 ms | **3.01 ms**（约 2.3x） |
 > | 并发吞吐（64 会话 / 8 workers） | 29 /s | **117 /s**（约 4x） |
-> | 引擎 residual CPU，**真实 LLM**（Agnes） | 24.6 ms | **16.9 ms**（约 1.45x） |
+> | 引擎 residual CPU，**真实 LLM**（Agnes，model_only n=6） | 24.6 ms | **16.9 ms**（约 1.45x） |
+> | 引擎 residual CPU，真实 LLM multi_turn（n=3） | 54.0 ms | **32.1 ms**（约 1.68x） |
+> | 引擎 residual CPU，真实 LLM big_state（n=3） | 45.6 ms | **33.0 ms**（约 1.38x） |
 > | 端到端墙钟，真实 LLM | — | **无优势**（网络与推理主导） |
 >
 > 完整方法、控制实验、no-gain 场景与边界见 [`REAL_SCENARIOS.md`](./REAL_SCENARIOS.md)；
@@ -1045,7 +1047,8 @@ DeerFlow 建立在开源社区大量优秀工作的基础上。所有让 DeerFlo
 - **生产路径**实测引擎开销（`create_deerflow_agent`，含中间件链，fake model，先断言输出一致）：
   延迟 **约 2.3x** 更低，并发吞吐 **约 4x** 更高
 - **真实 LLM**（Agnes）：端到端墙钟**没有优势**（网络与推理时间主导）；
-  引擎侧 residual CPU 开销**约 1.45x** 更低
+  引擎侧 residual CPU 开销在四个场景（model_only / tool_call / multi_turn / big_state，
+  n=6/6/3/3）下**低约 1.4–1.7x**
 - 最窄口径数字：`create_agent(...)` 进程内 vs 完整 LangGraph 栈测得 7.19x/8.07x——
   该口径**不含中间件链**，不是生产数字
 - SQLite 持久化恢复：checkpoint 与 store 均支持

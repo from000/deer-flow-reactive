@@ -41,8 +41,9 @@ live-model tests:         之前失败的四个用例重试，4 passed
 **（b）生产路径：`create_deerflow_agent`，含中间件链。** 2026-10-15 配对 A/B 实测
 （先断言输出一致）：延迟 **约 2.3x** 更低（model-only 3.01 ms vs 7.09 ms；
 tool-call 往返 6.15 ms vs 11.81 ms），并发吞吐 **约 4x** 更高（64 会话 / 8 workers 下
-117 vs 29 sessions/s）。换成**真实 LLM** 后又是另一幅图景：端到端墙钟**没有优势**，
-引擎侧 residual CPU 开销**约 1.45x** 更低。这些才是 DeerFlow 生产路径该引用的数字。
+117 vs 29 sessions/s）。换成**真实 LLM** 后又是另一幅图景：端到端墙钟**没有优势**（网络/推理主导），
+引擎侧 residual CPU 开销在四个场景（model_only / tool_call / multi_turn / big_state，
+n=6/6/3/3）下**低约 1.4–1.7x**。这些才是 DeerFlow 生产路径该引用的数字。
 
 > **测量口径说明**：`ReactiveGraph` 列跑的是 `create_agent(...).AgentGraph`
 > 的**进程内**执行——`create_agent` 构建的 `ReactiveGraph` 没有 `DriverHost`，

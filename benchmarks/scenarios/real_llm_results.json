@@ -369,6 +369,303 @@
         "scenario": "tool_call"
       },
       "load1_at_run": 7.22
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 18.5806,
+        "llm_s": 18.5309,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0497,
+        "cpu_s": 0.1289,
+        "llm_cpu_s": 0.089,
+        "residual_cpu_s": 0.0399,
+        "llm_calls": 5,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 6.0216,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 5.2092,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 0.9093,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 5.279,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.1118,
+            "wait_s": 0.0
+          }
+        ],
+        "rounds": 5,
+        "round_wall_median_s": 5.2137,
+        "round_residual_cpu_median_s": 0.0051,
+        "message_count": 2,
+        "final_text": "\n\nUnderstood, I'll keep my responses concise from now on.",
+        "scenario": "multi_turn"
+      },
+      "load1_at_run": 5.91
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 9.0222,
+        "llm_s": 8.9829,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0393,
+        "cpu_s": 0.122,
+        "llm_cpu_s": 0.089,
+        "residual_cpu_s": 0.033,
+        "llm_calls": 4,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 2.5089,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 4.0069,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 0.9789,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.4882,
+            "wait_s": 0.0
+          }
+        ],
+        "rounds": 4,
+        "doc_kb": 64,
+        "round_wall_median_s": 2.0131,
+        "round_residual_cpu_median_s": 0.0049,
+        "message_count": 2,
+        "final_text": "\n\nOK.",
+        "scenario": "big_state"
+      },
+      "load1_at_run": 5.97
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 12.1406,
+        "llm_s": 12.1167,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0239,
+        "cpu_s": 0.09,
+        "llm_cpu_s": 0.067,
+        "residual_cpu_s": 0.023,
+        "llm_calls": 5,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 2.5958,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 2.5876,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 4.9926,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.0762,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 0.8645,
+            "wait_s": 0.0
+          }
+        ],
+        "rounds": 5,
+        "round_wall_median_s": 2.5907,
+        "round_residual_cpu_median_s": 0.0026,
+        "message_count": 2,
+        "final_text": "\n\nUnderstood!",
+        "scenario": "multi_turn"
+      },
+      "load1_at_run": 4.03
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 18.3889,
+        "llm_s": 18.3665,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0224,
+        "cpu_s": 0.093,
+        "llm_cpu_s": 0.0718,
+        "residual_cpu_s": 0.0212,
+        "llm_calls": 4,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 5.7157,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.4002,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.1412,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 10.1095,
+            "wait_s": 0.0
+          }
+        ],
+        "rounds": 4,
+        "doc_kb": 64,
+        "round_wall_median_s": 3.5665,
+        "round_residual_cpu_median_s": 0.0041,
+        "message_count": 2,
+        "final_text": "\n\nOK.",
+        "scenario": "big_state"
+      },
+      "load1_at_run": 5.21
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 17.0833,
+        "llm_s": 17.0475,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0358,
+        "cpu_s": 0.1077,
+        "llm_cpu_s": 0.0756,
+        "residual_cpu_s": 0.0321,
+        "llm_calls": 5,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 3.6436,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 8.1209,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.5294,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 2.788,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 0.9655,
+            "wait_s": 0.0
+          }
+        ],
+        "rounds": 5,
+        "round_wall_median_s": 2.7923,
+        "round_residual_cpu_median_s": 0.0054,
+        "message_count": 2,
+        "final_text": "\n\nReady when you are.",
+        "scenario": "multi_turn"
+      },
+      "load1_at_run": 6.65
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 34.4539,
+        "llm_s": 34.4159,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0379,
+        "cpu_s": 0.1467,
+        "llm_cpu_s": 0.1109,
+        "residual_cpu_s": 0.0358,
+        "llm_calls": 4,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 2.8148,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.3961,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.0623,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 29.1428,
+            "wait_s": 0.0
+          }
+        ],
+        "rounds": 4,
+        "doc_kb": 64,
+        "round_wall_median_s": 2.1205,
+        "round_residual_cpu_median_s": 0.0053,
+        "message_count": 2,
+        "final_text": "\n\nOK",
+        "scenario": "big_state"
+      },
+      "load1_at_run": 6.4
     }
   ],
   "langgraph_upstream": [
@@ -749,6 +1046,337 @@
         "scenario": "tool_call"
       },
       "load1_at_run": 13.44
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 27.3827,
+        "llm_s": 27.3217,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.061,
+        "cpu_s": 0.1221,
+        "llm_cpu_s": 0.0668,
+        "residual_cpu_s": 0.0553,
+        "llm_calls": 5,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 17.6959,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 0.9996,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.5263,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 4.9097,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 2.1902,
+            "wait_s": 0.0
+          }
+        ],
+        "rounds": 5,
+        "round_wall_median_s": 2.1969,
+        "round_residual_cpu_median_s": 0.0095,
+        "message_count": 2,
+        "final_text": "\n\nI understand and will reply with one short sentence.",
+        "scenario": "multi_turn"
+      },
+      "load1_at_run": 5.49
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 11.482,
+        "llm_s": 11.4324,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0497,
+        "cpu_s": 0.1071,
+        "llm_cpu_s": 0.0626,
+        "residual_cpu_s": 0.0445,
+        "llm_calls": 4,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 4.7207,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 4.6644,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.0264,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.0209,
+            "wait_s": 0.0
+          }
+        ],
+        "rounds": 4,
+        "doc_kb": 64,
+        "round_wall_median_s": 2.8543,
+        "round_residual_cpu_median_s": 0.0091,
+        "message_count": 2,
+        "final_text": "\n\nOK.",
+        "scenario": "big_state"
+      },
+      "load1_at_run": 5.85
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 18.5235,
+        "llm_s": 18.4724,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0511,
+        "cpu_s": 0.1128,
+        "llm_cpu_s": 0.0637,
+        "residual_cpu_s": 0.0491,
+        "llm_calls": 5,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 4.827,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 0.9683,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.0217,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 7.265,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 4.3903,
+            "wait_s": 0.0
+          }
+        ],
+        "rounds": 5,
+        "round_wall_median_s": 4.398,
+        "round_residual_cpu_median_s": 0.0069,
+        "message_count": 2,
+        "final_text": "\n\nReady when you are.",
+        "scenario": "multi_turn"
+      },
+      "load1_at_run": 4.7
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 7.6656,
+        "llm_s": 7.6159,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0497,
+        "cpu_s": 0.1176,
+        "llm_cpu_s": 0.0721,
+        "residual_cpu_s": 0.0456,
+        "llm_calls": 4,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 3.7258,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.7266,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.2097,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 0.9538,
+            "wait_s": 0.0
+          }
+        ],
+        "rounds": 4,
+        "doc_kb": 64,
+        "round_wall_median_s": 1.4757,
+        "round_residual_cpu_median_s": 0.0088,
+        "message_count": 2,
+        "final_text": "\n\nOK.",
+        "scenario": "big_state"
+      },
+      "load1_at_run": 6.48
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 6.4978,
+        "llm_s": 6.4393,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0585,
+        "cpu_s": 0.1161,
+        "llm_cpu_s": 0.0621,
+        "residual_cpu_s": 0.054,
+        "llm_calls": 5,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.8229,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.1871,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.139,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.2137,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.0766,
+            "wait_s": 0.0
+          }
+        ],
+        "rounds": 5,
+        "round_wall_median_s": 1.2014,
+        "round_residual_cpu_median_s": 0.0078,
+        "message_count": 2,
+        "final_text": "\n\nUnderstood, I'll keep my replies to one short sentence fro",
+        "scenario": "multi_turn"
+      },
+      "load1_at_run": 4.94
+    },
+    {
+      "ok": true,
+      "result": {
+        "wall_s": 16.8584,
+        "llm_s": 16.7783,
+        "rate_limit_wait_s": 0,
+        "residual_s": 0.0801,
+        "cpu_s": 0.175,
+        "llm_cpu_s": 0.102,
+        "residual_cpu_s": 0.073,
+        "llm_calls": 4,
+        "llm_events": [
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 3.3628,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 3.6273,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 8.2796,
+            "wait_s": 0.0
+          },
+          {
+            "attempt": 0,
+            "status": 200,
+            "llm_s": 1.5085,
+            "wait_s": 0.0
+          }
+        ],
+        "rounds": 4,
+        "doc_kb": 64,
+        "round_wall_median_s": 3.5223,
+        "round_residual_cpu_median_s": 0.0137,
+        "message_count": 2,
+        "final_text": "\n\nOK.",
+        "scenario": "big_state"
+      },
+      "load1_at_run": 11.82
     }
-  ]
+  ],
+  "reactivegraph_summary": {
+    "runs": 1,
+    "per_scenario": {
+      "big_state": {
+        "runs": 1,
+        "llm_calls": [
+          4
+        ],
+        "wall_s_median": 34.4539,
+        "llm_s_median": 34.4159,
+        "rate_limit_wait_s_median": 0,
+        "residual_s_median": 0.0379,
+        "residual_s_min": 0.0379,
+        "residual_cpu_s_median": 0.0358
+      }
+    }
+  },
+  "langgraph_upstream_summary": {
+    "runs": 1,
+    "per_scenario": {
+      "big_state": {
+        "runs": 1,
+        "llm_calls": [
+          4
+        ],
+        "wall_s_median": 16.8584,
+        "llm_s_median": 16.7783,
+        "rate_limit_wait_s_median": 0,
+        "residual_s_median": 0.0801,
+        "residual_s_min": 0.0801,
+        "residual_cpu_s_median": 0.073
+      }
+    }
+  }
 }

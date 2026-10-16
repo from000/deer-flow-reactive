@@ -14,8 +14,9 @@
 **证据（文件:行号）**
 - `benchmarks/scenarios/scripts/real_llm.py:51-54`：LLM 时间、CPU 时间、事件与 429 等待分账数组。
 - `benchmarks/scenarios/scripts/real_llm.py:66-100`：只包住 `_generate`；失败 429 的请求耗时与 sleep 进入等待数组，成功调用才进入 `LLM_TIMES`。
-- `benchmarks/scenarios/scripts/real_llm.py:117-126`、`:134-152`：两块场景均用 `perf_counter` 测 `invoke`，并计算 `residual_s` / `residual_cpu_s`。
-- `benchmarks/scenarios/scripts/real_llm.py:124`、`:150`：残差公式明确为 `wall - sum(llm) - waits`。
+- `benchmarks/scenarios/scripts/real_llm.py:117-126`、`:134-152`：`model_only`/`tool_call` 两块场景均用 `perf_counter` 测 `invoke`，并计算 `residual_s` / `residual_cpu_s`。
+- `benchmarks/scenarios/scripts/real_llm.py:174-198`、`:202-233`：`multi_turn`（同 thread 5 轮）/ `big_state`（64KB system prompt + 4 轮）场景，除整段残差外还记录逐轮 median；`round_residual_cpu_median_s` 是每轮扣掉该轮内 LLM CPU 后的轮内残差。
+- `benchmarks/scenarios/scripts/real_llm.py:124`、`:150`、`:227-230`：残差公式明确为 `wall - sum(llm) - waits`。
 - `benchmarks/scenarios/FAIRNESS_AUDIT.md:371-372`：真实 Agnes 的 `engine_s` 被定性为扣除后的残差，可比性弱。
 **对结论的影响**
 不得把 `residual_s` 差异直接写成“ReactiveGraph 引擎优势”；也不得把构图/导入时间算进该指标。跨机、负载变化、GC、异步调度都可能污染残差。
@@ -65,7 +66,7 @@
 - `TimedModel` 显式设置 `max_retries=0`，429 不被内部重试掩盖；429 后脚本最多尝试 4 次，sleep 为 `61 + attempt * 5` 秒。
 - `REAL_LLM_REPEATS` 默认 1；样本量受配额限制。修订后测量必须剔除 `rate_limit_wait_s`。
 - 旧 `real_llm_results.json` 中约 61 秒的“engine_s”是错误记账，不得引用。
-- 现实样本量上限：`model_only` 每 paired sample 2 次成功调用，理论上限约 30 pairs/hour，65 秒间隔下现实约 27 pairs/hour；`tool_call` 每 paired sample 4 次成功调用，理论上限约 15 pairs/hour，429 等待与启动/load 检查会进一步降低实际值。
+- 现实样本量上限：`model_only` 每 paired sample 2 次成功调用，理论上限约 30 pairs/hour，65 秒间隔下现实约 27 pairs/hour；`tool_call` 每 paired sample 4 次成功调用，理论上限约 15 pairs/hour；`multi_turn`（5 轮）每 paired sample 10 次、`big_state`（4 轮，64KB prompt）每 paired sample 8 次，二者更烧配额，429 等待与启动/load 检查会进一步降低实际值。
 **证据（文件:行号）**
 - `benchmarks/scenarios/scripts/real_llm.py:13-14`、`:21`：账号级 1 req/min、串行/限流设计。
 - `benchmarks/scenarios/scripts/real_llm.py:35-39`：`REAL_LLM_REPEATS` 与 `REAL_LLM_SLEEP` 默认值。
@@ -84,7 +85,7 @@
 - 若未来模型调用走异步或流式路径，当前 `llm_s` 可能缺少对应计时，残差也可能被系统性高估。
 **证据（文件:行号）**
 - `benchmarks/scenarios/scripts/real_llm.py:56-100`：`TimedModel` 唯一覆写的是 `_generate`。
-- `benchmarks/scenarios/scripts/real_llm.py:113-135`：两个场景都调用 `graph.invoke()`。
+- `benchmarks/scenarios/scripts/real_llm.py:116-233`：四个场景都调用同步 `graph.invoke()`。
 - `benchmarks/scenarios/scripts/real_llm.py`（全文检索 `_agenerate` / `_stream` / `_astream` / `ainvoke` / `astream` 无匹配）：没有异步/流式覆写或调用。
 **对结论的影响**
 本轮真实 LLM 结论只适用于同步 `invoke` 路径；不得外推为“所有 ReactiveGraph 执行路径都更快”。若产品默认使用 async/streaming，必须增加对应探针后另行复测。
@@ -97,7 +98,7 @@
 **证据（文件:行号）**
 - `REAL_SCENARIOS.md:7-21`：fake-model 的同机、同 factory、输出等价前提与毫秒级结果。
 - `REAL_SCENARIOS.md:34-40`：测量机负载、2×/3–4× 优势的范围说明。
-- `REAL_SCENARIOS.md:69-82`：不省钱、真实 LLM 未纳入、fake model 只代表引擎/编排开销的边界。
+- `REAL_SCENARIOS.md:92-130`：真实 LLM（Agnes）四个场景（model_only / tool_call / multi_turn / big_state）的表与诚实结论；端到端墙钟互有胜负，residual_cpu 优势 1.38–1.68×。
 - `benchmarks/scenarios/FAIRNESS_AUDIT.md:183-185`：本地 CPU 差异在真实 LLM 延迟下可忽略，但 fake-model 毫秒级会显现。
 - `benchmarks/scenarios/FAIRNESS_AUDIT.md:369-373`：审计裁决区分 fake-model `engine_s`、真实 Agnes `engine_s` 与多轮语义场景。
 **对结论的影响**

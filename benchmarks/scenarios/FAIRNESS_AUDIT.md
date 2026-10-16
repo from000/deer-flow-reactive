@@ -386,6 +386,22 @@
 
 ---
 
+## 审计后状态更新（2026-10-16）
+
+本审计当时列出的 1–3 号前置项**均已执行完毕**，结论与数据见
+`benchmarks/scenarios/real_llm_results.json` 与 `REAL_SCENARIOS.md`「真实 LLM 场景」章节：
+
+- **已重跑**（Agnes，限流等待已从 residual 中剔除）：
+  `model_only` n=6、`tool_call` n=6、`multi_turn` n=3（同 thread 5 轮）、`big_state` n=3（64KB prompt + 4 轮）。
+- **端到端墙钟**：四个场景互有胜负，**无加速优势**（模型/网络主导）。
+- **引擎侧 residual_cpu**：fork 低 1.38–1.68×（multiple-scenario）。
+- **3 号建议的落实**：`multi_turn` 使用**每轮不同文本**（`Turn i: reply with one short sentence.`），
+  不含重复 tool_call，因此不会触发 upstream 的 thread 级 hard-stop；该场景两侧行为路径可比。
+  本审计第 246 行记录的「同 thread 重复 tool_call 分叉」场景仍然是**不可混入性能**的语义差异，
+  其单独复现数据仍以 `loop_detection_results.json` 为准。
+
+---
+
 ## 建议
 
 1. **以默认链跑 benchmark，并在报告里披露 Q1/Q2 差异**：显式传 `features=RuntimeFeatures(sandbox=False)` 之类的「对齐 middleware」虽能消除差异，但会偏离真实 SDK 默认路径；更稳妥的是保持默认链 + 披露。

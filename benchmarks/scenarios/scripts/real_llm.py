@@ -17,7 +17,9 @@ Agnes 限流为 1 请求/分钟（账号级），所以父脚本在两次子进�
 环境变量：
   CUSTOM_LLM_URL / CUSTOM_LLM_API_KEY / CUSTOM_MODEL（默认 agnes-2.5-flash）
   REAL_LLM_REPEATS（默认 1，受配额限制）
-  REAL_LLM_SCENARIOS（默认 model_only）
+  REAL_LLM_SCENARIOS（默认 model_only；可选 model_only / tool_call / multi_turn / big_state）
+  REAL_LLM_MULTI_TURN_ROUNDS（默认 5，multi_turn 轮数）
+  REAL_LLM_BIG_STATE_ROUNDS / REAL_LLM_BIG_STATE_KB（默认 4 / 64，big_state 轮数与 system prompt 大小）
   REAL_LLM_SLEEP（默认 65 秒，Agnes 1 req/min）
 """
 from __future__ import annotations
@@ -39,7 +41,7 @@ MAX_LOAD = float(os.environ.get("REAL_LLM_MAX_LOAD", "12"))
 MAX_LOAD_WAIT = float(os.environ.get("REAL_LLM_MAX_LOAD_WAIT", "900"))
 
 TEMPLATE = r'''
-import json, sys, time, uuid
+import json, statistics, sys, time, uuid
 import openai
 sys.path.insert(0, "__HARNESS__"); sys.path.insert(0, "__BACKEND__")
 from langchain_core.messages import HumanMessage
@@ -48,6 +50,9 @@ from langchain_openai import ChatOpenAI
 from deerflow.agents.factory import create_deerflow_agent
 
 SCENARIO = __SCENARIO__
+MULTI_TURN_ROUNDS = __MT_ROUNDS__
+BIG_STATE_ROUNDS = __BS_ROUNDS__
+BIG_STATE_KB = __BS_KB__
 LLM_TIMES = []          # 纯推理/网络时间（不含 429 等待）
 LLM_CPU_TIMES = []      # 每次 LLM 调用消耗的本进程 CPU 时间
 LLM_EVENTS = []         # 逐次调用明细：attempt / status / llm_s / wait_s
@@ -154,8 +159,79 @@ def run_tool_call():
             "tool_trace": tool_trace,
             "final_text": str(out["messages"][-1].content)[:60]}
 
+
+def _residual(t0, c_start, extra):
+    wall = time.perf_counter() - t0
+    cpu = time.process_time() - c_start
+    waits = sum(RATE_LIMIT_WAITS)
+    out = {"wall_s": round(wall, 4), "llm_s": round(sum(LLM_TIMES), 4),
+           "rate_limit_wait_s": round(waits, 4),
+           "residual_s": round(wall - sum(LLM_TIMES) - waits, 4),
+           "cpu_s": round(cpu, 4), "llm_cpu_s": round(sum(LLM_CPU_TIMES), 4),
+           "residual_cpu_s": round(cpu - sum(LLM_CPU_TIMES), 4),
+           "llm_calls": len(LLM_TIMES), "llm_events": LLM_EVENTS}
+    out.update(extra)
+    return out
+
+def run_multi_turn(rounds=None):
+    """同一 thread 多轮 invoke：验证跨 run 的 checkpoint/state 复读开销。"""
+    rounds = rounds or MULTI_TURN_ROUNDS
+    graph = create_deerflow_agent(build_model())
+    cfg = {"configurable": {"thread_id": "rl-mt-" + uuid.uuid4().hex}}
+    holes, cpu_holes, boundaries = [], [], []
+    t0, c_start = time.perf_counter(), time.process_time()
+    out = None
+    for i in range(rounds):
+        r0, rc0 = time.perf_counter(), time.process_time()
+        out = graph.invoke({"messages": [HumanMessage(content=f"Turn {i + 1}: reply with one short sentence.")]}, cfg)
+        holes.append(time.perf_counter() - r0)
+        cpu_holes.append(time.process_time() - rc0)
+        boundaries.append(len(LLM_TIMES))
+    # 每轮各自扣掉该轮内部的 LLM CPU 时间，得到逐轮 residual
+    round_residual_cpu = []
+    prev = 0
+    for i, b in enumerate(boundaries):
+        llm_cpu_in_round = sum(LLM_CPU_TIMES[prev:b])
+        round_residual_cpu.append(cpu_holes[i] - llm_cpu_in_round)
+        prev = b
+    return _residual(t0, c_start, {
+        "rounds": rounds,
+        "round_wall_median_s": round(statistics.median(holes), 4),
+        "round_residual_cpu_median_s": round(statistics.median(round_residual_cpu), 4),
+        "message_count": len(out["messages"]),
+        "final_text": str(out["messages"][-1].content)[:60]})
+
+def run_big_state(rounds=None, doc_kb=None):
+    """大 system prompt（默认 64KB）+ 多轮 invoke：验证大 state 的序列化/复读开销。"""
+    rounds = rounds or BIG_STATE_ROUNDS
+    doc_kb = doc_kb or BIG_STATE_KB
+    doc = "x" * (doc_kb * 1024)
+    graph = create_deerflow_agent(build_model(), system_prompt="You are a terse assistant. " + doc)
+    cfg = {"configurable": {"thread_id": "rl-bs-" + uuid.uuid4().hex}}
+    holes, cpu_holes, boundaries = [], [], []
+    t0, c_start = time.perf_counter(), time.process_time()
+    out = None
+    for i in range(rounds):
+        r0, rc0 = time.perf_counter(), time.process_time()
+        out = graph.invoke({"messages": [HumanMessage(content=f"Turn {i + 1}: reply OK.")]}, cfg)
+        holes.append(time.perf_counter() - r0)
+        cpu_holes.append(time.process_time() - rc0)
+        boundaries.append(len(LLM_TIMES))
+    round_residual_cpu = []
+    prev = 0
+    for i, b in enumerate(boundaries):
+        round_residual_cpu.append(cpu_holes[i] - sum(LLM_CPU_TIMES[prev:b]))
+        prev = b
+    return _residual(t0, c_start, {
+        "rounds": rounds, "doc_kb": doc_kb,
+        "round_wall_median_s": round(statistics.median(holes), 4),
+        "round_residual_cpu_median_s": round(statistics.median(round_residual_cpu), 4),
+        "message_count": len(out["messages"]),
+        "final_text": str(out["messages"][-1].content)[:60]})
+
 try:
-    result = {"model_only": run_model_only, "tool_call": run_tool_call}[SCENARIO]()
+    result = {"model_only": run_model_only, "tool_call": run_tool_call,
+              "multi_turn": run_multi_turn, "big_state": run_big_state}[SCENARIO]()
     result["scenario"] = SCENARIO
     print(json.dumps({"ok": True, "result": result}))
 except Exception as e:
@@ -168,6 +244,9 @@ _SUBS = {
     "__MODEL__": lambda root: json.dumps(os.environ.get("CUSTOM_MODEL", "agnes-2.5-flash")),
     "__BASE_URL__": lambda root: json.dumps(os.environ["CUSTOM_LLM_URL"]),
     "__API_KEY__": lambda root: json.dumps(os.environ["CUSTOM_LLM_API_KEY"]),
+    "__MT_ROUNDS__": lambda root: str(int(os.environ.get("REAL_LLM_MULTI_TURN_ROUNDS", "5"))),
+    "__BS_ROUNDS__": lambda root: str(int(os.environ.get("REAL_LLM_BIG_STATE_ROUNDS", "4"))),
+    "__BS_KB__": lambda root: str(int(os.environ.get("REAL_LLM_BIG_STATE_KB", "64"))),
 }
 
 

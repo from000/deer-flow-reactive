@@ -93,7 +93,7 @@ if __name__ == "__main__":
         print("=== real LLM (Agnes, residual_cpu = 扣除 LLM 后的进程 CPU) ===")
         for label in ("reactivegraph", "langgraph_upstream"):
             rows = [r["result"] for r in rl.get(label, []) if r.get("ok")]
-            for sc in ("model_only", "tool_call"):
+            for sc in ("model_only", "tool_call", "multi_turn", "big_state"):
                 cpus = [r["residual_cpu_s"] for r in rows
                         if r["scenario"] == sc and isinstance(r.get("residual_cpu_s"), (int, float))]
                 walls = [r["wall_s"] for r in rows if r["scenario"] == sc]

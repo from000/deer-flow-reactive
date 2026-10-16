@@ -21,7 +21,9 @@ English | [中文](./README_zh.md) | [日本語](./README_ja.md) | [Français](.
 > |---|---:|---:|
 > | engine latency, full factory (fake model) | 7.09 ms | **3.01 ms** (~2.3x) |
 > | concurrency throughput (64 sessions / 8 workers) | 29 /s | **117 /s** (~4x) |
-> | engine residual CPU, **real LLM** (Agnes) | 24.6 ms | **16.9 ms** (~1.45x) |
+> | engine residual CPU, **real LLM** (Agnes, model_only n=6) | 24.6 ms | **16.9 ms** (~1.45x) |
+> | engine residual CPU, real LLM multi_turn (n=3) | 54.0 ms | **32.1 ms** (~1.68x) |
+> | engine residual CPU, real LLM big_state (n=3) | 45.6 ms | **33.0 ms** (~1.38x) |
 > | end-to-end wall time, real LLM | — | **no advantage** (network/inference dominate) |
 >
 > Full method, controls, no-gain cases and boundaries: [`REAL_SCENARIOS.md`](./REAL_SCENARIOS.md).
@@ -2335,7 +2337,8 @@ This checkout is the real DeerFlow backend migration onto ReactiveGraph.
   chain included, fake model, parity asserted first): **~2.3x lower latency** and
   **~4x higher concurrency throughput** than upstream LangGraph
 - With a **real LLM** (Agnes): end-to-end wall time shows **no advantage** (network and
-  inference dominate); the engine-side residual CPU cost is **~1.45x** lower
+  inference dominate); the engine-side residual CPU cost is **~1.4–1.7x lower**
+  across four scenarios (model_only / tool_call / multi_turn / big_state, n=6/6/3/3)
 - Narrowest scope figure: `create_agent(...)` in-process vs the full LangGraph stack
   measured 7.19x/8.07x — that run does **not** include the middleware chain and is not a
   production figure
