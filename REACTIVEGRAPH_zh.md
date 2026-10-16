@@ -43,7 +43,7 @@ live-model tests:         之前失败的四个用例重试，4 passed
 tool-call 往返 6.15 ms vs 11.81 ms），并发吞吐 **约 4x** 更高（64 会话 / 8 workers 下
 117 vs 29 sessions/s）。换成**真实 LLM** 后又是另一幅图景：端到端墙钟**没有优势**（网络/推理主导），
 引擎侧 residual CPU 开销在四个场景（model_only / tool_call / multi_turn / big_state，
-n=6/6/3/3）下**低约 1.4–1.7x**。这些才是 DeerFlow 生产路径该引用的数字。
+n=6/6/3/3，多轮场景均挂 checkpointer）下**低约 1.45–2.34x**。这些才是 DeerFlow 生产路径该引用的数字。
 
 > **测量口径说明**：`ReactiveGraph` 列跑的是 `create_agent(...).AgentGraph`
 > 的**进程内**执行——`create_agent` 构建的 `ReactiveGraph` 没有 `DriverHost`，

@@ -15,7 +15,7 @@
 - `benchmarks/scenarios/scripts/real_llm.py:51-54`：LLM 时间、CPU 时间、事件与 429 等待分账数组。
 - `benchmarks/scenarios/scripts/real_llm.py:66-100`：只包住 `_generate`；失败 429 的请求耗时与 sleep 进入等待数组，成功调用才进入 `LLM_TIMES`。
 - `benchmarks/scenarios/scripts/real_llm.py:117-126`、`:134-152`：`model_only`/`tool_call` 两块场景均用 `perf_counter` 测 `invoke`，并计算 `residual_s` / `residual_cpu_s`。
-- `benchmarks/scenarios/scripts/real_llm.py:174-198`、`:202-233`：`multi_turn`（同 thread 5 轮）/ `big_state`（64KB system prompt + 4 轮）场景，除整段残差外还记录逐轮 median；`round_residual_cpu_median_s` 是每轮扣掉该轮内 LLM CPU 后的轮内残差。
+- `benchmarks/scenarios/scripts/real_llm.py:183-233`：`multi_turn`（同 thread 5 轮）/ `big_state`（64KB system prompt + 4 轮）场景，均显式挂 checkpointer（`:118-123` 名为 `Saver` 的选择逻辑：fork 用 `reactivegraph.checkpoint.MemoryCheckpointSaver`、上游用 `langgraph.checkpoint.memory.InMemorySaver`）。不挂 checkpointer 时 factory 是 ephemeral 的，同一 thread 不会累积历史——这是 2026-10-17 修正的测量缺陷。除整段残差外还记录逐轮 median；`round_residual_cpu_median_s` 是每轮扣掉该轮内 LLM CPU 后的轮内残差。
 - `benchmarks/scenarios/scripts/real_llm.py:124`、`:150`、`:227-230`：残差公式明确为 `wall - sum(llm) - waits`。
 - `benchmarks/scenarios/FAIRNESS_AUDIT.md:371-372`：真实 Agnes 的 `engine_s` 被定性为扣除后的残差，可比性弱。
 **对结论的影响**
@@ -98,7 +98,7 @@
 **证据（文件:行号）**
 - `REAL_SCENARIOS.md:7-21`：fake-model 的同机、同 factory、输出等价前提与毫秒级结果。
 - `REAL_SCENARIOS.md:34-40`：测量机负载、2×/3–4× 优势的范围说明。
-- `REAL_SCENARIOS.md:92-130`：真实 LLM（Agnes）四个场景（model_only / tool_call / multi_turn / big_state）的表与诚实结论；端到端墙钟互有胜负，residual_cpu 优势 1.38–1.68×。
+- `REAL_SCENARIOS.md`：真实 LLM（Agnes）四个场景（model_only / tool_call / multi_turn / big_state）的表与诚实结论；端到端墙钟互有胜负，residual_cpu 优势 1.45–2.34×（其中 multi_turn/big_state 为 2026-10-17 checkpointer 修正后的数据，采样期 load1 40–230，低置信度）。
 - `benchmarks/scenarios/FAIRNESS_AUDIT.md:183-185`：本地 CPU 差异在真实 LLM 延迟下可忽略，但 fake-model 毫秒级会显现。
 - `benchmarks/scenarios/FAIRNESS_AUDIT.md:369-373`：审计裁决区分 fake-model `engine_s`、真实 Agnes `engine_s` 与多轮语义场景。
 **对结论的影响**

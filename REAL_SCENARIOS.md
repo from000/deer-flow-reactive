@@ -11,14 +11,28 @@
 |---|---:|---:|---:|
 | 单轮 model-only agent（50 次/轮，median of 3 runs） | **3.01 ms** | **7.09 ms** | **2.35×** |
 | 单轮 tool-call round trip（50 次/轮，median of 3 runs） | **6.15 ms** | **11.81 ms** | **1.92×** |
-| 多轮对话累积（同 thread 10 轮，median of 3 rounds） | **2.48 ms** | **5.75 ms** | **2.32×** |
-| 大 state（64KB system prompt，median of 3 rounds） | **1.95 ms** | **5.61 ms** | **2.87×** |
+| 多轮对话累积（同 thread 10 轮，挂 checkpointer，median of 3 rounds） | **8.69 ms** | **19.22 ms** | **2.21×** |
+| 大 state（64KB prompt + 30 轮累积，挂 checkpointer，median of 3 rounds） | **14.19 ms** | **21.92 ms** | **1.54×** |
 | 64 会话并发 / 8 workers（吞吐，median of 3 paired rounds） | **117.3 sessions/s** | **29.2 sessions/s** | **4.02×** |
 
 上表由 `scripts/summarize.py` 从落盘 JSON 直接算出（可一键复算，杜绝手抄）。
 
-**诚实范围**：优势稳定在 **约 2×（单次延迟）到 3–4×（并发吞吐）**，不是数量级差距。
+**诚实范围**：优势稳定在 **约 1.5–2.4×（单场景延迟）到 4×（并发吞吐）**，不是数量级差距。
 输出等价性已逐条断言（`model_only` 与 `tool_call` 两条路径的最终 message 列表完全一致）。
+
+### 勘误（2026-10-17）：多轮/大 state 曾测成"重复单轮"
+
+早期版本的 `run_more.py` / `real_llm.py` 有两个测量缺陷，已在落盘 JSON 与文档中修正：
+
+1. **没挂 checkpointer**：`create_deerflow_agent` 不传 `checkpointer` 时是 ephemeral 的，
+   同一 thread 的后续 invoke 不读累积历史。HTTP 层实测：5 轮 multi_turn 每次请求只带
+   **1 条消息**（正确应递增为 1→3→5→7→9）。因此早期"多轮"数字（fake 2.32×、
+   real-LLM 1.68×）测的是**重复单轮**，不是多轮累积；`big_state` 同理（1.38×）。
+2. **big_state 复用同一 `HumanMessage` 对象**：上游 `add_messages` 按 id 去重
+   （30 轮只留 1 条 human，message_count 34 vs fork 66），两侧工作量不对等。
+
+修正后两侧消息数完全对齐（multi_turn 20/20、big_state 66/66），数字见上文表格
+（fake 2.21× / 1.54×；real-LLM 2.33× / 2.34×）。旧数据已从 JSON 删除，不可再引用。
 
 ## 方法
 
@@ -29,10 +43,21 @@
   - **每个样本独立 `thread_id`**，避免跨轮状态污染；
   - **输出等价性先断言再计时**（`parity_check.py`）。
 - **采样**：每场景 50 采样取 median；每个场景重复 3 轮/3 次再取 median。
+- **多轮必须挂 checkpointer**：`create_deerflow_agent` 不传 `checkpointer` 时是 **ephemeral** 的——
+  同一 `thread_id` 多次 invoke **不会累积历史**，每次都是从空 state 开始的单轮。
+  因此"多轮累积 / 大 state"场景显式挂 checkpointer（两侧各用自家实现：
+  fork `reactivegraph.checkpoint.MemoryCheckpointSaver`、上游 `langgraph.checkpoint.memory.InMemorySaver`）。
+  否则测出来的不是多轮，而是"重复单轮"（早期版本即踩此坑，见上方勘误）。
+- **每轮新消息对象**：`big_state` 每轮构造新的 `HumanMessage`；复用同一对象时 LangGraph 的
+  `add_messages` 会按 id 去重（30 轮只剩 1 条 human），造成两侧工作量不对等（早期版本踩此坑，见上方勘误）。
 - **配对交替**：fork 与上游**同轮相邻执行**（A/B/B/A 式轮流），避免"先整段跑完一侧"的
   系统负载偏置；每轮记录 load average 一并落盘（`*_results.json` 的 `load1_at_run`）。
-- **环境**：Python 3.12 / Darwin x86_64。测量机为共享开发机，本轮 6 次测量 load1 稳定在
-  3.7–4.5，两侧背景一致。
+- **环境**：Python 3.12 / Darwin x86_64。测量机为共享开发机：
+  - fake-model 主表（model-only/tool-call/并发）测量期 load1 3.7–4.5；
+  - fake-model 的 multi_turn/big_state 重测（2026-10-17）load1 9.8–13，中等偏高；
+  - 真实 LLM 的 multi_turn/big_state 重测同日本机有大量并发重负载，load1 高达 40–230。
+    因此这两个真实 LLM 场景**只有 `residual_cpu`（进程 CPU 时间）可引用**，
+    `residual_s`（墙钟减法）与端到端墙钟被负载严重污染，仅归档不作结论。
 
 ## 决定性发现 1：语义对齐后差距是 ~2×，不是宣传的"千倍"
 
@@ -95,36 +120,42 @@ fork 的每-run 语义换来的是行为一致性。属于**语义 trade-off，�
 真实 LLM 的墙钟由**网络 + 推理**主导（本次实测 1.6–7.5 s/次），引擎开销只是其中很小一部分。
 
 - **脚本**：`scripts/real_llm.py`（每侧新进程、交替执行、记录 `load1_at_run`；
-  `model_only`/`tool_call` 为单次 invoke，`multi_turn` 为同 thread 5 轮，
-  `big_state` 为 64KB system prompt + 4 轮；均可通过 `REAL_LLM_SCENARIOS` 选择）
+  `model_only`/`tool_call` 为单次 invoke，`multi_turn` 为同 thread 5 轮（挂 checkpointer），
+  `big_state` 为 64KB system prompt + 4 轮（挂 checkpointer）；均可通过 `REAL_LLM_SCENARIOS` 选择）
 - **约束**：Agnes 账号级限流 1 请求/分钟；脚本显式等待并**单独记账**，不混入 residual；
   `max_retries=0`（429 直接暴露）；`REAL_LLM_MAX_LOAD` 负载门槛 + 等待。
 - **指标**：`residual_cpu_s = cpu_s − Σllm_cpu_s`，即扣除 LLM 调用后本进程真正消耗的 CPU 时间。
   它比 `wall − llm` 的墙钟残差更抗调度噪声，但仍**不等于纯引擎耗时**。
+- **负载披露**：multi_turn/big_state 重测（2026-10-17）与其它重负载任务重叠，
+  `load1_at_run` 达 40–230（早期 model_only/tool_call 样本为 4–26）。
+  这也导致重测期间出现 1 次 fork 侧 120s 客户端超时（模型单次调用达 31s+）；
+  超时样本已删除。因 `residual_cpu` 是进程 CPU 时间，受调度延迟影响远小于墙钟，
+  但仍请把 multi_turn/big_state 视为**同机低置信度样本（n=3）**，不要跨机引用。
 
 | 场景 | fork residual_cpu (median) | 上游 residual_cpu (median) | 比值 |
 |---|---:|---:|---:|
 | model_only（n=6） | **16.9 ms**（12.0–24.7） | **24.6 ms**（17.3–48.6） | **1.45×** |
 | tool_call（n=6，2 次 LLM 调用） | **23.6 ms**（19.4–31.4） | **34.9 ms**（24.6–49.4） | **1.48×** |
-| multi_turn（n=3，5 轮同 thread） | **32.1 ms**（23.0–39.9） | **54.0 ms**（49.1–55.3） | **1.68×** |
-| big_state（n=3，64KB system prompt + 4 轮） | **33.0 ms**（21.2–35.8） | **45.6 ms**（44.5–73.0） | **1.38×** |
+| multi_turn（n=3，5 轮同 thread，挂 checkpointer） | **73.8 ms**（72.8–77.7） | **172.1 ms**（150.9–178.3） | **2.33×** |
+| big_state（n=3，64KB prompt + 4 轮，挂 checkpointer） | **41.7 ms**（38.9–43.4） | **97.6 ms**（82.3–100.3） | **2.34×** |
 
 **关键诚实结论：**
 
 1. **真实 LLM 端到端不会更快。** 墙钟由模型/网络主导，而 Agnes 的网络/推理耗时波动极大
    （单次调用 0.9–29 s），因此端到端墙钟**样本内互有胜负**：
    model_only fork 中位 3.92 s vs 上游 1.83 s（上游更快）；
-   tool_call 4.09 s vs 3.81 s（接近）；multi_turn 17.08 s vs 18.52 s（fork 略快）；
-   big_state 18.39 s vs 11.48 s（上游更快）。
+   tool_call 4.09 s vs 3.81 s（接近）；multi_turn 20.78 s vs 16.82 s（上游更快）；
+   big_state 17.75 s vs 19.99 s（fork 略快）。
    任何"用 ReactiveGraph 让真实 LLM 应用快 1.5 倍"的说法都是错的。
 2. **引擎侧 CPU 开销仍然更低**：residual_cpu 中位数 1.45×（model_only）/ 1.48×（tool_call）/
-   1.68×（multi_turn，5 轮同 thread）/ 1.38×（big_state，64KB prompt + 4 轮），
-   但幅度比 fake model 的 ~2–4× 明显收窄——真实调用链路引入的固定本地成本
-   （消息编解码、schema、工具执行、middleware hook）稀释了引擎差异。
-   每次 run 的绝对差只有 **8–22 ms**，在真实 LLM 场景中不可感知。
+   2.33×（multi_turn，5 轮同 thread）/ 2.34×（big_state，64KB prompt + 4 轮）。
+   单轮场景（model_only/tool_call）的比值比 fake model 的 ~2–4× 明显收窄——真实调用链路
+   引入的固定本地成本（消息编解码、schema、工具执行、middleware hook）稀释了引擎差异；
+   多轮场景比例恢复到 ~2.3×，因为每次 invoke 都要重放/累积全部历史，引擎的状态处理差距
+   随轮数放大。绝对差：单轮 **8–11 ms**（不可感知），多轮合计 **56–98 ms**（仍然很小）。
    - 注意 multi_turn/big_state 的 residual_cpu 是**整段多次 invoke 的合计**，
      与 model_only/tool_call 的单次 invoke 不可直接比大小；比值（同场景两侧）才可比。
-   - 逐轮口径：multi_turn 轮内 residual_cpu 中位 5.1 vs 7.8 ms（1.53×）；big_state 4.9 vs 9.1 ms（1.86×）。
+   - 逐轮口径：multi_turn 轮内 residual_cpu 中位 11.1 vs 29.9 ms（2.69×）；big_state 7.3 vs 21.4 ms（2.93×）。
 3. **`tool_messages` 数量在真实 LLM 下不稳定**（fork 见过 1 和 2，上游也见过 1 和 2）。
    确定性 fake model 下 `parity_check.py` 断言两边**逐条一致**
    （`tool_call`: 4 条消息 / 1 个 ToolMessage，`identical=True`），
@@ -162,7 +193,8 @@ cold 形态（新进程+单次）下应当消失。
 4. **真实 LLM 已跑，但结论有限**：Agnes（agnes-2.5-flash）实测可用（DeepSeek 余额不足 402、
    DashScope 欠费、SiliconFlow 未实名）。真实 LLM 下**端到端墙钟无优势**（模型/网络主导），
    四个场景（model_only / tool_call / multi_turn / big_state）的引擎侧 residual_cpu
-   优势为 1.38–1.68×，样本量 n=6/6/3/3。详见上文"真实 LLM 场景"章节。
+   优势为 1.45–2.34×，样本量 n=6/6/3/3；其中 multi_turn/big_state 为高负载窗口内的
+   低置信度样本（load1 40–230），引用时须带此限定。详见上文"真实 LLM 场景"章节。
 5. **fake model 的局限**：fake model 零推理延迟，因此这里衡量的是**引擎/编排开销**，
    这正是框架层该比的量；但它不代表真实 LLM 场景的端到端加速比。
 

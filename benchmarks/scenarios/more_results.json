@@ -2,89 +2,89 @@
   "reactivegraph": [
     {
       "multi_turn": {
-        "median_ms": 2.313,
-        "p95_ms": 3.075,
-        "message_count_last": 2
+        "median_ms": 8.691,
+        "p95_ms": 10.954,
+        "message_count_last": 20
       },
       "big_state": {
-        "median_ms": 1.849,
-        "p95_ms": 2.3,
-        "message_count": 2,
+        "median_ms": 14.194,
+        "p95_ms": 19.884,
+        "message_count": 66,
         "doc_kb": 64
       },
-      "load1_at_run": 4.75
+      "load1_at_run": 10.27
     },
     {
       "multi_turn": {
-        "median_ms": 2.48,
-        "p95_ms": 3.897,
-        "message_count_last": 2
+        "median_ms": 7.673,
+        "p95_ms": 10.416,
+        "message_count_last": 20
       },
       "big_state": {
-        "median_ms": 1.953,
-        "p95_ms": 3.025,
-        "message_count": 2,
+        "median_ms": 11.125,
+        "p95_ms": 16.596,
+        "message_count": 66,
         "doc_kb": 64
       },
-      "load1_at_run": 4.95
+      "load1_at_run": 10.09
     },
     {
       "multi_turn": {
-        "median_ms": 2.74,
-        "p95_ms": 4.427,
-        "message_count_last": 2
+        "median_ms": 11.7,
+        "p95_ms": 81.997,
+        "message_count_last": 20
       },
       "big_state": {
-        "median_ms": 2.141,
-        "p95_ms": 3.747,
-        "message_count": 2,
+        "median_ms": 19.344,
+        "p95_ms": 29.615,
+        "message_count": 66,
         "doc_kb": 64
       },
-      "load1_at_run": 4.88
+      "load1_at_run": 12.54
     }
   ],
   "langgraph_upstream": [
     {
       "multi_turn": {
-        "median_ms": 5.749,
-        "p95_ms": 6.576,
-        "message_count_last": 2
+        "median_ms": 19.219,
+        "p95_ms": 22.79,
+        "message_count_last": 20
       },
       "big_state": {
-        "median_ms": 5.737,
-        "p95_ms": 7.223,
-        "message_count": 2,
+        "median_ms": 21.915,
+        "p95_ms": 25.7,
+        "message_count": 66,
         "doc_kb": 64
       },
-      "load1_at_run": 4.69
+      "load1_at_run": 9.84
     },
     {
       "multi_turn": {
-        "median_ms": 5.145,
-        "p95_ms": 7.492,
-        "message_count_last": 2
+        "median_ms": 17.123,
+        "p95_ms": 20.933,
+        "message_count_last": 20
       },
       "big_state": {
-        "median_ms": 5.094,
-        "p95_ms": 6.987,
-        "message_count": 2,
+        "median_ms": 20.372,
+        "p95_ms": 22.663,
+        "message_count": 66,
         "doc_kb": 64
       },
-      "load1_at_run": 4.95
+      "load1_at_run": 10.59
     },
     {
       "multi_turn": {
-        "median_ms": 6.221,
-        "p95_ms": 6.894,
-        "message_count_last": 2
+        "median_ms": 44.168,
+        "p95_ms": 62.846,
+        "message_count_last": 20
       },
       "big_state": {
-        "median_ms": 5.609,
-        "p95_ms": 7.439,
-        "message_count": 2,
+        "median_ms": 34.353,
+        "p95_ms": 37.48,
+        "message_count": 66,
         "doc_kb": 64
       },
-      "load1_at_run": 4.97
+      "load1_at_run": 12.99
     }
   ]
 }

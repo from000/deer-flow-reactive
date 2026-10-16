@@ -394,9 +394,15 @@
 - **已重跑**（Agnes，限流等待已从 residual 中剔除）：
   `model_only` n=6、`tool_call` n=6、`multi_turn` n=3（同 thread 5 轮）、`big_state` n=3（64KB prompt + 4 轮）。
 - **端到端墙钟**：四个场景互有胜负，**无加速优势**（模型/网络主导）。
-- **引擎侧 residual_cpu**：fork 低 1.38–1.68×（multiple-scenario）。
+- **引擎侧 residual_cpu**：fork 低 1.45–2.34×（multiple-scenario）。
+- **2026-10-17 复核修正**：multi_turn/big_state 原先未挂 checkpointer，factory 的 ephemeral 语义
+  使"同 thread 多轮"实际退化为重复单轮（HTTP 抓包证实每轮只带 1 条消息），
+  且 `big_state` 复用同一 `HumanMessage` 导致上游 `add_messages` 按 id 去重（66 vs 34 条）。
+  两个缺陷均已修复（显式 Saver + 每轮新消息对象），消息数两侧对齐后重测得
+  fake 2.21×/1.54×、real-LLM 2.33×/2.34×；旧数字已从 JSON 删除。
 - **3 号建议的落实**：`multi_turn` 使用**每轮不同文本**（`Turn i: reply with one short sentence.`），
   不含重复 tool_call，因此不会触发 upstream 的 thread 级 hard-stop；该场景两侧行为路径可比。
+  （重测后每轮消息递增 1→3→5→7→9，两边界消息数一致：multi_turn 10、big_state 8。）
   本审计第 246 行记录的「同 thread 重复 tool_call 分叉」场景仍然是**不可混入性能**的语义差异，
   其单独复现数据仍以 `loop_detection_results.json` 为准。
 

@@ -66,8 +66,8 @@ Measured 2026-10-15 with paired A/B runs and output parity asserted first:
 tool-call round trip) and **~4x higher concurrency throughput** (117 vs 29 sessions/s at
 64 sessions / 8 workers). With a **real LLM** the picture changes again: end-to-end wall
 time has **no advantage** (network/inference dominate), while the engine-side residual
-CPU cost is **~1.4–1.7x lower** across four scenarios (model_only / tool_call /
-multi_turn / big_state, n=6/6/3/3).
+CPU cost is **~1.45–2.34x lower** across four scenarios (model_only / tool_call /
+multi_turn / big_state, n=6/6/3/3; multi-turn scenarios are checkpointed).
 Those numbers measure the production factory — they are the ones to quote for DeerFlow.
 
 > **Measurement scope.** The `ReactiveGraph` column runs

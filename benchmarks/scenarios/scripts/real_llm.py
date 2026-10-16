@@ -112,8 +112,15 @@ def get_weather(city: str) -> str:
 def build_model():
     return TimedModel(
         model=__MODEL__, base_url=__BASE_URL__, api_key=__API_KEY__,
-        temperature=0, max_retries=0, timeout=120,
+        temperature=0, max_retries=0, timeout=300,
     )
+
+# create_deerflow_agent 不传 checkpointer 时是 ephemeral 的：同一 thread_id 多次 invoke
+# 不会累积历史。多轮场景必须显式挂 checkpointer；两侧各用自家实现以保证 API 对等。
+try:  # fork: ReactiveGraph native checkpointer
+    from reactivegraph.checkpoint import MemoryCheckpointSaver as Saver
+except ImportError:  # upstream: LangGraph checkpointer
+    from langgraph.checkpoint.memory import InMemorySaver as Saver
 
 def run_model_only():
     graph = create_deerflow_agent(build_model())
@@ -176,7 +183,7 @@ def _residual(t0, c_start, extra):
 def run_multi_turn(rounds=None):
     """同一 thread 多轮 invoke：验证跨 run 的 checkpoint/state 复读开销。"""
     rounds = rounds or MULTI_TURN_ROUNDS
-    graph = create_deerflow_agent(build_model())
+    graph = create_deerflow_agent(build_model(), checkpointer=Saver())
     cfg = {"configurable": {"thread_id": "rl-mt-" + uuid.uuid4().hex}}
     holes, cpu_holes, boundaries = [], [], []
     t0, c_start = time.perf_counter(), time.process_time()
@@ -206,7 +213,7 @@ def run_big_state(rounds=None, doc_kb=None):
     rounds = rounds or BIG_STATE_ROUNDS
     doc_kb = doc_kb or BIG_STATE_KB
     doc = "x" * (doc_kb * 1024)
-    graph = create_deerflow_agent(build_model(), system_prompt="You are a terse assistant. " + doc)
+    graph = create_deerflow_agent(build_model(), system_prompt="You are a terse assistant. " + doc, checkpointer=Saver())
     cfg = {"configurable": {"thread_id": "rl-bs-" + uuid.uuid4().hex}}
     holes, cpu_holes, boundaries = [], [], []
     t0, c_start = time.perf_counter(), time.process_time()
