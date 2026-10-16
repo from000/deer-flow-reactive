@@ -1,0 +1,171 @@
+{
+  "reactivegraph": [
+    {
+      "values": {
+        "mode": "values",
+        "n": 20,
+        "median_ms": 13.433,
+        "p95_ms": 15.942,
+        "cpu_ms_median": 11.464,
+        "chunks_median": 4.0,
+        "first_chunk_seq": [
+          "('values', {'messages': [HumanMessage(co",
+          "('values', {'messages': [HumanMessage(co",
+          "('values', {'messages': [HumanMessage(co"
+        ]
+      },
+      "messages": {
+        "mode": "messages",
+        "n": 20,
+        "median_ms": 11.242,
+        "p95_ms": 18.717,
+        "cpu_ms_median": 10.362,
+        "chunks_median": 2.0,
+        "first_chunk_seq": [
+          "('messages', (HumanMessage(content='hi',",
+          "('messages', (AIMessage(content='reply 1"
+        ]
+      },
+      "load1_at_run": 29.42
+    },
+    {
+      "values": {
+        "mode": "values",
+        "n": 20,
+        "median_ms": 11.428,
+        "p95_ms": 20.316,
+        "cpu_ms_median": 10.187,
+        "chunks_median": 4.0,
+        "first_chunk_seq": [
+          "('values', {'messages': [HumanMessage(co",
+          "('values', {'messages': [HumanMessage(co",
+          "('values', {'messages': [HumanMessage(co"
+        ]
+      },
+      "messages": {
+        "mode": "messages",
+        "n": 20,
+        "median_ms": 10.465,
+        "p95_ms": 13.127,
+        "cpu_ms_median": 9.548,
+        "chunks_median": 2.0,
+        "first_chunk_seq": [
+          "('messages', (HumanMessage(content='hi',",
+          "('messages', (AIMessage(content='reply 1"
+        ]
+      },
+      "load1_at_run": 33.14
+    },
+    {
+      "values": {
+        "mode": "values",
+        "n": 20,
+        "median_ms": 13.019,
+        "p95_ms": 15.972,
+        "cpu_ms_median": 11.44,
+        "chunks_median": 4.0,
+        "first_chunk_seq": [
+          "('values', {'messages': [HumanMessage(co",
+          "('values', {'messages': [HumanMessage(co",
+          "('values', {'messages': [HumanMessage(co"
+        ]
+      },
+      "messages": {
+        "mode": "messages",
+        "n": 20,
+        "median_ms": 11.396,
+        "p95_ms": 19.661,
+        "cpu_ms_median": 9.063,
+        "chunks_median": 2.0,
+        "first_chunk_seq": [
+          "('messages', (HumanMessage(content='hi',",
+          "('messages', (AIMessage(content='reply 1"
+        ]
+      },
+      "load1_at_run": 34.79
+    }
+  ],
+  "langgraph_upstream": [
+    {
+      "values": {
+        "mode": "values",
+        "n": 20,
+        "median_ms": 47.515,
+        "p95_ms": 89.437,
+        "cpu_ms_median": 31.36,
+        "chunks_median": 4.0,
+        "first_chunk_seq": [
+          "('values', {'messages': [HumanMessage(co",
+          "('values', {'messages': [HumanMessage(co",
+          "('values', {'messages': [HumanMessage(co"
+        ]
+      },
+      "messages": {
+        "mode": "messages",
+        "n": 20,
+        "median_ms": 62.113,
+        "p95_ms": 111.902,
+        "cpu_ms_median": 37.471,
+        "chunks_median": 1.0,
+        "first_chunk_seq": [
+          "('messages', (AIMessage(content='reply 1"
+        ]
+      },
+      "load1_at_run": 33.47
+    },
+    {
+      "values": {
+        "mode": "values",
+        "n": 20,
+        "median_ms": 59.06,
+        "p95_ms": 122.393,
+        "cpu_ms_median": 32.027,
+        "chunks_median": 4.0,
+        "first_chunk_seq": [
+          "('values', {'messages': [HumanMessage(co",
+          "('values', {'messages': [HumanMessage(co",
+          "('values', {'messages': [HumanMessage(co"
+        ]
+      },
+      "messages": {
+        "mode": "messages",
+        "n": 20,
+        "median_ms": 69.224,
+        "p95_ms": 198.1,
+        "cpu_ms_median": 38.703,
+        "chunks_median": 1.0,
+        "first_chunk_seq": [
+          "('messages', (AIMessage(content='reply 1"
+        ]
+      },
+      "load1_at_run": 33.13
+    },
+    {
+      "values": {
+        "mode": "values",
+        "n": 20,
+        "median_ms": 39.694,
+        "p95_ms": 110.827,
+        "cpu_ms_median": 28.133,
+        "chunks_median": 4.0,
+        "first_chunk_seq": [
+          "('values', {'messages': [HumanMessage(co",
+          "('values', {'messages': [HumanMessage(co",
+          "('values', {'messages': [HumanMessage(co"
+        ]
+      },
+      "messages": {
+        "mode": "messages",
+        "n": 20,
+        "median_ms": 61.639,
+        "p95_ms": 104.295,
+        "cpu_ms_median": 36.743,
+        "chunks_median": 1.0,
+        "first_chunk_seq": [
+          "('messages', (AIMessage(content='reply 1"
+        ]
+      },
+      "load1_at_run": 35.28
+    }
+  ]
+}

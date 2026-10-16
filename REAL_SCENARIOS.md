@@ -17,7 +17,8 @@
 
 上表由 `scripts/summarize.py` 从落盘 JSON 直接算出（可一键复算，杜绝手抄）。
 
-**诚实范围**：优势稳定在 **约 1.5–2.4×（单场景延迟）到 4×（并发吞吐）**，不是数量级差距。
+**诚实范围**：优势稳定在 **约 1.5–2.4×（单场景延迟）到 4×（并发吞吐）**，不是数量级差距；
+生产默认的流式 `astream(values)` 约 3.7×（见下文流式章节）。
 输出等价性已逐条断言（`model_only` 与 `tool_call` 两条路径的最终 message 列表完全一致）。
 
 ### 勘误（2026-10-17）：多轮/大 state 曾测成"重复单轮"
@@ -90,6 +91,38 @@ langgraph_upstream: message_counts=[10,  2,  2,  2,  2,  2]   total_model_calls=
 
 **不是纯赢**：上游的累积语义省 model 调用（10 vs 30），对"防死循环 + 省钱"是优点；
 fork 的每-run 语义换来的是行为一致性。属于**语义 trade-off，需按业务场景判断**。
+
+## 流式执行（astream）：生产默认路径
+
+DeerFlow 生产路径默认走 `agent.astream(stream_mode=["values"])`（见 `runtime/runs/worker.py`
+与 `runtime/stream_modes.py`），**不是同步 invoke**。因此补充流式对照（`scripts/run_streaming.py`，
+fake model，每侧新进程，20 采样/轮 × 3 轮取 median）：
+
+| 模式 | fork wall | 上游 wall | 比值 | fork CPU | 上游 CPU | 比值 |
+|---|---:|---:|---:|---:|---:|---:|
+| `astream(values)`（生产默认） | **13.02 ms** | **47.52 ms** | **3.65×** | 11.44 ms | 31.36 ms | 2.74× |
+| `astream(messages)` | **11.24 ms** | **62.11 ms** | **5.53×** | 9.55 ms | 37.47 ms | 3.92× |
+
+（测量期 load1 ≈ 29–35，两侧同轮相邻，背景一致。）
+
+- **`values` 模式 chunk 序列逐条等价**：空态 → +Human → 3 个中间帧 → +AI，两侧帧数/内容一致
+  （已用带 id 的消息实测，两侧都是 4 帧、`[(human,u1)]` ×3 后 `[(human,u1),(ai,a1)]`）。
+- **`messages` 模式存在行为差异（诚实披露）**：上游只发 1 个 chunk（AI 回复），
+  fork 多发 1 个 chunk —— **把输入的 HumanMessage 也作为 `messages` 帧发出**，
+  metadata 标注 `langgraph_node="tools"`：
+
+  ```text
+  fork    : (HumanMessage('hi'),  node=tools)  →  (AIMessage('reply 0'), node=model)
+  upstream: (AIMessage('reply 0'), node=model)
+  ```
+
+  影响面：`DeerFlowClient.stream()` 只消费 `AIMessage` / `ToolMessage`（`client.py:1074-1119`），
+  IM channel 也走 `ai` 前缀白名单（`app/channels/manager.py:772-800`），两者都会丢弃该
+  Human 帧，**当前无用户可见泄漏**；但 web SSE 路径原样转发 chunk，是否重复渲染取决于前端 SDK
+  的 message 跟踪，**本机未做浏览器端确认**，列为待跟进项（不阻塞本轮结论）。
+
+**结论**：生产默认的 `values` 流式模式，fork 的 chunk 序列与上游完全一致且 wall 快 ~3.7×；
+`messages` 模式有一个已知的额外 Human 帧差异，影响面已被下游过滤，待前端确认。
 
 ## 覆盖矩阵：显式启停各 RuntimeFeatures（fake model，带有效 config.yaml）
 
@@ -244,6 +277,9 @@ python3 feature_matrix.py
 
 # 8b. 模型成本对等性：两侧请求体逐字节比对（本地端点，免费）
 python3 model_cost_parity.py
+
+# 8c. 流式执行（生产默认 astream values + messages，fake model）
+python3 run_streaming.py
 
 # 9. 真实 LLM（Agnes；受 1 req/min 限流，耗时长）
 export CUSTOM_LLM_URL=... CUSTOM_LLM_API_KEY=... CUSTOM_MODEL=agnes-2.5-flash
