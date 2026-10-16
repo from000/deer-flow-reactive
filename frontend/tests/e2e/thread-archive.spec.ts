@@ -39,7 +39,9 @@ test("archive keeps the open conversation, supports undo and restores from the a
       .getByRole("menuitem", { name: "Archive chat", exact: true })
       .click();
   };
-  await expect(sidebarLink).toBeVisible();
+  // 并发运行下侧栏的 recent-chat 列表可能晚于页面渲染完成，
+  // 显式等到链接出现再继续（默认 5s 在并发时会不够）。
+  await expect(sidebarLink).toBeVisible({ timeout: 15_000 });
   await archive();
   await expect(sidebarLink).toHaveCount(0);
   await expect(page).toHaveURL(new RegExp(CHAT));
