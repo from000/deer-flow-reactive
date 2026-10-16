@@ -28,8 +28,10 @@
    同一 thread 的后续 invoke 不读累积历史。HTTP 层实测：5 轮 multi_turn 每次请求只带
    **1 条消息**（正确应递增为 1→3→5→7→9）。因此早期"多轮"数字（fake 2.32×、
    real-LLM 1.68×）测的是**重复单轮**，不是多轮累积；`big_state` 同理（1.38×）。
-2. **big_state 复用同一 `HumanMessage` 对象**：上游 `add_messages` 按 id 去重
-   （30 轮只留 1 条 human，message_count 34 vs fork 66），两侧工作量不对等。
+2. **big_state 复用同一 `HumanMessage` 对象**：上游 `add_messages` 按 id 去重。
+   修复第 1 点（挂上 checkpointer）后、修复本条之前，实测 message_count 为
+   **上游 34 / fork 66**（30 轮只留 1 条 human），两侧工作量不对等；
+   无 checkpointer 的原始版本两侧都是 2（根本没累积），掩盖了这个缺陷。
 
 修正后两侧消息数完全对齐（multi_turn 20/20、big_state 66/66），数字见上文表格
 （fake 2.21× / 1.54×；real-LLM 2.33× / 2.34×）。旧数据已从 JSON 删除，不可再引用。
