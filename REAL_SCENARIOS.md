@@ -186,6 +186,12 @@ cold 形态（新进程+单次）下应当消失。
    `kind="effect"`（有副作用语义），**不做跨 run 指纹跳过**。因此 agent 路径
    **不会**因重复输入而少调用 LLM。实测（`scripts/model_call_count.py`）：30 轮相同输入，
    fork 与上游均为 **30 次调用 / 0 次跳过**。
+   - **HTTP 级证据（确定性，可复现）**：`scripts/model_cost_parity.py` 给两侧各起一个本地
+     OpenAI 兼容端点，逐请求 capture 完整 HTTP body 并逐字节比对。`model_only` / `tool_call` /
+     `multi_turn`(4 轮) 的每个请求 body **字节完全一致**（multi_turn 消息数按 1→3→5→7 累积，
+     两侧逐条相同；`tool_call` 4 个请求含 tools schema 全等），脚本以退出码 0/1 断言。
+     即：相同输入下，fork 与上游发给模型的 prompt / tools 完全相同 ⇒ **token 数相同、调用次数相同，
+     因此模型成本相同**。"换 ReactiveGraph 更省钱"在 agent 路径上**不成立**。
    - 想省钱必须显式声明 `kind="pure"` + `reads`（如 core 的 `deerflow_real` 基准里那样，3 个 pure 任务同输入跳过 3/3）。
 2. **上游 loop-detection 退化是行为差异，不是纯性能**：对某些工作负载这可能是好事（自动止损），需按场景判断。
 3. **机器敏感 / 测量前提**：所有数值为单机 median，非跨机基准。本机是共享开发机，
@@ -235,6 +241,9 @@ python3 fresh_process_control.py
 
 # 8. feature 覆盖矩阵（fake model；需有效 config.yaml）
 python3 feature_matrix.py
+
+# 8b. 模型成本对等性：两侧请求体逐字节比对（本地端点，免费）
+python3 model_cost_parity.py
 
 # 9. 真实 LLM（Agnes；受 1 req/min 限流，耗时长）
 export CUSTOM_LLM_URL=... CUSTOM_LLM_API_KEY=... CUSTOM_MODEL=agnes-2.5-flash
