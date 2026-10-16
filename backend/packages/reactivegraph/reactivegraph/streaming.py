@@ -181,15 +181,32 @@ def _messages_delta(previous: Any, current: Any) -> list[Any]:
     return list(cur[len(prev) :])
 
 
-def _node_update(node: str, new_messages: list[Any], state: dict[str, Any]) -> dict[str, Any]:
-    """Build one ``updates`` frame for *node* from its message delta."""
-    update: dict[str, Any] = {}
-    if new_messages:
-        update["messages"] = new_messages
-    for key, value in state.items():
+def _state_delta(previous: Any, current: Any) -> dict[str, Any]:
+    """Public non-message channels that changed between two ``values`` snapshots.
+
+    Upstream LangGraph emits one ``updates`` chunk per node execution carrying
+    *everything that node wrote* — including non-message channels such as
+    DeerFlow's ``title`` (TitleMiddleware), ``thread_data``
+    (ThreadDataMiddleware) or ``uploaded_files`` (UploadsMiddleware). Deriving
+    updates from message deltas alone would silently drop all of those.
+    """
+    if not isinstance(current, dict):
+        return {}
+    prev = previous if isinstance(previous, dict) else {}
+    changed: dict[str, Any] = {}
+    for key, value in current.items():
         if key == "messages" or key in _PRIVATE_STATE_KEYS:
             continue
-        update[key] = value
+        if key not in prev or prev[key] != value:
+            changed[key] = value
+    return changed
+
+
+def _node_update(node: str, new_messages: list[Any], changed: dict[str, Any]) -> dict[str, Any]:
+    """Build one ``updates`` frame for *node* from its state delta."""
+    update: dict[str, Any] = dict(changed)
+    if new_messages:
+        update["messages"] = new_messages
     return {node: update}
 
 
@@ -270,12 +287,20 @@ class _AdaptState:
     def _push_values(self, frame: dict) -> Iterator[Any]:
         """``values``: emit the public state, message deltas and updates."""
         state = ((frame.get("payload") or {}).get("state")) or {}
-        delta = _messages_delta(self.previous, state)
         first = not self.previous
+        # The first snapshot is the seeded input state, not a node write.
+        # Upstream's ``messages`` mode only streams messages *produced during
+        # the run*, so the caller's own input (and any run-private bookkeeping
+        # that shares the snapshot) must not be re-emitted as a chunk.
+        delta = [] if first else _messages_delta(self.previous, state)
+        changed = {} if first else _state_delta(self.previous, state)
         self.previous = state
         if "values" in self.modes:
             yield _wrap("values", _public_state(state), self.as_list)
-        if not delta:
+        # A node may write messages, non-message state (title/thread_data/...),
+        # or both; any of them must surface, so "no message delta" alone is not
+        # an early exit.
+        if not delta and not changed:
             return
         if "messages" in self.modes:
             for message in delta:
@@ -285,23 +310,23 @@ class _AdaptState:
                     (message, self._metadata(message)),
                     self.as_list,
                 )
-        if "updates" in self.modes and not first:
-            yield from self._push_update(delta, state)
+        if "updates" in self.modes:
+            yield from self._push_update(delta, changed)
 
-    def _push_update(self, delta: list[Any], state: dict) -> Iterator[Any]:
-        """Emit one ``updates`` chunk attributing *delta* to its node.
+    def _push_update(self, delta: list[Any], changed: dict[str, Any]) -> Iterator[Any]:
+        """Emit one ``updates`` chunk attributing the delta to its node.
 
-        ``task_end`` (fallback) gives the authoritative node; the Driver path
+        ``task_start`` (fallback) gives the authoritative node; the Driver path
         has no task frames, so fall back to the message class — exact for this
         graph's model/tools split. Either way the payload is the *delta*,
-        matching upstream, whose messages channel is reducer-appended.
+        matching upstream, whose ``updates`` chunk carries what the node wrote.
         """
         self.step += 1
         node = self.pending_task or (
             "model" if _looks_like_model_message(delta) else "tools"
         )
         self.pending_task = None
-        yield _wrap("updates", _node_update(node, delta, state), self.as_list)
+        yield _wrap("updates", _node_update(node, delta, changed), self.as_list)
 
     def _push_task_start(self, frame: dict) -> Iterator[Any]:
         """Remember the task that the immediately following values frame owns."""

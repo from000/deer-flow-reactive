@@ -21,7 +21,7 @@ English | [中文](./README_zh.md) | [日本語](./README_ja.md) | [Français](.
 > |---|---:|---:|
 > | engine latency, full factory (fake model) | 7.09 ms | **3.01 ms** (~2.3x) |
 > | concurrency throughput (64 sessions / 8 workers) | 29 /s | **117 /s** (~4x) |
-> | production streaming, `astream(values)` (fake model) | 47.52 ms | **13.02 ms** (~3.7x) |
+> | production streaming, `astream(values)` (fake model) | 41.45 ms | **10.03 ms** (~4.1x) |
 > | engine residual CPU, **real LLM** (Agnes, model_only n=6) | 24.6 ms | **16.9 ms** (~1.45x) |
 > | engine residual CPU, real LLM multi_turn (n=3, checkpointed) | 172.1 ms | **73.8 ms** (~2.33x) |
 > | engine residual CPU, real LLM big_state (n=3, checkpointed) | 97.6 ms | **41.7 ms** (~2.34x) |
@@ -2338,8 +2338,9 @@ This checkout is the real DeerFlow backend migration onto ReactiveGraph.
   chain included, fake model, parity asserted first): **~2.3x lower latency** and
   **~4x higher concurrency throughput** than upstream LangGraph
 - On the **production streaming path** (`astream(values)`, which DeerFlow's runtime
-  actually drives): **~3.7x lower wall time** (13.02 vs 47.52 ms) with frame-identical
-  chunk sequences
+  actually drives): **~4.1x lower wall time** (10.03 vs 41.45 ms) with frame-identical
+  chunk sequences; `messages` mode (what the chat UI requests) is also identical and
+  ~4.1x faster
 - With a **real LLM** (Agnes): end-to-end wall time shows **no advantage** (network and
   inference dominate); the engine-side residual CPU cost is **~1.45–2.34x lower**
   across four scenarios (model_only / tool_call / multi_turn / big_state, n=6/6/3/3)

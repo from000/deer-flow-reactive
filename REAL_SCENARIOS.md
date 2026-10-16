@@ -95,34 +95,30 @@ fork 的每-run 语义换来的是行为一致性。属于**语义 trade-off，�
 ## 流式执行（astream）：生产默认路径
 
 DeerFlow 生产路径默认走 `agent.astream(stream_mode=["values"])`（见 `runtime/runs/worker.py`
-与 `runtime/stream_modes.py`），**不是同步 invoke**。因此补充流式对照（`scripts/run_streaming.py`，
-fake model，每侧新进程，20 采样/轮 × 3 轮取 median）：
+与 `runtime/stream_modes.py`），不是同步 invoke。因此补充流式对照（`scripts/run_streaming.py`，
+fake model，每侧新进程，20 采样/轮 × 3 轮取 median，配对交替）：
 
-| 模式 | fork wall | 上游 wall | 比值 | fork CPU | 上游 CPU | 比值 |
-|---|---:|---:|---:|---:|---:|---:|
-| `astream(values)`（生产默认） | **13.02 ms** | **47.52 ms** | **3.65×** | 11.44 ms | 31.36 ms | 2.74× |
-| `astream(messages)` | **11.24 ms** | **62.11 ms** | **5.53×** | 9.55 ms | 37.47 ms | 3.92× |
+| 模式 | fork wall | 上游 wall | 比值 | fork CPU | 上游 CPU | 比值 | chunks |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `astream(values)`（生产默认） | **10.03 ms** | **41.45 ms** | **4.13×** | 9.24 ms | 24.96 ms | 2.70× | 4 / 4 |
+| `astream(messages)` | **9.80 ms** | **39.88 ms** | **4.07×** | 8.71 ms | 27.40 ms | 3.15× | 1 / 1 |
 
-（测量期 load1 ≈ 29–35，两侧同轮相邻，背景一致。）
+（测量期 load1 ≈ 20–23，两侧同轮相邻，背景一致。）
 
-- **`values` 模式 chunk 序列逐条等价**：空态 → +Human → 3 个中间帧 → +AI，两侧帧数/内容一致
-  （已用带 id 的消息实测，两侧都是 4 帧、`[(human,u1)]` ×3 后 `[(human,u1),(ai,a1)]`）。
-- **`messages` 模式存在行为差异（诚实披露）**：上游只发 1 个 chunk（AI 回复），
-  fork 多发 1 个 chunk —— **把输入的 HumanMessage 也作为 `messages` 帧发出**，
-  metadata 标注 `langgraph_node="tools"`：
+- **两种模式的 chunk 序列逐条等价**：`values` 两侧都是 4 帧（空态 → +Human ×3 → +AI），
+  `messages` 两侧都只发 1 帧 AI 回复（`AIMessage(id=a1, content='reply')`），
+  `updates` 的节点归属也一致（中间件 hook 按 `<name>.<hook>` 命名）。
+- 本轮的流式覆盖**发现并修复了两个真实兼容缺陷**（已在 `reactivegraph` core 修复，
+  并以回归测试锁定）：
+  1. `updates` 模式只发“有 message delta”的帧，**丢掉了纯状态写入**——
+     DeerFlow 的 `title` / `thread_data` / `uploaded_files` 更新收不到（前端标题依赖它）。
+  2. `messages` 模式把**输入的 HumanMessage** 也当 chunk 发出（上游不发）。
 
-  ```text
-  fork    : (HumanMessage('hi'),  node=tools)  →  (AIMessage('reply 0'), node=model)
-  upstream: (AIMessage('reply 0'), node=model)
-  ```
+  两者都在 `streaming.py` 的 `_AdaptState` 修复：`updates` 改为按**非 message 状态差量**
+  判定并带上节点归属；`messages` 跳过首个（种子）快照。修复后 fork 与上游逐帧一致。
 
-  影响面：`DeerFlowClient.stream()` 只消费 `AIMessage` / `ToolMessage`（`client.py:1074-1119`），
-  IM channel 也走 `ai` 前缀白名单（`app/channels/manager.py:772-800`），两者都会丢弃该
-  Human 帧，**当前无用户可见泄漏**；但 web SSE 路径原样转发 chunk，是否重复渲染取决于前端 SDK
-  的 message 跟踪，**本机未做浏览器端确认**，列为待跟进项（不阻塞本轮结论）。
-
-**结论**：生产默认的 `values` 流式模式，fork 的 chunk 序列与上游完全一致且 wall 快 ~3.7×；
-`messages` 模式有一个已知的额外 Human 帧差异，影响面已被下游过滤，待前端确认。
+**结论**：生产默认的 `values` 与前端实际请求的 `messages` 模式，fork 的 chunk 序列与上游
+完全一致，wall 快约 **4.1×**，CPU 快 2.7–3.2×。
 
 ## 覆盖矩阵：显式启停各 RuntimeFeatures（fake model，带有效 config.yaml）
 
